@@ -1,0 +1,220 @@
+# See https://docs.github.com/en/get-started/getting-started-with-git/ignoring-files for more about ignoring files.
+
+# compiled output
+dist
+tmp
+out-tsc
+*.tsbuildinfo
+.expo
+.expo-shared
+
+# dependencies
+node_modules
+
+# IDEs and editors
+/.idea
+.project
+.classpath
+.c9/
+*.launch
+.settings/
+*.sublime-workspace
+
+# IDE - VSCode
+.vscode/*
+!.vscode/settings.json
+!.vscode/tasks.json
+!.vscode/launch.json
+!.vscode/extensions.json
+
+# misc
+/.sass-cache
+/connect.lock
+/coverage
+/libpeerconnection.log
+npm-debug.log
+yarn-error.log
+testem.log
+/typings
+.env
+.env.local
+*.env.local
+
+# System Files
+.DS_Store
+Thumbs.db
+
+.cursor/rules/nx-rules.mdc
+.github/instructions/nx.instructions.md
+
+.cache/
+.local/
+
+/lib/generated/prisma
+# Ignore everything inside .claude/ except the 6 spec docs + CLAUDE.md (project source of truth)
+# Pattern note: must use .claude/* (not .claude/) so negation can re-include specific files
+.claude/*
+!.claude/PRD-PRODUCTION-READINESS.md
+!.claude/TRD.md
+!.claude/APP-FLOW.md
+!.claude/UI-UX-BRIEF.md
+!.claude/BACKEND-SCHEMA.md
+!.claude/IMPLEMENTATION-WORKFLOW.md
+!.claude/CLAUDE.md
+!.claude/VISUAL-OVERVIEW.md
+!.claude/UI-MOCKUPS.html
+# Skills: directory visible, but only the project implementation skill + its references ship.
+# Other *.skill.md files (export-pipeline, frontend-ui, karpathy-guidelines, oee-analytics,
+# shift-handoff, traceability, typescript-patterns) stay local.
+!.claude/skills/
+.claude/skills/*.skill.md
+!.claude/skills/smt-verification-implementation.skill.md
+!.claude/skills/references/
+!.claude/skills/references/*.md
+
+# Build outputs
+dist/
+build/
+.next/
+.runtime/
+
+# Temp/backup files
+*.bak
+*.tmp
+*.temp
+
+# OS junk
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# IDE
+.vscode/
+
+# Assets
+attached_assets/
+
+# Python
+scripts/.venv/
+scripts/__pycache__/
+**/__pycache__/
+
+# Env files (keep only .env.example)
+.env
+.env.local
+*.env.local
+
+# Build outputs
+dist/
+build/
+.next/
+.runtime/
+tsconfig.tsbuildinfo
+*.tsbuildinfo
+
+# Logs
+logs/
+*.log
+
+# Temp/backup files
+*.bak
+*.backup
+*.tmp
+backup-before-uuid-migration.sql
+db-backup-*.sql
+
+# OS junk
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+
+# Assets
+attached_assets/
+
+# Python
+scripts/.venv/
+**/__pycache__/
+
+# Env files
+.env
+.env.local
+*.env.local
+
+# Compiled JS duplicates in src (TypeScript projects only)
+artifacts/mockup-sandbox/src/**/*.js
+
+# Binary installers — never commit
+*.deb
+*.rpm
+*.exe
+*.dmg
+*.pkg
+*.AppImage
+
+# Database backups
+backup-*.sql
+*.backup.sql
+*-backup*.sql
+dump-*.sql
+
+# Business documents
+*.docx
+*.xlsx
+*.pptx
+
+# Local secrets
+.env
+.env.local
+.env.production
+.env.development
+.env.*.local
+# Catch every other .env variant (.env.dev, .env.staging, …) but keep the tracked template.
+.env.*
+feeder-verification/.env
+feeder-verification/.env.local
+feeder-verification/.env.production
+artifacts/feeder-scanner/.env
+artifacts/api-server/.env
+
+# Binary installers
+*.deb
+*.rpm
+*.exe
+*.dmg
+*.AppImage
+
+# Database backups
+backup-*.sql
+*.backup.sql
+
+# Business documents  
+*.docx
+*.xlsx
+*.pptx
+
+# Temporary utility scripts
+check-schema.js
+check-users.js
+create-users-sql.txt
+create-users-table.js
+create-users-table.mjs
+create-users.py
+generate-hashes.js
+update-passwords.js
+audit-results.txt
+
+# IDE configs
+.cursor/
+.opencode/
+
+# Electron build output
+release/
+**/release/
+
+# One-time audit docs (not source code)
+**/DEAD_CODE_AUDIT.md
+
+# Build artifacts
+*.tar.gz

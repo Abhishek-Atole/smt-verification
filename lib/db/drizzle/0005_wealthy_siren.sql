@@ -1,0 +1,1 @@
+ALTER TABLE "bom_items" ALTER COLUMN "ucal_int_pn" DROP NOT NULL;

@@ -1,0 +1,48 @@
+{
+  "timestamp": "2026-05-01T21:52:31.387Z",
+  "checks": [
+    {
+      "category": "RESULTS",
+      "item": "Auth & Role Test",
+      "status": "PASS",
+      "detail": "result file exists"
+    },
+    {
+      "category": "RESULTS",
+      "item": "Latency Test",
+      "status": "PASS",
+      "detail": "result file exists"
+    },
+    {
+      "category": "RESULTS",
+      "item": "Concurrent Scan Test",
+      "status": "PASS",
+      "detail": "result file exists"
+    },
+    {
+      "category": "RESULTS",
+      "item": "DB Performance Test",
+      "status": "PASS",
+      "detail": "result file exists"
+    },
+    {
+      "category": "AUTH",
+      "item": "Auth test summary",
+      "status": "PASS",
+      "detail": "18 passed, 0 failed",
+      "latency": 76
+    },
+    {
+      "category": "LATENCY",
+      "item": "Latency thresholds",
+      "status": "FAIL",
+      "detail": "one or more endpoints exceeded threshold"
+    }
+  ],
+  "summary": {
+    "passed": 5,
+    "failed": 1,
+    "skipped": 0,
+    "warned": 0
+  }
+}

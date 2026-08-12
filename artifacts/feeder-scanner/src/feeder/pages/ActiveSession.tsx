@@ -1,0 +1,2349 @@
+import { useState, useEffect, useMemo, useRef, useCallback } from "react";
+import { useRoute, useLocation, useSearchParams, Link } from "wouter";
+import { useQuery } from "@tanstack/react-query";
+import {
+  useGetSession, useScanFeeder, useUpdateSession, useGetBom,
+  useListSplices, useRecordSplice,
+  getGetBomQueryKey, getGetSessionQueryKey, getListSplicesQueryKey,
+} from "@workspace/api-client-react";
+import { useQueryClient } from "@tanstack/react-query";
+import { Input } from "@/components/ui/input";
+import { Button } from "@/components/ui/button";
+import { Label } from "@/components/ui/label";
+import { Loader2, ScanLine, CheckCircle2, Circle, XCircle, Scissors, ArrowLeft, RefreshCw, X, AlertCircle } from "lucide-react";
+import { format, differenceInSeconds } from "date-fns";
+import { ScrollArea } from "@/components/ui/scroll-area";
+import SplicingPage from "./Splicing";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { AlternateSelector } from "@/components/alternate-selector";
+import { ModeToggle } from "@/components/ModeToggle";
+import { HandoverModal } from "@/feeder/HandoverModal";
+import { useNotification } from "@/hooks/use-notification";
+import { useNotification as useToastNotification } from "@/components/NotificationSystem";
+import { useScanner } from "@/hooks/useScanner";
+import { useAutoScan } from "@/hooks/useAutoScan";
+import { ScanNotification } from "@/components/notifications/ScanNotification";
+import { LogPanel } from "@/components/LogPanel";
+import { useAuth } from "@/context/auth-context";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
+import { useVerificationStore } from "@/store/useVerificationStore";
+import { useSplicingStore } from "@/store/useSplicingStore";
+import { useLogStore } from "@/store/useLogStore";
+import { useNotificationStore } from "@/store/useNotificationStore";
+import type { FeederScan, SplicingRecord } from "@/types";
+import { AppLogo } from "@/components/AppLogo";
+import { buildCandidates, normalizeMpn } from "@/utils/mpnUtils";
+import { logger } from "@/lib/logger";
+
+type ScanStep = "feeder" | "spool" | "lot";
+type SpliceStep = "feeder" | "oldSpool" | "newSpool";
+type Mode = "scan" | "splice";
+
+interface LocalScanEntry {
+  id: number;
+  feederNumber: string;
+  spoolBarcode?: string;
+  partNumber?: string | null;
+  status: "ok" | "reject";
+  scannedAt: string;
+  durationMs?: number;
+}
+
+interface SessionScanLogRow {
+  id: number;
+  feederNumber: string;
+  scannedValue: string;
+  matchedField: string | null;
+  matchedMake: string | null;
+  lotCode: string | null;
+  status: "verified" | "duplicate" | "failed";
+  verificationMode: "AUTO" | "MANUAL";
+  scannedAt: string;
+  bom: {
+    refDes: string | null;
+    componentDesc: string | null;
+    packageSize: string | null;
+    internalPartNumber: string | null;
+    expectedMpns: string[];
+    makes: string[];
+  };
+}
+
+function formatDuration(ms: number) {
+  if (ms < 1000) return `${ms}ms`;
+  const s = Math.round(ms / 1000);
+  if (s < 60) return `${s}s`;
+  return `${Math.floor(s / 60)}m ${s % 60}s`;
+}
+
+function formatElapsed(sec: number) {
+  const h = Math.floor(sec / 3600);
+  const m = Math.floor((sec % 3600) / 60);
+  const s = sec % 60;
+  return `${h.toString().padStart(2, "0")}:${m.toString().padStart(2, "0")}:${s.toString().padStart(2, "0")}`;
+}
+
+function focusNextFrame(inputRef: React.RefObject<HTMLInputElement | null>) {
+  setTimeout(() => inputRef.current?.focus(), 80);
+}
+
+function normalizeScanValue(value: string): string {
+  return value.trim().toUpperCase();
+}
+
+// Web Audio API sound generator
+function playBuzzer(type: "success" | "error" | "warning") {
+  try {
+    const audioContext = new (window.AudioContext || (window as any).webkitAudioContext)();
+    const now = audioContext.currentTime;
+    
+    if (type === "success") {
+      // Success: two ascending beeps
+      const osc1 = audioContext.createOscillator();
+      const gain1 = audioContext.createGain();
+      osc1.connect(gain1);
+      gain1.connect(audioContext.destination);
+      osc1.frequency.value = 800;
+      gain1.gain.setValueAtTime(0.1, now);
+      gain1.gain.exponentialRampToValueAtTime(0.01, now + 0.1);
+      osc1.start(now);
+      osc1.stop(now + 0.1);
+      
+      const osc2 = audioContext.createOscillator();
+      const gain2 = audioContext.createGain();
+      osc2.connect(gain2);
+      gain2.connect(audioContext.destination);
+      osc2.frequency.value = 1200;
+      gain2.gain.setValueAtTime(0.1, now + 0.15);
+      gain2.gain.exponentialRampToValueAtTime(0.01, now + 0.25);
+      osc2.start(now + 0.15);
+      osc2.stop(now + 0.25);
+    } else if (type === "error") {
+      // Error: three low beeps
+      for (let i = 0; i < 3; i++) {
+        const osc = audioContext.createOscillator();
+        const gain = audioContext.createGain();
+        osc.connect(gain);
+        gain.connect(audioContext.destination);
+        osc.frequency.value = 400;
+        const startTime = now + i * 0.15;
+        gain.gain.setValueAtTime(0.1, startTime);
+        gain.gain.exponentialRampToValueAtTime(0.01, startTime + 0.1);
+        osc.start(startTime);
+        osc.stop(startTime + 0.1);
+      }
+    } else if (type === "warning") {
+      // Warning: single mid-range beep
+      const osc = audioContext.createOscillator();
+      const gain = audioContext.createGain();
+      osc.connect(gain);
+      gain.connect(audioContext.destination);
+      osc.frequency.value = 600;
+      gain.gain.setValueAtTime(0.1, now);
+      gain.gain.exponentialRampToValueAtTime(0.01, now + 0.2);
+      osc.start(now);
+      osc.stop(now + 0.2);
+    }
+  } catch (err) {
+    logger.warn("Audio playback failed:", err);
+  }
+}
+
+function tokenizeInternalPartNumber(value: string | null | undefined): string[] {
+  if (!value) return [];
+  return value
+    .replace(/[\r\n]+/g, " ")
+    .split(/[\s,;/|]+/)
+    .map((token) => token.trim())
+    .filter(Boolean)
+    .map((token) => token.toUpperCase());
+}
+
+export default function SessionActive() {
+  const [, feederParams] = useRoute("/feeder/sessions/:id");
+  const [, legacyParams] = useRoute("/session/:id");
+  const rawSessionId = feederParams?.id ?? legacyParams?.id;
+  const sessionId = rawSessionId ? Number(rawSessionId) : NaN;
+  const isValidSessionId = Number.isFinite(sessionId) && sessionId > 0;
+  const [, setLocation] = useLocation();
+  const queryClient = useQueryClient();
+  const { user } = useAuth();
+
+  // Use the new notification system with buzzer sounds
+  const {
+    notifications,
+    showAlert,
+    showErrorAlert,
+    showWarningAlert,
+    showSuccessAlert,
+    dismissNotification,
+  } = useNotification();
+  const notify = useToastNotification();
+  const scanNotifications = useMemo(
+    () =>
+      notifications.map((n) => ({
+        ...n,
+        title: n.title ?? (n.type === "error" ? "ERROR" : n.type === "success" ? "SUCCESS" : "NOTICE"),
+      })),
+    [notifications],
+  );
+
+  const { data: session, isLoading: sessionLoading } = useGetSession(sessionId, {
+    query: { enabled: isValidSessionId, queryKey: getGetSessionQueryKey(sessionId) },
+  });
+  const bomId = session?.bomId;
+  const { data: bomDetail, isLoading: bomLoading } = useGetBom(bomId!, {
+    query: { enabled: !!bomId && isValidSessionId, queryKey: getGetBomQueryKey(bomId!) },
+  });
+  const [sessionApiBom, setSessionApiBom] = useState<any[]>([]);
+
+  // DEBUG: Log session and BOM status
+  useEffect(() => {
+    logger.debug('[DEBUG] Session ID:', sessionId);
+    logger.debug('[DEBUG] Session loading:', sessionLoading);
+    logger.debug('[DEBUG] Session data:', session);
+    logger.debug('[DEBUG] BOM ID:', bomId);
+    logger.debug('[DEBUG] BOM loading:', bomLoading);
+    logger.debug('[DEBUG] BOM detail:', bomDetail);
+    logger.debug('[DEBUG] Session API BOM count:', sessionApiBom.length);
+  }, [sessionId, sessionLoading, session, bomId, bomLoading, bomDetail, sessionApiBom]);
+
+  useEffect(() => {
+    if (!isValidSessionId) {
+      logger.error('[ERROR] No valid session ID available for session load fetch');
+      return;
+    }
+
+    const loadSessionData = async () => {
+      logger.debug('[LOADING SESSION]', { sessionId });
+      try {
+        const response = await fetch(`/api/sessions/${sessionId}`, {
+          credentials: 'include',
+        });
+        logger.debug('[SESSION API]', {
+          status: response.status,
+          ok: response.ok,
+        });
+        if (!response.ok) {
+          throw new Error('Failed to load session');
+        }
+        const data = await response.json();
+        logger.info('[SESSION LOADED]', {
+          bomId: data.session?.bomId,
+          bomItemCount: data.bom?.length || 0,
+          status: data.session?.status,
+        });
+        setSessionApiBom(data.bom || []);
+      } catch (err) {
+        logger.error({ err }, '[SESSION LOAD ERROR]');
+      }
+    };
+
+    loadSessionData();
+  }, [sessionId, isValidSessionId]);
+
+  useEffect(() => {
+    if (bomDetail?.items && bomDetail.items.length > 0) {
+      logger.debug('[BOM FEEDERS]', bomDetail.items.map((item) => item.feederNumber));
+      logger.debug('[BOM SAMPLE]', bomDetail.items[0]);
+    }
+  }, [bomDetail]);
+
+  const { data: splices, isLoading: splicesLoading } = useListSplices(sessionId, {
+    query: { enabled: isValidSessionId, queryKey: getListSplicesQueryKey(sessionId) },
+  });
+  const { data: scanLog } = useQuery({
+    queryKey: ["session-scan-log", sessionId],
+    queryFn: async () => {
+      const response = await fetch(`/api/sessions/${sessionId}/scans`, {
+        credentials: "include",
+      });
+      if (!response.ok) {
+        throw new Error("Failed to load scan log");
+      }
+      return (await response.json()) as { sessionId: number; scans: SessionScanLogRow[] };
+    },
+    enabled: isValidSessionId,
+  });
+
+  const scanFeeder = useScanFeeder();
+  const recordSplice = useRecordSplice();
+  const updateSession = useUpdateSession();
+
+  const [mode, setMode] = useState<Mode>("scan");
+  const [scanStep, setScanStep] = useState<ScanStep>("feeder");
+  const [pendingFeeder, setPendingFeeder] = useState("");
+  const [feederScanTime, setFeederScanTime] = useState<number | null>(null);
+  const [pendingMpnScan, setPendingMpnScan] = useState("");
+  const [pendingScanDuration, setPendingScanDuration] = useState<number | undefined>(undefined);
+  
+  // Internal ID / MPN verification state
+  const [internalIdInput, setInternalIdInput] = useState("");
+  const [internalIdType, setInternalIdType] = useState<"mpn" | "internal_id">("mpn");
+  const [caseConverted, setCaseConverted] = useState(false);
+  const [isDuplicate, setIsDuplicate] = useState(false);
+  
+  // Alternate selection state
+  const [pendingAvailableOptions, setPendingAvailableOptions] = useState<{
+    primary: any[];
+    alternates: any[];
+  } | null>(null);
+  const [selectedItemIdForScan, setSelectedItemIdForScan] = useState<number | null>(null);
+  const [needsAlternateSelection, setNeedsAlternateSelection] = useState(false);
+  const [verificationMode, setVerificationMode] = useState<"AUTO" | "MANUAL">("AUTO");
+  const [pendingVerification, setPendingVerification] = useState<any>(null);
+  const [verificationLocked, setVerificationLocked] = useState(false);
+  const [lastVerificationTime, setLastVerificationTime] = useState<number | null>(null);
+  const [verificationInProgress, setVerificationInProgress] = useState(false);
+  const [autoAdvanceTimer, setAutoAdvanceTimer] = useState<NodeJS.Timeout | null>(null);
+  const [scanning, setScanning] = useState(false);
+  const scanningRef = useRef(false);
+
+  useEffect(() => {
+    if (session?.verificationMode) {
+      setVerificationMode(String(session.verificationMode).toUpperCase() === "MANUAL" ? "MANUAL" : "AUTO");
+    }
+  }, [session?.verificationMode]);
+
+  const handleVerificationModeChange = async (mode: "AUTO" | "MANUAL") => {
+    if (!isValidSessionId) {
+      return;
+    }
+
+    const response = await fetch(`/api/sessions/${sessionId}/mode`, {
+      method: "PATCH",
+      credentials: "include",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ mode }),
+    });
+
+    if (!response.ok) {
+      const payload = await response.json().catch(() => null);
+      throw new Error(payload?.error ?? "Failed to update verification mode");
+    }
+
+    setVerificationMode(mode);
+    await queryClient.invalidateQueries({ queryKey: getGetSessionQueryKey(sessionId) });
+  };
+
+  // Tab-based UI state for Loading vs Splicing
+  // ?tab=loading | ?tab=splicing in the URL controls the active tab so deep
+  // links from other pages (e.g. the Splicing page's "Back" button) land on
+  // the intended tab. Tab clicks also update the URL so the back/forward
+  // browser buttons and bookmarks reflect the current view.
+  const [searchParams, setSearchParams] = useSearchParams();
+  const tabFromUrl = searchParams.get("tab");
+  const activeTab: "loading" | "splicing" = tabFromUrl === "splicing" ? "splicing" : "loading";
+
+  // A session is splice-eligible after operator start OR after QA confirmation.
+  const isSpliceEligible =
+    String(session?.status) === "active" || String(session?.status) === "qa_confirmed";
+
+  const setActiveTab = (tab: "loading" | "splicing") => {
+    setSearchParams(
+      (prev) => {
+        const next = new URLSearchParams(prev);
+        if (tab === "loading") {
+          next.delete("tab");
+        } else {
+          next.set("tab", "splicing");
+        }
+        return next;
+      },
+      { replace: true }
+    );
+  };
+
+  const [useGuidedSplice, setUseGuidedSplice] = useState(true);
+
+  const [spliceStep, setSpliceStep] = useState<SpliceStep>("feeder");
+  const [splicePendingFeeder, setSplicePendingFeeder] = useState("");
+  const [splicePendingOldSpool, setSplicePendingOldSpool] = useState("");
+  const [spliceStartTime, setSpliceStartTime] = useState<number | null>(null);
+  const [spliceInput, setSpliceInput] = useState("");
+  const [splicingPhaseActive, setSplicingPhaseActive] = useState(false);
+  const spliceAutoScanLockedRef = useRef(false);
+
+  const [elapsed, setElapsed] = useState(0);
+  const [showCompletionOverlay, setShowCompletionOverlay] = useState(false);
+  const [showResetDialog, setShowResetDialog] = useState(false);
+  const [lastScanResult, setLastScanResult] = useState<{
+    status: "ok" | "reject" | "splice";
+    feeder: string;
+    msg: string;
+  } | null>(null);
+  const lastNotifiedRef = useRef<string>("");
+  const wasAllRequiredVerifiedRef = useRef(false);
+  const [showHandoverModal, setShowHandoverModal] = useState(false);
+
+  const scanLogRows = scanLog?.scans ?? [];
+
+  const formatMatchedAs = (row: SessionScanLogRow) => {
+    const field = row.matchedField ?? "";
+    if (!field) return "—";
+    if (field === "internalPartNumber") return "Internal P/N";
+
+    const suffix = row.matchedMake ? ` (${row.matchedMake})` : "";
+    const label = field.replace("mpn", "MPN ");
+    return `${label}${suffix}`;
+  };
+
+  const getScannedValueStyle = (row: SessionScanLogRow) => {
+    if (row.status === "failed") return "text-[#B91C1C] font-bold";
+    if (row.matchedField === "mpn2" || row.matchedField === "mpn3") return "text-[#B45309] font-bold";
+    return "text-[#15803D] font-bold";
+  };
+
+  const getScannedValueSuffix = (row: SessionScanLogRow) => {
+    if (row.status === "failed") return " ✗";
+    if (row.matchedField === "mpn2" || row.matchedField === "mpn3") return " ▲";
+    return "";
+  };
+
+  const resetVerificationState = useVerificationStore((state) => state.resetAll);
+  const setVerificationBomEntries = useVerificationStore((state) => state.setBomEntries);
+  const hydrateVerificationScans = useVerificationStore((state) => state.hydrateFromScans);
+  const upsertVerifiedFeeder = useVerificationStore((state) => state.upsertVerifiedFeeder);
+  const verificationBomEntries = useVerificationStore((state) => state.bomEntries);
+  const scannedFeeders = useVerificationStore((state) => state.scannedFeeders);
+  const verificationScans = useMemo(() => Array.from(scannedFeeders.values()), [scannedFeeders]);
+  const verificationProgress = useMemo(() => {
+    // After QA confirmation, verification is already complete — enable splicing.
+    const qaConfirmed = String(session?.status) === "qa_confirmed";
+    // Use bomItemCount from API if available, otherwise fall back to BOM entries
+    const totalRequired = session?.bomItemCount ?? verificationBomEntries.length;
+    const verifiedCount = scannedFeeders.size;
+    const percentage = totalRequired === 0 ? 0 : Math.round((verifiedCount / totalRequired) * 100);
+    const remainingFeeders = verificationBomEntries
+      .map((entry) => entry.feederId)
+      .filter((feederId) => !scannedFeeders.has(feederId));
+
+    return {
+      verifiedCount,
+      totalRequired,
+      percentage,
+      remainingFeeders,
+      isComplete: qaConfirmed || (verifiedCount >= totalRequired && totalRequired > 0),
+    };
+  }, [verificationBomEntries, scannedFeeders, session?.bomItemCount, session?.status]);
+  const clearSplicingRecords = useSplicingStore((state) => state.clearRecords);
+  const hydrateSplicingRecords = useSplicingStore((state) => state.hydrateRecords);
+  const appendSpliceRecord = useSplicingStore((state) => state.appendRecord);
+  const splicingRecords = useSplicingStore((state) => state.records);
+  const clearLogs = useLogStore((state) => state.clearLogs);
+  const addLog = useLogStore((state) => state.addLog);
+  const clearNotifications = useNotificationStore((state) => state.clearAll);
+
+  useEffect(() => {
+    const bomItems = bomDetail?.items;
+    if (!bomItems || bomItems.length === 0) {
+      return;
+    }
+
+    const grouped = new Map<string, { primary: any[]; alternates: any[] }>();
+    bomItems.forEach((item) => {
+      const feederNumber = item.feederNumber.trim().toUpperCase();
+      if (!grouped.has(feederNumber)) {
+        grouped.set(feederNumber, { primary: [], alternates: [] });
+      }
+      const bucket = grouped.get(feederNumber)!;
+      const option = {
+        mpn: (item.expectedMpn || item.partNumber || item.internalId || item.feederNumber).trim().toUpperCase(),
+        partId: String(item.id ?? item.partNumber ?? item.feederNumber),
+        description: item.partNumber || item.expectedMpn || item.internalId || item.feederNumber,
+      };
+      if (item.isAlternate) {
+        bucket.alternates.push(option);
+      } else {
+        bucket.primary.push(option);
+      }
+    });
+
+    setVerificationBomEntries(
+      Array.from(grouped.entries()).map(([feederId, group]) => ({
+        feederId,
+        alternatives: [...group.primary, ...group.alternates],
+      })),
+    );
+  }, [bomDetail, setVerificationBomEntries]);
+
+  useEffect(() => {
+    const mappedScans: FeederScan[] = (session?.scans || [])
+      .filter((scan) => scan.status === "ok")
+      .map((scan) => ({
+        feederId: scan.feederNumber.trim().toUpperCase(),
+        mpn: (scan.partNumber || scan.feederNumber).trim().toUpperCase(),
+        partId: String(scan.id),
+        scannedAt: new Date(scan.scannedAt),
+        status: "verified",
+        matchedAlternative: {
+          mpn: (scan.partNumber || scan.feederNumber).trim().toUpperCase(),
+          partId: String(scan.id),
+          description: scan.partNumber || scan.feederNumber,
+        },
+      }));
+
+    hydrateVerificationScans(mappedScans);
+  }, [hydrateVerificationScans, session?.scans]);
+
+  useEffect(() => {
+    const mappedRecords: SplicingRecord[] = (splices || []).map((splice) => ({
+      feederId: splice.feederNumber.trim().toUpperCase(),
+      oldSpoolMPN: splice.oldSpoolBarcode.trim().toUpperCase(),
+      newSpoolMPN: splice.newSpoolBarcode.trim().toUpperCase(),
+      splicedAt: new Date(splice.splicedAt),
+      verifiedAgainstBOM: true,
+    }));
+
+    hydrateSplicingRecords(mappedRecords);
+  }, [hydrateSplicingRecords, splices]);
+
+  const handleScanBarcode = useCallback(async (val: string) => {
+    logger.debug('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+    logger.debug('[SCAN START]', {
+      input: val,
+      scanStep,
+      scanningRef: scanningRef.current,
+      verificationInProgress,
+      verificationLocked,
+      sessionId,
+      bomLoaded: !!bomDetail,
+      bomItemsCount: bomDetail?.items?.length ?? 0,
+    });
+    logger.debug('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+
+    if (scanningRef.current) {
+      logger.debug('[BLOCKED] scanningRef.current is true');
+      return;
+    }
+
+    if (verificationInProgress) {
+      logger.debug('[BLOCKED] verificationInProgress is true');
+      return;
+    }
+
+    if (verificationLocked) {
+      logger.debug('[BLOCKED] verificationLocked is true');
+      return;
+    }
+
+    if (!bomDetail) {
+      logger.debug('[BLOCKED] BOM detail missing');
+      showErrorAlert('BOM not loaded yet. Please wait.', 'high');
+      clearScanInput();
+      return;
+    }
+
+    setVerificationInProgress(true);
+    scanningRef.current = true;
+    setScanning(true);
+    try {
+      const normalizedInput = normalizeScanValue(val);
+
+      if (needsAlternateSelection) {
+        setScanStep("spool");
+        setNeedsAlternateSelection(false);
+        return;
+      }
+
+      if (!normalizedInput && scanStep !== "lot") {
+        return;
+      }
+
+      if (scanStep === "feeder") {
+        logger.debug('[DEBUG] Processing feeder step', { normalizedInput, uiBomItemsCount: bomDetail?.items?.length });
+
+        const uiBomItems = bomDetail?.items || [];
+        const sessionBomItems = sessionApiBom || [];
+        const normalizedFeederNumber = normalizedInput;
+
+        const matchingUiItems = uiBomItems.filter(
+          (item) => normalizeScanValue(item.feederNumber) === normalizedFeederNumber,
+        );
+        const matchingSessionItems = sessionBomItems.filter(
+          (item) => normalizeScanValue(String(item.feederNumber ?? "")) === normalizedFeederNumber,
+        );
+        const matchingItems = matchingSessionItems.length > 0 ? matchingSessionItems : matchingUiItems;
+
+        if (matchingItems.length === 0) {
+          setLastScanResult({
+            status: "reject",
+            feeder: normalizedFeederNumber,
+            msg: `❌ ERROR: Feeder "${normalizedFeederNumber}" not found in BOM`,
+          });
+          clearScanInput();
+          showErrorAlert(
+            `Feeder "${normalizedFeederNumber}" does not exist in the loaded BOM.\n\nPlease check the feeder number and try again.`,
+            "high",
+          );
+          playBuzzer("error");
+          return;
+        }
+
+        const sessionScans = [
+          ...(session?.scans ?? []).map((scan) => ({
+            feederNumber: normalizeScanValue(scan.feederNumber),
+            status: scan.status === "ok" ? "verified" : String(scan.status || "").toLowerCase(),
+          })),
+          ...scanLogRows.map((scan) => ({
+            feederNumber: normalizeScanValue(scan.feederNumber),
+            status: String(scan.status || "").toLowerCase(),
+          })),
+        ];
+
+        const alreadyScanned = sessionScans.some(
+          (scan) => scan.feederNumber === normalizedFeederNumber && scan.status !== "failed",
+        );
+
+        if (alreadyScanned) {
+          setLastScanResult({
+            status: "reject",
+            feeder: normalizedFeederNumber,
+            msg: `⚠️ DUPLICATE: Feeder "${normalizedFeederNumber}" already verified`,
+          });
+          clearScanInput();
+          setIsDuplicate(true);
+          lastNotifiedRef.current = `${normalizedFeederNumber}::⚠️ DUPLICATE: Feeder "${normalizedFeederNumber}" already verified`;
+          notify(
+            "duplicate",
+            `Feeder "${normalizedFeederNumber}" has already been verified.`,
+            "To re-scan, reject the existing scan first.",
+            () => focusNextFrame(inputRef),
+          );
+          return;
+        }
+
+        const primaryItems = matchingUiItems.filter((item) => !item.isAlternate);
+        const alternateItems = matchingUiItems.filter((item) => item.isAlternate);
+
+        setPendingFeeder(normalizedFeederNumber);
+        setFeederScanTime(Date.now());
+        clearScanInput();
+        setCaseConverted(val !== normalizedFeederNumber);
+        setIsDuplicate(false);
+
+        if (alternateItems.length > 0) {
+          setPendingAvailableOptions({
+            primary: primaryItems,
+            alternates: alternateItems,
+          });
+          setSelectedItemIdForScan(primaryItems[0]?.id || alternateItems[0]?.id || null);
+          setNeedsAlternateSelection(true);
+          showWarningAlert(
+            `Feeder "${normalizedFeederNumber}" has ${alternateItems.length} alternative component option(s).\n\nSelect from primary or alternatives, then press ENTER.`,
+            "medium",
+          );
+          playBuzzer("warning");
+          return;
+        }
+
+        showSuccessAlert(`Feeder "${normalizedFeederNumber}" found in BOM`);
+        playBuzzer("success");
+        setScanStep("spool");
+        setNeedsAlternateSelection(false);
+        return;
+      }
+
+      if (scanStep === "spool") {
+      logger.debug('[DEBUG] Processing MPN step', { pendingFeeder, normalizedInput });
+
+        const sessionMatchedBomItem =
+          sessionApiBom.find(
+            (item) =>
+              normalizeScanValue(String(item.feederNumber ?? "")) === normalizeScanValue(pendingFeeder) &&
+              (selectedItemIdForScan == null || Number(item.id) === selectedItemIdForScan),
+          ) ||
+          sessionApiBom.find(
+            (item) => normalizeScanValue(String(item.feederNumber ?? "")) === normalizeScanValue(pendingFeeder),
+          );
+
+        const uiMatchedBomItem =
+          bomDetail?.items.find(
+            (item) =>
+              normalizeScanValue(item.feederNumber) === normalizeScanValue(pendingFeeder) &&
+              (selectedItemIdForScan == null || item.id === selectedItemIdForScan),
+          ) ||
+          bomDetail?.items.find(
+            (item) => normalizeScanValue(item.feederNumber) === normalizeScanValue(pendingFeeder),
+          );
+
+        const lockedFeeder = (sessionMatchedBomItem ?? uiMatchedBomItem) as any;
+        const rawScanned = val;
+        const normalizedScanned = normalizeMpn(val);
+
+        logger.debug("[FULL BOM ITEM]", JSON.stringify(lockedFeeder, null, 2));
+
+        logger.debug("[MPN DEBUG] scanned raw:    |%s|", rawScanned);
+        logger.debug("[MPN DEBUG] scanned normal: |%s|", normalizedScanned);
+        logger.debug("[MPN DEBUG] bom.mpn1 raw:   |%s|", lockedFeeder?.mpn1);
+        logger.debug("[MPN DEBUG] bom.mpn2 raw:   |%s|", lockedFeeder?.mpn2);
+        logger.debug("[MPN DEBUG] bom.mpn3 raw:   |%s|", lockedFeeder?.mpn3);
+        logger.debug("[MPN DEBUG] bom.internalPn: |%s|", lockedFeeder?.internalPartNumber);
+        logger.debug("[MPN DEBUG] field names:    %o", Object.keys(lockedFeeder ?? {}));
+
+        if (!normalizedScanned) {
+          showErrorAlert("Empty scan — please scan the part MPN barcode", "high");
+          playBuzzer("error");
+          clearScanInput();
+          return;
+        }
+
+        if (!lockedFeeder) {
+          showErrorAlert("No feeder locked — restart from feeder scan", "high");
+          playBuzzer("error");
+          setScanStep("feeder");
+          clearScanInput();
+          return;
+        }
+
+        const candidates = buildCandidates(lockedFeeder);
+
+        logger.debug("[MPN MATCH ATTEMPT] scanned:", normalizedScanned);
+        logger.debug("[MPN MATCH ATTEMPT] candidates:", candidates);
+
+        if (candidates.length === 0) {
+          showErrorAlert("BOM item has no MPN data — contact engineer", "high");
+          playBuzzer("error");
+          clearScanInput();
+          return;
+        }
+
+        const match = candidates.find((candidate) => candidate.value === normalizedScanned);
+
+        if (!match) {
+          const expectedDisplay = candidates.map((candidate) => candidate.value).join(" | ");
+          showErrorAlert(
+            `MPN Mismatch for Feeder ${lockedFeeder?.feederNumber ?? pendingFeeder}. Expected: ${expectedDisplay}`,
+            "high",
+          );
+          playBuzzer("error");
+          clearScanInput();
+          return;
+        }
+
+        if (match.label === "Internal ID") {
+          setInternalIdType("internal_id");
+        } else {
+          setInternalIdType("mpn");
+        }
+
+        if (match.isPrimary) {
+          showSuccessAlert(`✓ Primary Match — ${match.label}: ${match.value}`);
+          playBuzzer("success");
+        } else {
+          showWarningAlert(`⚠ Alternate Match — ${match.label}: ${match.value}`, "medium");
+          playBuzzer("warning");
+        }
+
+        setInternalIdInput(match.value);
+        setCaseConverted(caseConverted || rawScanned !== normalizedScanned);
+        clearScanInput();
+
+        const duration = feederScanTime ? Date.now() - feederScanTime : undefined;
+        setPendingMpnScan(match.value);
+        setPendingScanDuration(duration);
+        setScanStep("lot");
+        focusNextFrame(inputRef);
+        return;
+      }
+
+      if (scanStep === "lot") {
+        logger.debug('[DEBUG] Processing lot step', { normalizedInput, pendingFeeder, pendingMpnScan });
+
+        const lotCode = normalizedInput || null;
+        const matchingItem = bomDetail?.items.find((item) => item.id === selectedItemIdForScan);
+        const duration = pendingScanDuration;
+
+        if (verificationMode === "MANUAL") {
+          setPendingVerification({
+            feederNumber: pendingFeeder,
+            mpnOrInternalId: pendingMpnScan || null,
+            lotCode,
+            internalIdType,
+            verificationMode: "MANUAL",
+            selectedItemId: selectedItemIdForScan || undefined,
+            partNumber: matchingItem?.partNumber,
+            duration,
+          });
+        } else {
+          await handleAutoModeSubmit(pendingMpnScan, duration, lotCode ?? undefined);
+        }
+      }
+    } catch (err: any) {
+      logger.error({ err }, '[SCAN ERROR]');
+      showErrorAlert(err?.message || 'Unexpected scan error', 'high');
+      playBuzzer("error");
+    } finally {
+      setVerificationInProgress(false);
+      scanningRef.current = false;
+      setScanning(false);
+      logger.debug('[SCAN COMPLETE] Flags reset');
+    }
+  }, [
+    // State values
+    scanStep,
+    bomDetail,
+    pendingFeeder,
+    sessionApiBom,
+    session?.scans,
+    scanLogRows,
+    selectedItemIdForScan,
+    needsAlternateSelection,
+    verificationInProgress,
+    verificationLocked,
+    caseConverted,
+    feederScanTime,
+    pendingScanDuration,
+    internalIdType,
+    verificationMode,
+    // State setters
+    setVerificationInProgress,
+    setScanStep,
+    setNeedsAlternateSelection,
+    setLastScanResult,
+    setFeederScanTime,
+    setPendingFeeder,
+    setIsDuplicate,
+    setCaseConverted,
+    setPendingAvailableOptions,
+    setSelectedItemIdForScan,
+    setInternalIdInput,
+    setPendingMpnScan,
+    setPendingScanDuration,
+    setPendingVerification,
+    setScanning,
+    // Callbacks and refs
+    showErrorAlert,
+    showWarningAlert,
+    showSuccessAlert,
+    notify,
+    focusNextFrame,
+    sessionId,
+  ]);
+
+  const {
+    inputRef,
+    value: scanInput,
+    setValue: setScanInput,
+  } = useScanner({
+    onSubmit: handleScanBarcode,
+    resetAfterMs: 10000,
+  });
+
+  const { reset: resetAutoScan } = useAutoScan(scanInput, {
+    onScan: (value) => {
+      if (
+        scanningRef.current ||
+        verificationInProgress ||
+        verificationLocked ||
+        pendingVerification ||
+        needsAlternateSelection ||
+        scanStep === "lot"
+      ) {
+        return;
+      }
+
+      void handleScanBarcode(value);
+    },
+    delayMs: 300,
+    minLength: 3,
+    enabled: session?.status === "active" && activeTab === "loading" && scanStep !== "lot",
+  });
+
+  const { reset: resetSpliceAutoScan } = useAutoScan(spliceInput, {
+    onScan: (value) => {
+      if (
+        spliceAutoScanLockedRef.current ||
+        !isSpliceEligible ||
+        activeTab !== "splicing" ||
+        useGuidedSplice
+      ) {
+        return;
+      }
+
+      handleSpliceValue(value);
+    },
+    delayMs: 300,
+    minLength: 3,
+    enabled: isSpliceEligible && activeTab === "splicing" && !useGuidedSplice,
+  });
+
+  const feederInputRef = inputRef;
+  const mpnInputRef = inputRef;
+  const lotCodeInputRef = inputRef;
+
+  useEffect(() => {
+    if (session?.status !== "active" || activeTab !== "loading") {
+      return;
+    }
+
+    const focusMap: Record<ScanStep, React.RefObject<HTMLInputElement | null>> = {
+      feeder: feederInputRef,
+      spool: mpnInputRef,
+      lot: lotCodeInputRef,
+    };
+
+    const t = setTimeout(() => {
+      focusMap[scanStep]?.current?.focus();
+    }, 80);
+    return () => clearTimeout(t);
+  }, [activeTab, feederInputRef, lotCodeInputRef, mpnInputRef, scanStep, session?.status]);
+
+  useEffect(() => {
+    return () => {
+      if (autoAdvanceTimer) {
+        clearTimeout(autoAdvanceTimer);
+      }
+    };
+  }, [autoAdvanceTimer]);
+
+  useEffect(() => {
+    if (session?.startTime) {
+      const start = new Date(session.startTime);
+      const timer = setInterval(() => {
+        const end = session.endTime ? new Date(session.endTime) : new Date();
+        setElapsed(differenceInSeconds(end, start));
+      }, 500);
+      return () => clearInterval(timer);
+    }
+  }, [session?.startTime, session?.endTime]);
+
+  // Show notification for errors
+  useEffect(() => {
+    if (lastScanResult && lastScanResult.status === "reject") {
+      const signature = `${lastScanResult.feeder}::${lastScanResult.msg}`;
+      if (lastNotifiedRef.current === signature) {
+        return;
+      }
+      lastNotifiedRef.current = signature;
+
+      const msgLower = lastScanResult.msg.toLowerCase();
+      if (msgLower.includes("error") || msgLower.includes("failed")) {
+        showErrorAlert(lastScanResult.msg);
+      } else if (msgLower.includes("warning")) {
+        showWarningAlert(lastScanResult.msg);
+      }
+    }
+  }, [lastScanResult, showErrorAlert, showWarningAlert]);
+
+  const flashBg = (status: "ok" | "reject" | "splice") => {
+    const bg = document.getElementById("scan-flash-bg");
+    if (bg) {
+      bg.classList.remove("flash-green", "flash-red");
+      void bg.offsetWidth;
+      if (status === "ok" || status === "splice") bg.classList.add("flash-green");
+      else bg.classList.add("flash-red");
+    }
+  };
+
+  const mirrorVerificationResult = (feederId: string, scannedValue: string, sourcePartNumber?: string | null) => {
+    const bomEntry = useVerificationStore.getState().getBOMEntry(feederId);
+    const normalizedValue = scannedValue.trim().toUpperCase();
+    const matchedAlternative =
+      bomEntry?.alternatives.find(
+        (alt) => alt.mpn.toUpperCase() === normalizedValue || alt.partId.toUpperCase() === normalizedValue,
+      ) || {
+        mpn: normalizedValue || (sourcePartNumber || feederId).trim().toUpperCase(),
+        partId: normalizedValue || feederId,
+        description: sourcePartNumber || feederId,
+      };
+
+    upsertVerifiedFeeder({
+      feederId: feederId.trim().toUpperCase(),
+      mpn: matchedAlternative.mpn,
+      partId: matchedAlternative.partId,
+      lotCode: undefined,
+      scannedAt: new Date(),
+      status: "verified",
+      matchedAlternative,
+    });
+  };
+
+  const mirrorSpliceResult = (feederId: string, oldSpoolMPN: string, newSpoolMPN: string) => {
+    appendSpliceRecord({
+      feederId: feederId.trim().toUpperCase(),
+      oldSpoolMPN: oldSpoolMPN.trim().toUpperCase(),
+      newSpoolMPN: newSpoolMPN.trim().toUpperCase(),
+      splicedAt: new Date(),
+      verifiedAgainstBOM: true,
+    });
+  };
+
+  const handleVerifyPendingScan = async () => {
+    if (!pendingVerification || verificationLocked) return;
+    
+    // Check for single-entry violation
+    if (lastVerificationTime) {
+      const timeDiff = Date.now() - lastVerificationTime;
+      if (timeDiff < 5000) { // Within 5 seconds = same verification attempt
+        setLastScanResult({
+          status: "reject",
+          feeder: pendingVerification.feederNumber,
+          msg: "❌ ERROR: Single-entry violation detected! Wait before next scan.",
+        });
+        return;
+      }
+    }
+
+    setVerificationInProgress(true);
+    setVerificationLocked(true);
+
+    try {
+      await scanFeeder.mutateAsync({
+        sessionId,
+        data: {
+          sessionId,
+          feederNumber: pendingVerification.feederNumber,
+          mpnOrInternalId: pendingVerification.mpnOrInternalId || undefined,
+          lotCode: pendingVerification.lotCode || undefined,
+          internalIdType: pendingVerification.internalIdType,
+          verificationMode: "MANUAL",
+          selectedItemId: pendingVerification.selectedItemId,
+        },
+      });
+      showSuccessAlert(`MPN matched successfully for feeder ${pendingVerification.feederNumber}.`);
+      mirrorVerificationResult(
+        pendingVerification.feederNumber,
+        pendingVerification.mpnOrInternalId || pendingVerification.partNumber || pendingVerification.feederNumber,
+        pendingVerification.partNumber,
+      );
+      
+      setSplicingPhaseActive(true);
+      setLastVerificationTime(Date.now());
+      setPendingVerification(null);
+      setScanStep("feeder");
+      setPendingFeeder("");
+      setPendingMpnScan("");
+      setPendingScanDuration(undefined);
+      setScanInput("");
+      setInternalIdInput("");
+      setCaseConverted(false);
+      setPendingAvailableOptions(null);
+      setSelectedItemIdForScan(null);
+      queryClient.invalidateQueries({ queryKey: getGetSessionQueryKey(sessionId) });
+    } catch (err: any) {
+      setLastScanResult({
+        status: "reject",
+        feeder: pendingVerification.feederNumber,
+        msg: err?.message || "Verification failed",
+      });
+      showErrorAlert(`MPN mismatch for feeder ${pendingVerification.feederNumber}. ${err?.message || "Verification failed"}`, "high");
+    } finally {
+      setVerificationInProgress(false);
+      setVerificationLocked(false);
+    }
+  };
+
+  const clearScanInput = () => {
+    setScanInput("");
+    resetAutoScan();
+    scanningRef.current = false;
+    setScanning(false);
+    setVerificationInProgress(false);
+    setVerificationLocked(false);
+  };
+
+  const handlePrimaryInputKeyDown = async (e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (e.key !== "Enter") {
+      return;
+    }
+
+    e.preventDefault();
+
+    if (scanStep !== "lot") {
+      return;
+    }
+
+    if (scanningRef.current) {
+      return;
+    }
+
+    const val = scanInput.trim();
+
+    if (needsAlternateSelection) {
+      await handleScanBarcode("");
+      return;
+    }
+
+    // Lot code is explicitly enter/skip-driven (empty Enter means skip)
+    if (scanStep === "lot" && !val) {
+      await handleScanBarcode("");
+      return;
+    }
+
+    if (!val) {
+      return;
+    }
+
+    await handleScanBarcode(val);
+  };
+
+  const handleScanSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    logger.debug('[FORM SUBMIT]', { value: scanInput, scanStep, sessionId });
+
+    if (scanStep !== "lot") {
+      return;
+    }
+
+    if (scanningRef.current) {
+      logger.debug('[FORM SUBMIT BLOCKED] scanningRef.current true');
+      return;
+    }
+    const val = scanInput.trim();
+
+    if (needsAlternateSelection) {
+      await handleScanBarcode("");
+      return;
+    }
+    
+    // Lot code is explicitly enter/skip-driven (no auto-submit)
+    if (scanStep === "lot" && !val) {
+      await handleScanBarcode("");
+      return;
+    }
+    
+    if (!val) {
+      return;
+    }
+    await handleScanBarcode(val);
+  };
+
+  // New helper for auto-mode submission
+  const handleAutoModeSubmit = async (mpnScanned: string, duration?: number, lotCode?: string) => {
+    if (verificationInProgress) return;
+    setVerificationInProgress(true);
+
+    try {
+      const res = await scanFeeder.mutateAsync({
+        sessionId,
+        data: {
+          sessionId,
+          feederNumber: pendingFeeder,
+          mpnOrInternalId: mpnScanned || undefined,
+          lotCode: lotCode || undefined,
+          internalIdType,
+          verificationMode: "AUTO",
+          selectedItemId: selectedItemIdForScan || undefined,
+        },
+      });
+
+      setLastScanResult({
+        status: res.status as "ok" | "reject",
+        feeder: pendingFeeder,
+        msg: res.message + (duration ? ` (${formatDuration(duration)})` : ""),
+      });
+
+      if (res.status === "ok") {
+        showSuccessAlert(`MPN matched successfully for feeder ${pendingFeeder}.`);
+        playBuzzer("success");
+        mirrorVerificationResult(pendingFeeder, mpnScanned, pendingAvailableOptions?.primary?.[0]?.partNumber);
+        setSplicingPhaseActive(true);
+        clearScanInput();
+        setPendingFeeder("");
+        setFeederScanTime(null);
+        setScanStep("feeder");
+        setPendingMpnScan("");
+        setPendingScanDuration(undefined);
+        setPendingAvailableOptions(null);
+        setSelectedItemIdForScan(null);
+        setInternalIdInput("");
+        setCaseConverted(false);
+        setIsDuplicate(false);
+        setLastVerificationTime(Date.now());
+        queryClient.invalidateQueries({ queryKey: getGetSessionQueryKey(sessionId) });
+
+        focusNextFrame(inputRef);
+      } else {
+        showErrorAlert(`MPN mismatch for feeder ${pendingFeeder}. ${res.message}`, "high");
+        playBuzzer("error");
+        clearScanInput();
+      }
+    } catch (err: any) {
+      setLastScanResult({
+        status: "reject",
+        feeder: pendingFeeder,
+        msg: err?.message || "Verification failed",
+      });
+      showErrorAlert(`MPN verification failed for feeder ${pendingFeeder}. ${err?.message || "Unknown error"}`, "high");
+    } finally {
+      setVerificationInProgress(false);
+      scanningRef.current = false;
+      setScanning(false);
+    }
+  };
+
+  function handleSpliceValue(rawValue: string) {
+    const val = rawValue.trim();
+    if (!val) return;
+
+    if (spliceStep === "feeder") {
+      const normalizedFeederNumber = val.trim().toUpperCase();
+      const bomItems = bomDetail?.items || [];
+
+      const feederExists = bomItems.some(
+        (item) => item.feederNumber.trim().toUpperCase() === normalizedFeederNumber
+      );
+      if (!feederExists) {
+        setLastScanResult({
+          status: "reject",
+          feeder: normalizedFeederNumber,
+          msg: `❌ ERROR: Feeder "${normalizedFeederNumber}" not found in BOM`,
+        });
+        setSpliceInput("");
+        showErrorAlert(
+          `Feeder "${normalizedFeederNumber}" does not exist in the loaded BOM.\n\nPlease check the feeder number and try again.`,
+          "high"
+        );
+        return;
+      }
+
+      const feederWasScanned = session?.scans.some(
+        (scan) => scan.feederNumber === normalizedFeederNumber && scan.status === "ok"
+      );
+      if (!feederWasScanned) {
+        setLastScanResult({
+          status: "reject",
+          feeder: normalizedFeederNumber,
+          msg: `⚠️ WARNING: Feeder "${normalizedFeederNumber}" has not been verified yet`,
+        });
+        setSpliceInput("");
+        showWarningAlert(
+          `Feeder "${normalizedFeederNumber}" has not been successfully verified yet.\n\nPlease verify the feeder in the LOADING section first before splicing.`,
+          "high"
+        );
+        return;
+      }
+
+      setSplicePendingFeeder(normalizedFeederNumber);
+      setSpliceStartTime(Date.now());
+      setSpliceInput("");
+      setSpliceStep("oldSpool");
+      return;
+    }
+
+    if (spliceStep === "oldSpool") {
+      if (!val.trim()) {
+        showErrorAlert("Old spool barcode cannot be empty.", "medium");
+        return;
+      }
+      setSplicePendingOldSpool(val.trim().toUpperCase());
+      setSpliceInput("");
+      setSpliceStep("newSpool");
+      return;
+    }
+
+    if (spliceStep === "newSpool") {
+      if (!val.trim()) {
+        showErrorAlert("New spool barcode cannot be empty.", "medium");
+        return;
+      }
+      if (val.trim().toUpperCase() !== splicePendingOldSpool) {
+        showErrorAlert(
+          "New spool barcode must be the same as old spool barcode for this feeder.",
+          "high"
+        );
+        return;
+      }
+
+      const durationSeconds = spliceStartTime ? Math.round((Date.now() - spliceStartTime) / 1000) : undefined;
+      spliceAutoScanLockedRef.current = true;
+      recordSplice.mutate({
+        sessionId,
+        data: {
+          feederNumber: splicePendingFeeder,
+          operatorId: user?.name || "unknown",
+          oldSpoolBarcode: splicePendingOldSpool,
+          newSpoolBarcode: val,
+          durationSeconds,
+        },
+      }, {
+        onSuccess: () => {
+          mirrorSpliceResult(splicePendingFeeder, splicePendingOldSpool, val);
+          setLastScanResult({
+            status: "splice",
+            feeder: splicePendingFeeder,
+            msg: `Splice complete on feeder ${splicePendingFeeder}` + (durationSeconds ? ` in ${durationSeconds}s` : ""),
+          });
+          setSpliceInput("");
+          setSplicePendingFeeder("");
+          setSplicePendingOldSpool("");
+          setSpliceStartTime(null);
+          setSpliceStep("feeder");
+          spliceAutoScanLockedRef.current = false;
+          queryClient.invalidateQueries({ queryKey: getListSplicesQueryKey(sessionId) });
+          flashBg("splice");
+        },
+        onError: (err: any) => {
+          setLastScanResult({ status: "reject", feeder: splicePendingFeeder, msg: err?.message || "Splice failed" });
+          setSpliceInput("");
+          setSplicePendingFeeder("");
+          setSplicePendingOldSpool("");
+          setSpliceStep("feeder");
+          spliceAutoScanLockedRef.current = false;
+          flashBg("reject");
+        },
+      });
+    }
+  }
+
+  const handleSpliceSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    handleSpliceValue(spliceInput);
+  };
+
+  const cancelSplice = () => {
+    resetSpliceAutoScan();
+    setSpliceInput("");
+    setSplicePendingFeeder("");
+    setSplicePendingOldSpool("");
+    setSpliceStep("feeder");
+    setSpliceStartTime(null);
+  };
+
+  const handleEndSession = () => {
+    if (confirm("End this verification session?")) {
+      updateSession.mutate(
+        { sessionId, data: { status: "completed", endTime: new Date().toISOString() } },
+        {
+          onSuccess: () => {
+            queryClient.invalidateQueries({ queryKey: getGetSessionQueryKey(sessionId) });
+            setLocation(`/session/${sessionId}/report`);
+          },
+        }
+      );
+    }
+  };
+
+  const handleCancelSession = () => {
+    if (
+      confirm(
+        "CANCEL this session? This will discard all scans and mark it as cancelled.\n\nThis action cannot be undone. Continue?"
+      )
+    ) {
+      updateSession.mutate(
+        { sessionId, data: { status: "cancelled", endTime: new Date().toISOString() } },
+        {
+          onSuccess: () => {
+            queryClient.invalidateQueries({ queryKey: getGetSessionQueryKey(sessionId) });
+            setLocation("/sessions");
+          },
+          onError: (err: any) => {
+            alert(`Failed to cancel session: ${err?.message || "Unknown error"}`);
+          },
+        }
+      );
+    }
+  };
+
+  const requiredFeedsVerifiedCount = verificationProgress.verifiedCount;
+  const totalRequiredFeeders = verificationProgress.totalRequired;
+  const allRequiredFeedersVerified = verificationProgress.isComplete;
+
+  useEffect(() => {
+    if (
+      session?.status === "active" &&
+      allRequiredFeedersVerified &&
+      !wasAllRequiredVerifiedRef.current
+    ) {
+      setShowCompletionOverlay(true);
+    }
+
+    wasAllRequiredVerifiedRef.current = allRequiredFeedersVerified;
+  }, [allRequiredFeedersVerified, session?.status]);
+
+  if (sessionLoading || (session?.bomId && bomLoading) || !session) {
+    return <div className="flex-1 flex items-center justify-center"><Loader2 className="w-8 h-8 animate-spin" /></div>;
+  }
+
+  // Calculate required feeders (those with at least one non-alternate component)
+  const requiredFeeders = new Set<string>();
+  bomDetail?.items.forEach((item) => {
+    if (!item.isAlternate) {
+      requiredFeeders.add(item.feederNumber);
+    }
+  });
+  
+  const okScans = verificationScans;
+
+  const uniqueOkScans = new Set(okScans.map((s) => s.feederId)).size;
+  const totalBomItems = bomDetail?.items.length || 0;
+
+  const handleResetSessionState = async () => {
+    // Call backend to delete scan records from database
+    try {
+      const response = await fetch(`/api/sessions/${sessionId}/scans`, {
+        method: "DELETE",
+        credentials: "include",
+      });
+      if (response.ok) {
+        await response.json();
+      } else {
+        console.error("Failed to clear scan records:", await response.text());
+      }
+    } catch (err) {
+      console.error("Error clearing scan records:", err);
+    }
+
+    clearNotifications();
+    clearLogs();
+    resetVerificationState();
+    clearSplicingRecords();
+    addLog({
+      type: "warning",
+      message: `Session ${sessionId} scanner state reset by operator.`,
+      details: {
+        sessionId: String(sessionId),
+      },
+    });
+
+    // Clear all scan-related state
+    setScanStep("feeder");
+    setPendingFeeder("");
+    setFeederScanTime(null);
+    setInternalIdInput("");
+    setPendingMpnScan("");
+    setPendingScanDuration(undefined);
+    setCaseConverted(false);
+    setIsDuplicate(false);
+    setPendingAvailableOptions(null);
+    setSelectedItemIdForScan(null);
+    setNeedsAlternateSelection(false);
+    setPendingVerification(null);
+    
+    // Clear verification flags and refs
+    setVerificationLocked(false);
+    setVerificationInProgress(false);
+    scanningRef.current = false;
+    
+    // Clear splicing-related state
+    setSpliceStep("feeder");
+    setSplicePendingFeeder("");
+    setSplicePendingOldSpool("");
+    setSpliceStartTime(null);
+    setSpliceInput("");
+    setSplicingPhaseActive(false);
+    resetSpliceAutoScan();
+    
+    // Clear UI state
+    setLastScanResult(null);
+    setScanInput("");
+    setShowCompletionOverlay(false);
+    setActiveTab("loading");
+    lastNotifiedRef.current = "";
+    
+    // Focus input for next scan
+    focusNextFrame(inputRef);
+    
+    playBuzzer("success");
+    showWarningAlert("Session scanner state has been reset.", "medium");
+  };
+
+  const feederStatusMap: Record<string, "ok" | "reject" | "pending"> = {};
+  bomDetail?.items.forEach((item) => {
+    const okScan = session.scans.find((s) => s.feederNumber === item.feederNumber && s.status === "ok");
+    if (okScan) {
+      feederStatusMap[item.feederNumber] = "ok";
+    } else {
+      const rejectScan = session.scans.find((s) => s.feederNumber === item.feederNumber && s.status === "reject");
+      feederStatusMap[item.feederNumber] = rejectScan ? "reject" : "pending";
+    }
+  });
+
+  // === ENHANCED: Group items by feeder for display (primary with alternates) ===
+  const feederGroups: Record<string, { primary: any; alternates: any[] }> = {};
+  bomDetail?.items.forEach((item) => {
+    if (!feederGroups[item.feederNumber]) {
+      feederGroups[item.feederNumber] = { primary: null, alternates: [] };
+    }
+    if (!item.isAlternate) {
+      feederGroups[item.feederNumber].primary = item;
+    } else {
+      feederGroups[item.feederNumber].alternates.push(item);
+    }
+  });
+
+  // Create array of feeder groups, filtering to only show required feeders in main list
+  const feederGroupArray = Object.entries(feederGroups)
+    .filter(([feederNum]) => requiredFeeders.has(feederNum))
+    .map(([feederNum, group]) => ({ feederNum, ...group }))
+    .sort((a, b) => a.feederNum.localeCompare(b.feederNum));
+
+  const spliceStepLabels: Record<SpliceStep, string> = {
+    feeder: "STEP 1 / 3 — Scan FEEDER NUMBER",
+    oldSpool: `STEP 2 / 3 — Scan OLD SPOOL barcode (Feeder: ${splicePendingFeeder})`,
+    newSpool: `STEP 3 / 3 — Scan NEW SPOOL barcode (Feeder: ${splicePendingFeeder})`,
+  };
+
+  const getScanStepLabel = () => {
+    if (needsAlternateSelection) {
+      return `SELECT COMPONENT for ${pendingFeeder} — Click primary or alternate, then press ENTER`;
+    }
+    if (scanStep === "feeder") {
+      return verificationMode === "AUTO" 
+        ? "STEP 1 — Scan FEEDER NUMBER (Auto-Advance)" 
+        : "STEP 1 / 2 — Scan FEEDER NUMBER";
+    }
+    if (scanStep === "spool") {
+      const stepLabel = verificationMode === "AUTO" 
+        ? "STEP 2 (Auto-Submit)" 
+        : "STEP 2 / 3";
+      return `${stepLabel} — Scan MPN / INTERNAL ID or press ENTER to skip (Feeder: ${pendingFeeder})`;
+    }
+    const stepLabel = verificationMode === "AUTO"
+      ? "STEP 3 — Enter LOT CODE (Enter/Skip)"
+      : "STEP 3 / 3 — Enter LOT CODE (Enter/Skip)";
+    return `${stepLabel} (Feeder: ${pendingFeeder})`;
+  };
+
+  return (
+    <div id="scan-flash-bg" className="min-h-screen w-full flex flex-col transition-colors duration-1000 bg-background overflow-y-auto">
+      <style>{`
+        /* Radix UI ScrollArea scrollbars styling */
+        [data-radix-scroll-area-viewport] {
+          scrollbar-width: auto;
+        }
+        /* Webkit browsers (Chrome, Safari, Edge) */
+        [data-radix-scroll-area-viewport]::-webkit-scrollbar {
+          width: 12px;
+          height: 12px;
+        }
+        [data-radix-scroll-area-viewport]::-webkit-scrollbar-track {
+          background: hsl(var(--muted) / 0.3);
+          border-radius: 6px;
+        }
+        [data-radix-scroll-area-viewport]::-webkit-scrollbar-thumb {
+          background: hsl(var(--muted-foreground));
+          border-radius: 6px;
+          border: 2px solid transparent;
+          background-clip: padding-box;
+        }
+        [data-radix-scroll-area-viewport]::-webkit-scrollbar-thumb:hover {
+          background: hsl(var(--foreground));
+          background-clip: padding-box;
+        }
+        /* Horizontal scrollbar styling */
+        [data-radix-scroll-area-viewport]::-webkit-scrollbar-corner {
+          background: hsl(var(--muted) / 0.3);
+        }
+      `}</style>
+
+      <div className="relative mx-auto max-w-screen-2xl space-y-4 px-4 py-4 md:px-6">
+        {/* Decorative background blobs */}
+        <div className="pointer-events-none fixed inset-0 overflow-hidden">
+          <div className="absolute -left-24 top-[-6rem] h-72 w-72 rounded-full bg-amber-500/10 blur-3xl" />
+          <div className="absolute right-[-5rem] top-24 h-80 w-80 rounded-full bg-slate-500/10 blur-3xl" />
+          <div className="absolute bottom-[-8rem] left-1/2 h-96 w-96 -translate-x-1/2 rounded-full bg-emerald-500/10 blur-3xl" />
+        </div>
+
+        {/* Header - Responsive */}
+        <header className="bg-card border-b border-border p-2 sm:p-3 lg:p-4 flex flex-col sm:flex-row justify-between items-start sm:items-center gap-2 sm:gap-4 shrink-0 shadow-sm z-10 relative">
+          <div className="flex items-center gap-2 sm:gap-3 min-w-0">
+            <AppLogo className="h-8 sm:h-10" />
+            <div className="grid grid-cols-2 lg:grid-cols-4 gap-x-2 sm:gap-x-4 lg:gap-x-8 gap-y-1 sm:gap-y-2 text-xs sm:text-sm min-w-0">
+              <div className="truncate"><span className="text-muted-foreground font-medium text-xs">PANEL:</span> <span className="font-bold text-primary ml-1 truncate block">{session.panelName}</span></div>
+              <div className="truncate"><span className="text-muted-foreground font-medium text-xs">BOM:</span> <span className="font-bold ml-1 truncate block">{session.bomName || session.bomId}</span></div>
+              <div className="hidden sm:block truncate"><span className="text-muted-foreground font-medium text-xs">OP:</span> <span className="font-bold ml-1 truncate block">{session.operatorName}</span></div>
+              <div className="hidden lg:block truncate"><span className="text-muted-foreground font-medium text-xs">SHIFT:</span> <span className="font-bold ml-1 truncate block">{session.shiftName}</span></div>
+            </div>
+          </div>
+          <div className="flex items-center gap-2 sm:gap-4 ml-auto sm:ml-0 w-full sm:w-auto justify-between sm:justify-end">
+            <div className="flex items-center gap-2">
+              {session?.bomId === 0 && (
+                <div className="px-2 py-1 sm:px-3 sm:py-1.5 bg-amber-100 dark:bg-amber-900/30 border border-amber-300 dark:border-amber-700 rounded-sm text-xs sm:text-sm font-bold text-amber-800 dark:text-amber-400">
+                  FREE SCAN
+                </div>
+              )}
+            </div>
+            <div className="text-right flex flex-col items-end">
+              <div className="text-muted-foreground text-xs font-bold tracking-wider">TIME</div>
+              <div className="text-lg sm:text-2xl font-mono font-black tracking-widest">{formatElapsed(elapsed)}</div>
+            </div>
+            {session.status === "active" ? (
+              <div className="flex gap-1 sm:gap-2 flex-col-reverse sm:flex-row">
+                <Button
+                  variant="secondary"
+                  className="font-bold tracking-widest text-xs sm:text-sm py-1 sm:py-2 px-2 sm:px-4 h-auto"
+                  onClick={() => window.open(`/api/sessions/${sessionId}/report/pdf`, "_blank")}
+                >
+                  📄 PDF
+                </Button>
+                <Button
+                  variant="outline"
+                  className="font-bold tracking-widest text-xs sm:text-sm py-1 sm:py-2 px-2 sm:px-4 h-auto"
+                  onClick={() => setShowResetDialog(true)}
+                >
+                  RESET
+                </Button>
+                <Button
+                  variant="secondary"
+                  className="font-bold tracking-widest text-xs sm:text-sm py-1 sm:py-2 px-2 sm:px-4 h-auto"
+                  onClick={() => setShowHandoverModal(true)}
+                >
+                  ⇄ H/O
+                </Button>
+                <Button
+                  variant="secondary"
+                  className="font-bold tracking-widest text-xs sm:text-sm py-1 sm:py-2 px-2 sm:px-4 h-auto"
+                  onClick={clearScanInput}
+                >
+                  UNLOCK
+                </Button>
+                <Button variant="destructive" className="font-bold tracking-widest text-xs sm:text-sm py-1 sm:py-2 px-2 sm:px-4 h-auto" onClick={handleEndSession}>
+                  END
+                </Button>
+                <Button
+                  variant="outline"
+                  className="font-bold tracking-widest border-destructive text-destructive hover:bg-destructive hover:text-destructive-foreground text-xs sm:text-sm py-1 sm:py-2 px-2 sm:px-3 h-auto"
+                  onClick={handleCancelSession}
+                >
+                  <X className="w-3 h-3 sm:w-4 sm:h-4" />
+                </Button>
+              </div>
+            ) : (
+              <div className="flex gap-2">
+                <Button
+                  variant="secondary"
+                  className="font-bold tracking-widest text-xs sm:text-sm py-1 sm:py-2 px-2 sm:px-4 h-auto"
+                  onClick={() => window.open(`/api/sessions/${sessionId}/report/pdf`, "_blank")}
+                >
+                  📄 PDF
+                </Button>
+                <Button asChild className="font-bold tracking-widest text-xs sm:text-sm py-1 sm:py-2 px-2 sm:px-4 h-auto">
+                  <Link href={`/session/${session.id}/report`}>REPORT</Link>
+                </Button>
+              </div>
+            )}
+          </div>
+        </header>
+
+        {/* Tab Navigation */}
+        {isSpliceEligible && (
+          <div className="bg-card border-b border-border flex gap-1 p-2 sm:p-3 shrink-0 shadow-sm">
+            <Button
+              type="button"
+              variant={activeTab === "loading" ? "default" : "outline"}
+              className="flex-1 sm:flex-none px-4 sm:px-6 h-9 sm:h-10 font-semibold text-xs sm:text-sm"
+              onClick={() => setActiveTab("loading")}
+            >
+              📦 LOADING (
+              <span className="font-bold text-primary ml-1">
+                {requiredFeedsVerifiedCount} / {totalRequiredFeeders}
+              </span>
+              )
+            </Button>
+            <Button
+              type="button"
+              variant={activeTab === "splicing" ? "default" : "outline"}
+              className={`flex-1 sm:flex-none px-4 sm:px-6 h-9 sm:h-10 font-semibold text-xs sm:text-sm ${
+                !allRequiredFeedersVerified ? "opacity-50 cursor-not-allowed" : ""
+              }`}
+              onClick={() => {
+                if (allRequiredFeedersVerified) {
+                  setActiveTab("splicing");
+                }
+              }}
+              disabled={!allRequiredFeedersVerified}
+              title={!allRequiredFeedersVerified ? "Complete all required feeder verification first" : ""}
+            >
+              ✂️ SPLICING
+              {!allRequiredFeedersVerified && (
+                <span className="ml-2 text-xs font-medium">({totalRequiredFeeders - requiredFeedsVerifiedCount} remaining)</span>
+              )}
+            </Button>
+            <div className="flex items-center pl-2">
+              <Button
+                type="button"
+                variant={useGuidedSplice ? "default" : "outline"}
+                className="px-3 py-1 h-9 sm:h-10 text-xs sm:text-sm"
+                onClick={() => setUseGuidedSplice((v) => !v)}
+                title="Toggle guided splicing UI"
+              >
+                {useGuidedSplice ? "Guided" : "Legacy"}
+              </Button>
+            </div>
+          </div>
+        )}
+
+        <div className="flex gap-4 overflow-hidden max-w-[calc(100vw-1rem)]">
+          {/* Left column - Main content */}
+          <div className="flex-1 min-w-0 space-y-6 overflow-y-auto">
+
+            {session.status === "active" && activeTab === "loading" && (
+            <>
+              <div className="flex justify-end">
+                <ModeToggle
+                  currentMode={verificationMode}
+                  onModeChange={handleVerificationModeChange}
+                  sessionId={String(sessionId)}
+                  sessionStartedAt={session.startedAt || ""}
+                />
+              </div>
+
+              <div
+                className="inline-flex items-center gap-2 rounded-full px-3 py-1 text-xs sm:text-sm font-bold tracking-widest"
+                style={{
+                  border: `1px solid ${verificationMode === "AUTO" ? "#93C5FD" : "#FCD34D"}`,
+                  color: verificationMode === "AUTO" ? "#1D4ED8" : "#B45309",
+                  background: verificationMode === "AUTO" ? "rgba(59, 130, 246, 0.08)" : "rgba(245, 158, 11, 0.08)",
+                }}
+              >
+                {verificationMode === "AUTO" ? "⚡ AUTO — STRICT" : "🔒 MANUAL MODE"}
+              </div>
+
+              {/* Pending Verification Alert */}
+              {pendingVerification && verificationMode === "MANUAL" && (
+                <div className="bg-blue-50 dark:bg-blue-950 border-2 border-blue-400 p-3 sm:p-4 rounded-lg space-y-3">
+                  <div className="text-sm font-semibold text-blue-900 dark:text-blue-100">⏳ MANUAL VERIFICATION PENDING</div>
+                  
+                  {/* Feeder Info */}
+                  <div className="bg-white dark:bg-blue-900/20 p-2 rounded border border-blue-200 dark:border-blue-700">
+                    <p className="text-xs text-blue-600 dark:text-blue-300 font-bold">FEEDER NUMBER:</p>
+                    <p className="text-sm sm:text-base font-mono font-bold text-blue-900 dark:text-blue-100">
+                      {pendingVerification.feederNumber}
+                      {caseConverted && <span className="text-orange-600 dark:text-orange-400 text-xs ml-2">(AUTO-UPPERCASE)</span>}
+                    </p>
+                    {pendingVerification.partNumber && (
+                      <p className="text-xs text-blue-700 dark:text-blue-200 mt-1">Part: {pendingVerification.partNumber}</p>
+                    )}
+                  </div>
+
+                  {/* MPN / Internal ID Info */}
+                  {pendingVerification.mpnOrInternalId && (
+                    <div className="bg-white dark:bg-blue-900/20 p-2 rounded border border-blue-200 dark:border-blue-700">
+                      <p className="text-xs text-blue-600 dark:text-blue-300 font-bold">
+                        {pendingVerification.internalIdType === "mpn" ? "MPN / PART NUMBER" : "INTERNAL ID"}:
+                      </p>
+                      <p className="text-sm sm:text-base font-mono font-bold text-blue-900 dark:text-blue-100">
+                        {pendingVerification.mpnOrInternalId}
+                        {pendingVerification.caseConverted && <span className="text-orange-600 dark:text-orange-400 text-xs ml-2">(AUTO-UPPERCASE)</span>}
+                      </p>
+                    </div>
+                  )}
+
+                  <Button
+                    className="w-full bg-white text-navy border-navy border-2 hover:bg-gray-50 font-bold"
+                    onClick={() => handleVerifyPendingScan()}
+                    disabled={verificationLocked || verificationInProgress}
+                  >
+                    ✓ VERIFY & CONFIRM ENTRY
+                  </Button>
+                </div>
+              )}
+
+              {/* SCAN MODE - Primary Section */}
+              <div className="bg-card border-2 border-primary/50 p-2 sm:p-4 lg:p-8 rounded-xl shadow-[0_0_20px_rgba(var(--primary),0.1)]">
+                <form onSubmit={handleScanSubmit} className="flex flex-col items-center gap-2 sm:gap-3 lg:gap-6">
+                  <Label className="text-xs sm:text-sm lg:text-lg xl:text-xl tracking-widest text-primary flex items-center gap-1 sm:gap-2 font-black uppercase text-center line-clamp-2">
+                    <ScanLine className="w-3 h-3 sm:w-4 sm:h-4 lg:w-5 lg:h-5 xl:w-6 xl:h-6 flex-shrink-0" />
+                    {getScanStepLabel()}
+                  </Label>
+                  
+                  {/* Alternate Selector */}
+                  {needsAlternateSelection && pendingAvailableOptions && (
+                    <div className="w-full max-w-lg">
+                      <AlternateSelector
+                        feederNumber={pendingFeeder}
+                        primaryOptions={pendingAvailableOptions.primary}
+                        alternateOptions={pendingAvailableOptions.alternates}
+                        selectedId={selectedItemIdForScan || undefined}
+                        onSelect={setSelectedItemIdForScan}
+                        isLoading={scanFeeder.isPending}
+                      />
+                    </div>
+                  )}
+
+                  <div
+                    className="inline-flex items-center gap-2 rounded-full px-3 py-1 text-xs font-bold tracking-widest"
+                    style={{
+                      border: `1px solid ${verificationMode === "AUTO" ? "#93C5FD" : "#FCD34D"}`,
+                      color: verificationMode === "AUTO" ? "#1D4ED8" : "#B45309",
+                      background: verificationMode === "AUTO" ? "rgba(59, 130, 246, 0.08)" : "rgba(245, 158, 11, 0.08)",
+                    }}
+                  >
+                    {verificationMode === "AUTO" ? "⚡ AUTO — STRICT" : "🔒 MANUAL MODE"}
+                  </div>
+
+                  <div className="w-full flex gap-0.5 sm:gap-1 lg:gap-2 items-center justify-center min-h-12 sm:min-h-14 lg:min-h-16">
+                    {(scanStep === "spool" || scanStep === "lot") && !needsAlternateSelection && !pendingVerification && (
+                      <Button type="button" variant="ghost" size="icon" className="shrink-0 h-10 sm:h-12 lg:h-14 xl:h-16 w-10 sm:w-12 lg:w-14 xl:w-16" onClick={() => { setScanStep("feeder"); setPendingFeeder(""); setFeederScanTime(null); setScanInput(""); setNeedsAlternateSelection(false); setPendingAvailableOptions(null); setSelectedItemIdForScan(null); setInternalIdInput(""); setPendingMpnScan(""); setPendingScanDuration(undefined); setCaseConverted(false); }}>
+                        <ArrowLeft className="w-3 h-3 sm:w-4 sm:h-4 lg:w-5 lg:h-5 xl:w-6 xl:h-6" />
+                      </Button>
+                    )}
+                    {needsAlternateSelection && (
+                      <Button type="button" variant="ghost" size="icon" className="shrink-0 h-10 sm:h-12 lg:h-14 xl:h-16 w-10 sm:w-12 lg:w-14 xl:w-16" onClick={() => { setScanStep("feeder"); setPendingFeeder(""); setFeederScanTime(null); setScanInput(""); setNeedsAlternateSelection(false); setPendingAvailableOptions(null); setSelectedItemIdForScan(null); setInternalIdInput(""); setCaseConverted(false); }}>
+                        <ArrowLeft className="w-3 h-3 sm:w-4 sm:h-4 lg:w-5 lg:h-5 xl:w-6 xl:h-6" />
+                      </Button>
+                    )}
+                    {!pendingVerification && (
+                      <Input
+                        ref={inputRef}
+                        value={scanInput}
+                        onChange={(e) => setScanInput(e.target.value)}
+                        onKeyDown={handlePrimaryInputKeyDown}
+                        className="flex-1 text-center text-2xl sm:text-3xl lg:text-4xl xl:text-5xl h-14 sm:h-16 lg:h-20 xl:h-24 font-mono tracking-[0.15em] sm:tracking-[0.2em] bg-background border-2 border-border focus-visible:border-primary rounded-lg shadow-inner text-xs sm:text-sm"
+                        placeholder={needsAlternateSelection ? "Press ENTER..." : (scanStep === "feeder" ? "SCAN FEEDER..." : scanStep === "spool" ? (verificationMode === "AUTO" ? "SCAN MPN/ID" : "SCAN MPN/ID...") : "SCAN LOT CODE (ENTER=SKIP)")}
+                        autoComplete="off"
+                      />
+                    )}
+                    {scanStep === "lot" && !needsAlternateSelection && !pendingVerification && (
+                      <Button
+                        type="button"
+                        variant="secondary"
+                        className="shrink-0 h-10 sm:h-12 lg:h-14 px-3 sm:px-4"
+                        onClick={() => handleScanBarcode("")}
+                      >
+                        Skip
+                      </Button>
+                    )}
+                  </div>
+                  {scanStep === "spool" && !needsAlternateSelection && !pendingVerification && (
+                    <div className="w-full space-y-1 sm:space-y-2">
+                      <div className="bg-slate-50 dark:bg-slate-900 border border-slate-300 dark:border-slate-700 p-1.5 sm:p-2 lg:p-3 rounded text-center">
+                        <p className="text-xs sm:text-sm text-muted-foreground line-clamp-2">Feeder <strong className="text-foreground font-mono">{pendingFeeder}</strong> selected</p>
+                      </div>
+                      
+                      <div className="bg-blue-50 dark:bg-blue-900/30 border border-blue-300 dark:border-blue-700 p-2 sm:p-3 rounded-lg">
+                        <p className="text-xs font-bold text-blue-900 dark:text-blue-100 mb-2">📝 STEP 2: MPN/INTERNAL ID</p>
+                        <p className="text-xs text-blue-800 dark:text-blue-200">
+                          • Scan the MPN or Internal ID for verification
+                        </p>
+                        <p className="text-xs text-blue-800 dark:text-blue-200">
+                          • Press <strong>ENTER</strong> to skip verification
+                        </p>
+                        <p className="text-xs text-blue-700 dark:text-blue-300 mt-2 italic">
+                          ⓘ Required MPN/Internal ID is enforced in both AUTO and MANUAL modes
+                        </p>
+                      </div>
+                    </div>
+                  )}
+                  {scanStep === "lot" && !needsAlternateSelection && !pendingVerification && (
+                    <div className="w-full space-y-1 sm:space-y-2">
+                      <div className="bg-slate-50 dark:bg-slate-900 border border-slate-300 dark:border-slate-700 p-1.5 sm:p-2 lg:p-3 rounded text-center">
+                        <p className="text-xs sm:text-sm text-muted-foreground line-clamp-2">Feeder <strong className="text-foreground font-mono">{pendingFeeder}</strong> selected</p>
+                      </div>
+
+                      <div className="bg-blue-50 dark:bg-blue-900/30 border border-blue-300 dark:border-blue-700 p-2 sm:p-3 rounded-lg">
+                        <p className="text-xs font-bold text-blue-900 dark:text-blue-100 mb-2">🏷️ STEP 3: LOT CODE</p>
+                        <p className="text-xs text-blue-800 dark:text-blue-200">
+                          • Scan lot code or press <strong>Skip</strong>
+                        </p>
+                        <p className="text-xs text-blue-800 dark:text-blue-200">
+                          • Press <strong>ENTER</strong> to submit value
+                        </p>
+                      </div>
+                    </div>
+                  )}
+                </form>
+              </div>
+            
+
+          {/* Feedback Area - Responsive */}
+          <div className="h-20 sm:h-24 lg:h-32 xl:h-40 flex items-center justify-center shrink-0">
+            {lastScanResult ? (
+              <div className={`w-full h-full flex flex-col items-center justify-center rounded-xl border-2 shadow-lg transition-all gap-1 sm:gap-2 p-2 sm:p-3 lg:p-4 ${
+                lastScanResult.status === "ok" ? "bg-green-50 dark:bg-green-950/30 border-green-500 text-green-700 dark:text-green-300" :
+                lastScanResult.status === "splice" ? "bg-amber-50 dark:bg-amber-950/30 border-amber-400 text-amber-600 dark:text-amber-400" :
+                lastScanResult.msg?.includes("ALREADY") || lastScanResult.msg?.includes("DUPLICATE") ? 
+                  "bg-orange-50 dark:bg-orange-950/30 border-orange-400 text-orange-700 dark:text-orange-300" :
+                "bg-red-50 dark:bg-red-950/30 border-red-500 text-red-700 dark:text-red-300"
+              }`}>
+                <div className="flex items-center gap-1 sm:gap-2 lg:gap-3">
+                  {lastScanResult.status === "ok" && <CheckCircle2 className="w-6 h-6 sm:w-8 sm:h-8 lg:w-10 lg:h-10" />}
+                  {lastScanResult.status === "splice" && <Scissors className="w-6 h-6 sm:w-8 sm:h-8 lg:w-10 lg:h-10" />}
+                  {lastScanResult.status === "reject" && (
+                    lastScanResult.msg?.includes("ALREADY") || lastScanResult.msg?.includes("DUPLICATE") ?
+                    <AlertCircle className="w-6 h-6 sm:w-8 sm:h-8 lg:w-10 lg:h-10" /> :
+                    <XCircle className="w-6 h-6 sm:w-8 sm:h-8 lg:w-10 lg:h-10" />
+                  )}
+                  <div className="text-lg sm:text-2xl lg:text-3xl xl:text-4xl font-black tracking-widest uppercase">
+                    {lastScanResult.status === "splice" ? "SPLICED" :
+                     lastScanResult.status === "ok" ? "PASS ✓" :
+                     lastScanResult.msg?.includes("ALREADY") || lastScanResult.msg?.includes("DUPLICATE") ?
+                     "⚠️ DUPLICATE" : "FAIL ✗"}
+                  </div>
+                </div>
+                <div className="text-xs sm:text-sm lg:text-base font-bold tracking-wide text-center px-2 line-clamp-2">
+                  {lastScanResult.msg}
+                </div>
+              </div>
+            ) : (
+              <div className="w-full h-full flex items-center justify-center border-2 border-dashed border-border rounded-xl text-muted-foreground font-medium text-xs sm:text-sm lg:text-lg bg-card/50">
+                Ready — scan to begin
+              </div>
+            )}
+          </div>
+
+          {/* Scan History - Responsive */}
+          <Card className="flex-1 flex flex-col overflow-hidden border-border shadow-sm">
+            <CardHeader className="bg-secondary/30 py-2 px-3 sm:py-3 sm:px-4 border-b border-border">
+              <div className="flex justify-between items-center gap-2">
+                <CardTitle className="text-xs sm:text-sm font-bold tracking-wider uppercase text-muted-foreground">Log</CardTitle>
+                <div className="flex items-center gap-2 sm:gap-4 text-xs sm:text-sm font-bold">
+                  <span className="text-primary">{scanLogRows.length || session.scans.length}</span>
+                  <span className="text-amber-500">{splicingRecords.length}S</span>
+                </div>
+              </div>
+            </CardHeader>
+            <CardContent className="flex-1 p-0 overflow-hidden">
+              <ScrollArea className="h-full w-full">
+                <style>{`
+                  @keyframes scanRowSlideIn {
+                    from { opacity: 0; transform: translateY(-6px); }
+                    to { opacity: 1; transform: translateY(0); }
+                  }
+                  .scan-row-slide-in {
+                    animation: scanRowSlideIn 180ms ease-out;
+                  }
+                `}</style>
+                <div className="p-2 sm:p-3 space-y-2">
+                  {/* Splice records first (inline, amber) */}
+                  {splices && splices.length > 0 && splices.map((sp) => (
+                    <div key={`splice-${sp.id}`} className="flex w-full flex-col gap-2 rounded-2xl border border-amber-200 bg-amber-50 p-3 text-xs shadow-sm dark:bg-amber-950/20 dark:border-amber-800 sm:flex-row sm:items-center sm:justify-between">
+                      <div className="flex flex-wrap items-center gap-2 min-w-0">
+                        <Scissors className="w-3 h-3 text-amber-600 shrink-0" />
+                        <span className="font-bold text-amber-700 dark:text-amber-400 w-10 truncate">SPLICD</span>
+                        <span className="font-bold text-sm truncate">{sp.feederNumber}</span>
+                        <span className="text-muted-foreground text-xs truncate">{sp.oldSpoolBarcode?.substring(0, 8)}... → {sp.newSpoolBarcode?.substring(0, 8)}...</span>
+                        {sp.durationSeconds != null && <span className="text-muted-foreground text-xs">{sp.durationSeconds}s</span>}
+                      </div>
+                      <div className="text-muted-foreground text-xs font-medium shrink-0 text-right">
+                        {format(new Date(sp.splicedAt), "HH:mm")}
+                      </div>
+                    </div>
+                  ))}
+                  <div className="border border-border rounded-lg overflow-hidden bg-card shadow-sm">
+                    <ScrollArea className="h-[42vh] w-full rounded-none">
+                      <div className="w-full overflow-x-auto">
+                        <table className="min-w-full border-collapse font-mono text-[11px] sm:text-xs lg:text-sm">
+                        <thead className="sticky top-0 z-20 bg-slate-900 text-white">
+                          <tr>
+                            <th className="px-2 py-2 text-left font-bold whitespace-nowrap">Time</th>
+                            <th className="px-2 py-2 text-left font-bold whitespace-nowrap">Feeder No.</th>
+                            <th className="px-2 py-2 text-left font-bold whitespace-nowrap">Ref / Des</th>
+                            <th className="px-2 py-2 text-left font-bold whitespace-nowrap">Component</th>
+                            <th className="px-2 py-2 text-left font-bold whitespace-nowrap">Package</th>
+                            <th className="px-2 py-2 text-left font-bold whitespace-nowrap">Internal P/N</th>
+                            <th className="px-2 py-2 text-left font-bold whitespace-nowrap text-[#1D4ED8]">Expected MPN</th>
+                            <th className="px-2 py-2 text-left font-bold whitespace-nowrap">Scanned (Actual)</th>
+                            <th className="px-2 py-2 text-left font-bold whitespace-nowrap">Matched As</th>
+                            <th className="px-2 py-2 text-left font-bold whitespace-nowrap">Lot Code</th>
+                            <th className="px-2 py-2 text-left font-bold whitespace-nowrap">Mode</th>
+                            <th className="px-2 py-2 text-left font-bold whitespace-nowrap">Status</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {scanLogRows.length === 0 ? (
+                            <tr>
+                              <td colSpan={12} className="px-3 py-8 text-center text-muted-foreground font-medium">
+                                No scans yet
+                              </td>
+                            </tr>
+                          ) : (
+                            scanLogRows.map((row, index) => (
+                              <tr
+                                key={`scan-${row.id}-${index}`}
+                                className={`border-t border-border/60 ${index % 2 === 1 ? "bg-slate-50/70 dark:bg-slate-950/15" : "bg-background"} scan-row-slide-in`}
+                              >
+                                <td className="px-2 py-2 whitespace-nowrap text-muted-foreground">{format(new Date(row.scannedAt), "hh:mm:ss a")}</td>
+                                <td className="px-2 py-2 whitespace-nowrap font-bold">{row.feederNumber}</td>
+                                <td className="px-2 py-2 whitespace-nowrap">{row.bom.refDes || "—"}</td>
+                                <td className="px-2 py-2 whitespace-nowrap">{row.bom.componentDesc || "—"}</td>
+                                <td className="px-2 py-2 whitespace-nowrap">{row.bom.packageSize || "—"}</td>
+                                <td className="px-2 py-2 whitespace-nowrap">{row.bom.internalPartNumber || "—"}</td>
+                                <td className="px-2 py-2 whitespace-nowrap text-[#1D4ED8] font-semibold">{row.bom.expectedMpns.length > 0 ? row.bom.expectedMpns.join(" / ") : "—"}</td>
+                                <td className={`px-2 py-2 whitespace-nowrap ${getScannedValueStyle(row)}`}>{row.scannedValue}{getScannedValueSuffix(row)}</td>
+                                <td className="px-2 py-2 whitespace-nowrap">{formatMatchedAs(row)}</td>
+                                <td className="px-2 py-2 whitespace-nowrap">{row.lotCode || "—"}</td>
+                                <td className="px-2 py-2 whitespace-nowrap">
+                                  <span className={`inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider ${row.verificationMode === "AUTO" ? "bg-blue-100 text-[#1D4ED8]" : "bg-amber-100 text-[#B45309]"}`}>
+                                    {row.verificationMode}
+                                  </span>
+                                </td>
+                                <td className="px-2 py-2 whitespace-nowrap">
+                                  <span className={`inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider ${row.status === "verified" ? "bg-green-100 text-[#15803D]" : row.status === "duplicate" ? "bg-amber-100 text-[#B45309]" : "bg-red-100 text-[#B91C1C]"}`}>
+                                    {row.status}
+                                  </span>
+                                </td>
+                              </tr>
+                            ))
+                          )}
+                        </tbody>
+                      </table>
+                      </div>
+                    </ScrollArea>
+                  </div>
+                </div>
+              </ScrollArea>
+            </CardContent>
+          </Card>
+
+          <div className="mt-4">
+            <LogPanel />
+          </div>
+            </>
+          )}
+
+          {/* SPLICING SECTION - Shows when activeTab === "splicing" and all feeders verified */}
+          {isSpliceEligible && activeTab === "splicing" && useGuidedSplice && (
+            <SplicingPage />
+          )}
+
+          {isSpliceEligible && activeTab === "splicing" && !useGuidedSplice && (
+            <div className="flex flex-col gap-6">
+              {/* Splicing Header */}
+              <div className="bg-amber-50 dark:bg-amber-950/30 border-2 border-amber-400 dark:border-amber-700 p-3 sm:p-4 rounded-lg">
+                <h2 className="text-sm sm:text-base font-bold text-amber-900 dark:text-amber-100 flex items-center gap-2">
+                  <Scissors className="w-5 h-5" />
+                  SPOOL SPLICING SECTION
+                </h2>
+                <p className="text-xs sm:text-sm text-amber-700 dark:text-amber-200 mt-2">
+                  Replace old spools with new spools for each feeder. Complete all three steps for each feeder.
+                </p>
+              </div>
+
+              {/* SPLICE FORM - Primary Section */}
+              <div className="bg-card border-2 border-amber-400/50 p-2 sm:p-4 lg:p-8 rounded-xl shadow-[0_0_20px_rgba(217,119,6,0.1)]">
+                <form onSubmit={handleSpliceSubmit} className="flex flex-col items-center gap-2 sm:gap-3 lg:gap-6">
+                  <Label className="text-xs sm:text-sm lg:text-lg xl:text-xl tracking-widest text-amber-600 dark:text-amber-500 flex items-center gap-1 sm:gap-2 font-black uppercase text-center line-clamp-2">
+                    <Scissors className="w-3 h-3 sm:w-4 sm:h-4 lg:w-5 lg:h-5 xl:w-6 xl:h-6 flex-shrink-0" />
+                    {spliceStepLabels[spliceStep]}
+                  </Label>
+
+                  <div className="w-full flex gap-0.5 sm:gap-1 lg:gap-2 items-center justify-center min-h-12 sm:min-h-14 lg:min-h-16">
+                    {(spliceStep === "oldSpool" || spliceStep === "newSpool") && (
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="icon"
+                        className="shrink-0 h-10 sm:h-12 lg:h-14 xl:h-16 w-10 sm:w-12 lg:w-14 xl:w-16"
+                        onClick={() => cancelSplice()}
+                      >
+                        <ArrowLeft className="w-3 h-3 sm:w-4 sm:h-4 lg:w-5 lg:h-5 xl:w-6 xl:h-6" />
+                      </Button>
+                    )}
+                    <Input
+                      ref={inputRef}
+                      value={spliceInput}
+                      onChange={(e) => setSpliceInput(e.target.value)}
+                      className="flex-1 text-center text-2xl sm:text-3xl lg:text-4xl xl:text-5xl h-14 sm:h-16 lg:h-20 xl:h-24 font-mono tracking-[0.15em] sm:tracking-[0.2em] bg-background border-2 border-border focus-visible:border-amber-500 rounded-lg shadow-inner text-xs sm:text-sm"
+                      placeholder={spliceStep === "feeder" ? "SCAN FEEDER..." : spliceStep === "oldSpool" ? "SCAN OLD SPOOL..." : "SCAN NEW SPOOL..."}
+                      autoComplete="off"
+                    />
+                  </div>
+
+                  {spliceStep !== "feeder" && (
+                    <div className="w-full space-y-1 sm:space-y-2">
+                      <div className="bg-slate-50 dark:bg-slate-900 border border-slate-300 dark:border-slate-700 p-1.5 sm:p-2 lg:p-3 rounded text-center">
+                        <p className="text-xs sm:text-sm text-muted-foreground line-clamp-2">
+                          {spliceStep === "oldSpool" ? (
+                            <>Feeder <strong className="text-foreground font-mono">{splicePendingFeeder}</strong> selected</>
+                          ) : (
+                            <>Old Spool: <strong className="text-foreground font-mono">{splicePendingOldSpool?.substring(0, 12)}...</strong></>
+                          )}
+                        </p>
+                      </div>
+
+                      {spliceStep === "oldSpool" && (
+                        <div className="bg-amber-50 dark:bg-amber-900/30 border border-amber-300 dark:border-amber-700 p-2 sm:p-3 rounded-lg">
+                          <p className="text-xs font-bold text-amber-900 dark:text-amber-100 mb-2">📝 STEP 2: OLD SPOOL BARCODE</p>
+                          <p className="text-xs text-amber-800 dark:text-amber-200">
+                            • Scan the current (old) spool barcode for this feeder
+                          </p>
+                          <p className="text-xs text-amber-700 dark:text-amber-300 mt-2 italic">
+                            ⓘ Must be different from the new spool barcode
+                          </p>
+                        </div>
+                      )}
+
+                      {spliceStep === "newSpool" && (
+                        <div className="bg-amber-50 dark:bg-amber-900/30 border border-amber-300 dark:border-amber-700 p-2 sm:p-3 rounded-lg">
+                          <p className="text-xs font-bold text-amber-900 dark:text-amber-100 mb-2">📝 STEP 3: NEW SPOOL BARCODE</p>
+                          <p className="text-xs text-amber-800 dark:text-amber-200">
+                            • Scan the replacement (new) spool barcode for this feeder
+                          </p>
+                          <p className="text-xs text-amber-700 dark:text-amber-300 mt-2 italic">
+                            ⓘ Must be different from the old spool barcode
+                          </p>
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </form>
+              </div>
+
+              {/* Splice Feedback Area */}
+              <div className="h-20 sm:h-24 lg:h-32 xl:h-40 flex items-center justify-center shrink-0">
+                {lastScanResult ? (
+                  <div className={`w-full h-full flex flex-col items-center justify-center rounded-xl border-2 shadow-lg transition-all gap-1 sm:gap-2 p-2 sm:p-3 lg:p-4 ${
+                    lastScanResult.status === "splice" ? "bg-amber-50 dark:bg-amber-950/30 border-amber-400 text-amber-600 dark:text-amber-400" :
+                    "bg-red-50 dark:bg-red-950/30 border-red-500 text-red-700 dark:text-red-300"
+                  }`}>
+                    <div className="flex items-center gap-1 sm:gap-2 lg:gap-3">
+                      {lastScanResult.status === "splice" && <Scissors className="w-6 h-6 sm:w-8 sm:h-8 lg:w-10 lg:h-10" />}
+                      {lastScanResult.status === "reject" && <XCircle className="w-6 h-6 sm:w-8 sm:h-8 lg:w-10 lg:h-10" />}
+                      <div className="text-lg sm:text-2xl lg:text-3xl xl:text-4xl font-black tracking-widest uppercase">
+                        {lastScanResult.status === "splice" ? "SPLICED ✓" : "ERROR ✗"}
+                      </div>
+                    </div>
+                    <div className="text-xs sm:text-sm lg:text-base font-bold tracking-wide text-center px-2 line-clamp-2">
+                      {lastScanResult.msg}
+                    </div>
+                  </div>
+                ) : (
+                  <div className="w-full h-full flex items-center justify-center border-2 border-dashed border-border rounded-xl text-muted-foreground font-medium text-xs sm:text-sm lg:text-lg bg-card/50">
+                    Ready — scan to begin
+                  </div>
+                )}
+              </div>
+
+              {/* LogPanel - Last child */}
+              <div className="mt-4">
+                <LogPanel />
+              </div>
+            </div>
+          )}
+          </div>
+          {/* End of left column */}
+
+        {/* Right Panel: BOM Checklist - Hidden on mobile, shown on lg, hidden if free scan mode */}
+        {session?.bomId !== 0 && (
+          <div className="w-80 flex flex-col bg-card shrink-0 shadow-[-4px_0_15px_-5px_rgba(0,0,0,0.1)] z-10 border-l border-border overflow-hidden">
+            <div className="p-3 border-b border-border bg-secondary/30 flex justify-between items-center gap-2 shrink-0">
+              <h2 className="font-bold tracking-wider uppercase text-xs truncate">BOM</h2>
+              <div className="text-xs font-bold bg-background px-2 py-1 rounded-full border border-border shadow-sm shrink-0">
+                <span className="text-success">{uniqueOkScans}</span> / {totalBomItems}
+              </div>
+            </div>
+
+            <ScrollArea className="flex-1 w-full overflow-hidden">
+              <div className="p-2 space-y-2 w-full min-w-max">
+                {feederGroupArray.map(({ feederNum, primary, alternates }) => {
+                  const status = feederStatusMap[feederNum];
+                  const hasSplice = splicingRecords.some((sp) => sp.feederId === feederNum);
+                  const canRescan = session.status === "active" && (status === "reject" || status === "pending");
+
+                  return (
+                    <div key={`feeder-${feederNum}`} className="space-y-1 w-full overflow-hidden">
+                      {/* PRIMARY ITEM */}
+                      <div className={`flex items-start justify-between p-2 rounded-lg border shadow-sm transition-colors text-xs gap-2 min-w-0 ${
+                        status === "ok" ? "bg-success/5 border-success/30" :
+                        status === "reject" ? "bg-destructive/5 border-destructive/30" :
+                        "bg-background border-border"
+                      }`}>
+                        <div className="flex flex-col min-w-0 flex-1 gap-1">
+                          {/* Row 1: Feeder Number & Status */}
+                          <div className="flex items-center gap-1 min-w-0">
+                            <span className="font-bold font-mono text-xs shrink-0">{feederNum}</span>
+                            {hasSplice && (
+                              <span title="Spool replaced">
+                                <Scissors className="w-3 h-3 text-amber-500 shrink-0" />
+                              </span>
+                            )}
+                            {!primary?.isAlternate && <span className="text-xs font-bold text-success px-1.5 py-0.5 bg-success/10 rounded-full shrink-0 whitespace-nowrap">PRIMARY</span>}
+                          </div>
+
+                          {/* Row 2: Part Number */}
+                          <span className="text-xs text-muted-foreground truncate font-medium">{primary?.partNumber}</span>
+
+                          {/* Row 3: Expected MPN (if exists) */}
+                          {primary?.expectedMpn && (
+                            <div className="text-xs text-muted-foreground font-mono truncate">
+                              <span className="font-bold text-foreground">MPN:</span> <span className="truncate inline-block max-w-full">{primary.expectedMpn}</span>
+                            </div>
+                          )}
+
+                          {/* Row 4: Internal ID (if exists) */}
+                          {primary?.internalId && (
+                            <div className="text-xs text-muted-foreground font-mono truncate">
+                              <span className="font-bold text-foreground">ID:</span> <span className="truncate inline-block max-w-[calc(100%-20px)]">{primary.internalId}</span>
+                            </div>
+                          )}
+                        </div>
+                        <div className="shrink-0 flex items-start gap-1">
+                          {canRescan && (
+                            <button
+                              title="Re-scan"
+                              onClick={() => {
+                                setMode("scan");
+                                setPendingFeeder(feederNum);
+                                setFeederScanTime(Date.now());
+                                setScanStep("spool");
+                                setScanInput("");
+                                focusNextFrame(inputRef);
+                              }}
+                              className="text-primary hover:text-primary/70 transition-colors p-1 rounded"
+                            >
+                              <RefreshCw className="w-3 h-3" />
+                            </button>
+                          )}
+                          {status === "ok" && <CheckCircle2 className="w-4 h-4 text-success shrink-0" />}
+                          {status === "reject" && <XCircle className="w-4 h-4 text-destructive shrink-0" />}
+                          {status === "pending" && <Circle className="w-4 h-4 text-muted-foreground/30 shrink-0" />}
+                        </div>
+                      </div>
+
+                      {/* ALTERNATE ITEMS (if any) */}
+                      {alternates && alternates.length > 0 && (
+                        <div className="ml-2 space-y-1 pl-2 border-l-2 border-amber-300/50 w-full overflow-hidden">
+                          {alternates.map((altItem) => (
+                            <div
+                              key={`alt-${feederNum}-${altItem.id}`}
+                              className="flex items-start justify-between p-1.5 rounded border border-amber-200/50 bg-amber-50/30 dark:bg-amber-950/20 text-xs gap-2 min-w-0"
+                            >
+                              <div className="flex flex-col min-w-0 flex-1 gap-0.5">
+                                <span className="text-amber-600 dark:text-amber-400 font-bold shrink-0">ALT</span>
+                                <span className="text-muted-foreground truncate font-medium">{altItem.partNumber}</span>
+                                {altItem.expectedMpn && (
+                                  <div className="text-muted-foreground font-mono text-xs truncate">
+                                    <span className="font-bold">MPN:</span> <span className="truncate inline-block max-w-[calc(100%-20px)]">{altItem.expectedMpn}</span>
+                                  </div>
+                                )}
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+                {feederGroupArray.length === 0 && (
+                  <div className="p-4 text-center text-xs text-muted-foreground font-medium border border-dashed border-border rounded-lg mt-2 w-full overflow-hidden">
+                    No required items in BOM.
+                  </div>
+                )}
+              </div>
+            </ScrollArea>
+
+            {/* Splice summary */}
+            {splicingRecords.length > 0 && (
+              <div className="p-2 border-t border-border bg-amber-50/50 dark:bg-amber-950/20 shrink-0">
+                <div className="text-xs font-bold text-amber-600 dark:text-amber-400 tracking-wider mb-2 flex items-center gap-1">
+                  <Scissors className="w-3 h-3" /> {splicingRecords.length} SPLICES
+                </div>
+                <div className="space-y-0.5">
+                  {splicingRecords.map((sp) => (
+                    <div key={`${sp.feederId}-${sp.splicedAt.toISOString()}`} className="text-xs text-muted-foreground font-mono flex justify-between px-1 overflow-hidden">
+                      <span className="truncate">{sp.feederId}</span>
+                      <span className="shrink-0 ml-1">{format(new Date(sp.splicedAt), "HH:mm")}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* Progress bar */}
+            <div className="p-2 border-t border-border bg-background shrink-0">
+              <div className="flex justify-between text-xs font-bold mb-2 tracking-wider text-muted-foreground">
+                <span>PROGRESS</span>
+                <span className="text-foreground">{totalBomItems > 0 ? Math.round((uniqueOkScans / totalBomItems) * 100) : 0}%</span>
+              </div>
+              <div className="h-2 bg-secondary rounded-full overflow-hidden shadow-inner">
+                <div
+                  className="h-full bg-primary transition-all duration-500 ease-out"
+                  style={{ width: `${totalBomItems > 0 ? (uniqueOkScans / totalBomItems) * 100 : 0}%` }}
+                />
+              </div>
+            </div>
+          </div>
+        )}
+        </div>
+        {/* End of flex row for left and right columns */}
+
+      <ScanNotification
+        notifications={scanNotifications}
+        onDismiss={(id) => {
+          const dismissed = notifications.find((n) => n.id === id);
+          dismissNotification(id);
+
+          if (!dismissed) {
+            return;
+          }
+
+          const text = `${dismissed.title ?? ""} ${dismissed.message ?? ""}`.toLowerCase();
+          if (dismissed.type === "error" || text.includes("duplicate")) {
+            setTimeout(() => inputRef.current?.focus(), 50);
+          }
+        }}
+      />
+
+      {showCompletionOverlay && session.status === "active" && (
+        <div className="fixed inset-0 z-[10000] bg-black/70 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="w-full max-w-2xl rounded-xl border border-amber-400/50 bg-card p-8 sm:p-10 shadow-2xl text-center">
+            <div className="mx-auto mb-4 flex h-16 w-16 items-center justify-center rounded-full bg-amber-100 dark:bg-amber-900/40">
+              <CheckCircle2 className="h-8 w-8 text-amber-600 dark:text-amber-400" />
+            </div>
+            <div className="text-2xl sm:text-4xl font-black tracking-tight text-amber-600 dark:text-amber-400">
+              VERIFICATION COMPLETE
+            </div>
+            <p className="mt-3 text-sm sm:text-base text-muted-foreground">
+              {requiredFeedsVerifiedCount} / {totalRequiredFeeders} feeders verified.
+            </p>
+            <div className="mx-auto mt-6 max-w-md rounded-lg border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900 dark:border-amber-800 dark:bg-amber-950/30 dark:text-amber-200">
+              <div className="font-bold text-base">QA / Supervisor Verification Required</div>
+              <p className="mt-2 leading-relaxed">
+                All feeders have been scanned. Please notify a <strong>QA</strong> or <strong>Supervisor</strong> to review and verify the changeover before proceeding to splicing or closing the session.
+              </p>
+            </div>
+            <div className="mt-6 flex flex-col sm:flex-row gap-2 sm:gap-3 justify-center">
+              <Button
+                className="font-semibold"
+                onClick={() => {
+                  setActiveTab("splicing");
+                  setShowCompletionOverlay(false);
+                }}
+              >
+                Go To Splicing
+              </Button>
+              <Button
+                variant="outline"
+                onClick={() => setShowCompletionOverlay(false)}
+              >
+                Dismiss
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      <AlertDialog open={showResetDialog} onOpenChange={setShowResetDialog}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Reset Session Scanner State?</AlertDialogTitle>
+            <AlertDialogDescription>
+              This clears verification/splicing store state, logs, notifications, and the current in-page scan inputs. Server-side scan records are not deleted.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+              onClick={handleResetSessionState}
+            >
+              Reset Session
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      <HandoverModal
+        open={showHandoverModal}
+        onOpenChange={setShowHandoverModal}
+        sessionId={String(session?.id ?? sessionId)}
+        onSuccess={() => {
+          queryClient.invalidateQueries({ queryKey: getGetSessionQueryKey(sessionId) });
+        }}
+      />
+    </div>
+    </div>
+  );
+}

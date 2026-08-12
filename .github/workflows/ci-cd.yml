@@ -1,0 +1,916 @@
+name: SMT Verification — CI/CD Pipeline
+
+on:
+  push:
+    branches:
+      - main
+      - 'phase/**'
+      - 'hotfix/**'
+  pull_request:
+    branches:
+      - main
+    types: [opened, synchronize, reopened, ready_for_review]
+
+# Cancel in-flight runs for the same branch on new push
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  NODE_VERSION: '20'
+  PNPM_VERSION: '9'
+  # Test DB — separate from production
+  DATABASE_URL: postgresql://smt_test:smt_test@localhost:5432/smt_test
+  JWT_SECRET: ci-test-jwt-secret-32-chars-minimum
+  JWT_ADMIN_SECRET: ci-test-admin-jwt-secret-32-chars
+  AUDIT_HMAC_SECRET: ci-test-audit-hmac-secret-32-chars
+  ADMIN_PORTAL_PATH: /admin-portal-ci
+  ADMIN_USERNAME: admin_ci
+  ADMIN_PASSWORD_HASH: $2b$12$placeholder_bcrypt_hash_for_ci
+  SHIFT_MORNING_START: '6'
+  SHIFT_AFTERNOON_START: '14'
+  SHIFT_NIGHT_START: '22'
+  TZ: Asia/Kolkata
+  DB_MAX_SIZE_MB: '5000'
+  JOB_QUEUE_MAX_DEPTH: '50'
+
+jobs:
+  # ─────────────────────────────────────────────
+  # STAGE 1 — Fast checks (< 2 min)
+  # Runs on every push and PR
+  # ─────────────────────────────────────────────
+  lint-and-typecheck:
+    name: 'Stage 1 — Lint & Typecheck'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: ${{ env.PNPM_VERSION }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'pnpm'
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Check no console.log in source
+        run: |
+          echo "Checking for console.log in source files..."
+          FOUND=$(grep -rn "console\.log" \
+            artifacts/api-server/src \
+            artifacts/feeder-scanner/src \
+            lib/ \
+            --include="*.ts" --include="*.tsx" \
+            --exclude-dir="__tests__" \
+            --exclude-dir="*.test.*" \
+            2>/dev/null || true)
+          if [ -n "$FOUND" ]; then
+            echo "❌ console.log found in production code:"
+            echo "$FOUND"
+            exit 1
+          fi
+          echo "✅ No console.log in production code"
+
+      - name: Check no hardcoded secrets
+        run: |
+          echo "Checking for hardcoded secrets..."
+          # Check for patterns that look like real secrets (not placeholders)
+          PATTERNS=(
+            "JWT_SECRET\s*=\s*[\"'][^<]"
+            "password\s*=\s*[\"'][a-zA-Z0-9]{8,}[\"']"
+            "DATABASE_URL\s*=\s*postgresql://[^$<]"
+          )
+          for pattern in "${PATTERNS[@]}"; do
+            FOUND=$(grep -rn -E "$pattern" \
+              artifacts/ lib/ \
+              --include="*.ts" --include="*.tsx" --include="*.js" \
+              --exclude-dir="node_modules" \
+              --exclude-dir="dist" \
+              2>/dev/null || true)
+            if [ -n "$FOUND" ]; then
+              echo "❌ Potential hardcoded secret found:"
+              echo "$FOUND"
+              exit 1
+            fi
+          done
+          echo "✅ No hardcoded secrets found"
+
+      - name: Check .env.example completeness
+        run: |
+          echo "Verifying .env.example has all required vars..."
+          REQUIRED_VARS=(
+            "DATABASE_URL"
+            "JWT_SECRET"
+            "JWT_ADMIN_SECRET"
+            "AUDIT_HMAC_SECRET"
+            "ADMIN_PORTAL_PATH"
+            "ADMIN_USERNAME"
+            "ADMIN_PASSWORD_HASH"
+            "SHIFT_MORNING_START"
+            "SHIFT_AFTERNOON_START"
+            "SHIFT_NIGHT_START"
+            "TZ"
+            "DB_MAX_SIZE_MB"
+            "JOB_QUEUE_MAX_DEPTH"
+            "BACKUP_DIR"
+            "BACKUP_CRON"
+            "BACKUP_RETENTION_DAYS"
+          )
+          MISSING=()
+          for var in "${REQUIRED_VARS[@]}"; do
+            if ! grep -q "^${var}=" .env.example 2>/dev/null; then
+              MISSING+=("$var")
+            fi
+          done
+          if [ ${#MISSING[@]} -gt 0 ]; then
+            echo "❌ Missing from .env.example: ${MISSING[*]}"
+            exit 1
+          fi
+          echo "✅ .env.example has all required variables"
+
+      - name: Typecheck — api-server
+        run: |
+          echo "Running TypeScript check on api-server..."
+          cd artifacts/api-server
+          npx tsc --noEmit 2>&1 | tee /tmp/api-ts-errors.txt
+          ERROR_COUNT=$(grep -c "error TS" /tmp/api-ts-errors.txt || true)
+          echo "TypeScript errors found: $ERROR_COUNT"
+          # Fail on any error (baseline 0 after Phase 0 cleanup)
+          if [ "$ERROR_COUNT" -gt "0" ]; then
+            echo "❌ TypeScript errors in api-server:"
+            cat /tmp/api-ts-errors.txt
+            exit 1
+          fi
+          echo "✅ api-server typecheck passed"
+
+      - name: Typecheck — feeder-scanner
+        run: |
+          echo "Running TypeScript check on feeder-scanner..."
+          cd artifacts/feeder-scanner
+          npx tsc --noEmit 2>&1 | tee /tmp/fe-ts-errors.txt
+          ERROR_COUNT=$(grep -c "error TS" /tmp/fe-ts-errors.txt || true)
+          echo "TypeScript errors found: $ERROR_COUNT"
+          if [ "$ERROR_COUNT" -gt "0" ]; then
+            echo "❌ TypeScript errors in feeder-scanner:"
+            cat /tmp/fe-ts-errors.txt
+            exit 1
+          fi
+          echo "✅ feeder-scanner typecheck passed"
+
+      - name: Typecheck — lib/db
+        run: |
+          echo "Running TypeScript check on lib/db..."
+          cd lib/db
+          npx tsc --noEmit 2>&1 | tee /tmp/db-ts-errors.txt
+          ERROR_COUNT=$(grep -c "error TS" /tmp/db-ts-errors.txt || true)
+          if [ "$ERROR_COUNT" -gt "0" ]; then
+            echo "❌ TypeScript errors in lib/db:"
+            cat /tmp/db-ts-errors.txt
+            exit 1
+          fi
+          echo "✅ lib/db typecheck passed"
+
+      - name: Security — check route auth coverage
+        run: |
+          echo "Checking all routes have requireAuth middleware..."
+          node scripts/ci/check-route-auth.js
+          echo "✅ All routes have auth middleware"
+
+  # ─────────────────────────────────────────────
+  # STAGE 2 — Unit tests (< 5 min)
+  # ─────────────────────────────────────────────
+  unit-tests:
+    name: 'Stage 2 — Unit Tests'
+    needs: lint-and-typecheck
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: ${{ env.PNPM_VERSION }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'pnpm'
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Unit tests — api-server
+        run: |
+          cd artifacts/api-server
+          pnpm run test:unit --reporter=verbose 2>&1 | tee /tmp/unit-api.txt
+          EXIT_CODE=${PIPESTATUS[0]}
+          if [ $EXIT_CODE -ne 0 ]; then
+            echo "❌ Unit tests failed in api-server"
+            cat /tmp/unit-api.txt
+            exit 1
+          fi
+          echo "✅ api-server unit tests passed"
+
+      - name: Unit tests — feeder-scanner
+        run: |
+          cd artifacts/feeder-scanner
+          pnpm run test:unit --reporter=verbose 2>&1 | tee /tmp/unit-fe.txt
+          EXIT_CODE=${PIPESTATUS[0]}
+          if [ $EXIT_CODE -ne 0 ]; then
+            echo "❌ Unit tests failed in feeder-scanner"
+            cat /tmp/unit-fe.txt
+            exit 1
+          fi
+          echo "✅ feeder-scanner unit tests passed"
+
+      - name: Unit tests — lib/db schema validation
+        run: |
+          cd lib/db
+          pnpm run test 2>&1 | tee /tmp/unit-db.txt
+          EXIT_CODE=${PIPESTATUS[0]}
+          if [ $EXIT_CODE -ne 0 ]; then
+            echo "❌ lib/db tests failed"
+            exit 1
+          fi
+          echo "✅ lib/db tests passed"
+
+      - name: Coverage report
+        run: |
+          cd artifacts/api-server
+          pnpm run test:coverage --reporter=text 2>&1 | tee /tmp/coverage.txt
+          # Fail if any service file < 80% coverage
+          node scripts/ci/check-coverage.js /tmp/coverage.txt 80
+          echo "✅ Coverage threshold met"
+
+      - name: Upload coverage artifact
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: coverage-report-${{ github.run_number }}
+          path: /tmp/coverage.txt
+          retention-days: 14
+
+  # ─────────────────────────────────────────────
+  # STAGE 3 — Database migration check (< 3 min)
+  # ─────────────────────────────────────────────
+  migration-check:
+    name: 'Stage 3 — Migration Integrity'
+    needs: lint-and-typecheck
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: smt_test
+          POSTGRES_PASSWORD: smt_test
+          POSTGRES_DB: smt_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: ${{ env.PNPM_VERSION }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'pnpm'
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Apply all migrations to fresh DB
+        run: |
+          echo "Applying migrations to fresh test DB..."
+          cd lib/db
+          npx drizzle-kit push 2>&1 | tee /tmp/migration.txt
+          EXIT_CODE=${PIPESTATUS[0]}
+          if [ $EXIT_CODE -ne 0 ]; then
+            echo "❌ Migration failed:"
+            cat /tmp/migration.txt
+            exit 1
+          fi
+          echo "✅ All migrations applied cleanly"
+
+      - name: Verify schema matches BACKEND-SCHEMA.md
+        run: |
+          echo "Verifying DB schema matches documentation..."
+          node scripts/ci/verify-schema.js
+          echo "✅ Schema matches BACKEND-SCHEMA.md"
+
+      - name: Check migration SQL files for destructive operations
+        run: |
+          echo "Checking migrations for DROP TABLE / DROP COLUMN..."
+          LATEST_MIGRATION=$(ls lib/db/drizzle/*.sql | sort | tail -1)
+          echo "Checking: $LATEST_MIGRATION"
+          if grep -iE "^\s*DROP\s+(TABLE|COLUMN|INDEX)\s" "$LATEST_MIGRATION"; then
+            echo "⚠️  WARNING: Destructive operation found in latest migration."
+            echo "This requires explicit review approval before merge to main."
+            # Don't fail CI — but flag for reviewer
+          fi
+          echo "✅ Migration destructive check complete"
+
+      - name: Run seed on migrated DB and verify
+        run: |
+          echo "Seeding test DB with users and machines..."
+          cd artifacts/api-server
+          npx tsx scripts/seed-users.ts
+          # Verify expected users exist
+          OPERATOR_COUNT=$(psql $DATABASE_URL -t -c \
+            "SELECT COUNT(*) FROM users WHERE role='operator';" | tr -d ' ')
+          if [ "$OPERATOR_COUNT" -lt "4" ]; then
+            echo "❌ Expected 4 operators, found $OPERATOR_COUNT"
+            exit 1
+          fi
+          QA_COUNT=$(psql $DATABASE_URL -t -c \
+            "SELECT COUNT(*) FROM users WHERE role='qa';" | tr -d ' ')
+          if [ "$QA_COUNT" -lt "7" ]; then
+            echo "❌ Expected 7 QA engineers, found $QA_COUNT"
+            exit 1
+          fi
+          echo "✅ Seed verification passed (operators: $OPERATOR_COUNT, QA: $QA_COUNT)"
+
+  # ─────────────────────────────────────────────
+  # STAGE 4 — Integration tests (< 10 min)
+  # Runs full API server against test DB
+  # ─────────────────────────────────────────────
+  integration-tests:
+    name: 'Stage 4 — Integration Tests'
+    needs: [unit-tests, migration-check]
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: smt_test
+          POSTGRES_PASSWORD: smt_test
+          POSTGRES_DB: smt_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: ${{ env.PNPM_VERSION }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'pnpm'
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Migrate + seed test DB
+        run: |
+          cd lib/db && npx drizzle-kit push
+          cd artifacts/api-server && npx tsx scripts/seed-users.ts
+
+      - name: Integration tests — auth & roles
+        run: |
+          cd artifacts/api-server
+          pnpm run test:integration -- --testPathPattern="auth|roles" --verbose
+          echo "✅ Auth + role integration tests passed"
+
+      - name: Integration tests — ownership isolation
+        run: |
+          cd artifacts/api-server
+          pnpm run test:integration -- --testPathPattern="ownership|isolation" --verbose
+          echo "✅ Ownership isolation tests passed"
+
+      - name: Integration tests — session flow
+        run: |
+          cd artifacts/api-server
+          pnpm run test:integration -- --testPathPattern="session|verification|handover" --verbose
+          echo "✅ Session flow integration tests passed"
+
+      - name: Integration tests — admin routes
+        run: |
+          cd artifacts/api-server
+          pnpm run test:integration -- --testPathPattern="admin" --verbose
+          echo "✅ Admin route integration tests passed"
+
+      - name: Integration tests — rate limiting
+        run: |
+          cd artifacts/api-server
+          pnpm run test:integration -- --testPathPattern="rate.limit|rateLimit" --verbose
+          echo "✅ Rate limiting tests passed"
+
+      - name: Integration tests — CSRF
+        run: |
+          cd artifacts/api-server
+          pnpm run test:integration -- --testPathPattern="csrf" --verbose
+          echo "✅ CSRF protection tests passed"
+
+      - name: Integration tests — WS room isolation (U2)
+        run: |
+          cd artifacts/api-server
+          pnpm run test:integration -- --testPathPattern="websocket|ws.room" --verbose
+          echo "✅ WebSocket room isolation tests passed"
+
+      - name: Integration tests — scan idempotency (U3)
+        run: |
+          cd artifacts/api-server
+          pnpm run test:integration -- --testPathPattern="idempotency" --verbose
+          echo "✅ Scan idempotency tests passed"
+
+  # ─────────────────────────────────────────────
+  # STAGE 5 — Security checks
+  # ─────────────────────────────────────────────
+  security-checks:
+    name: 'Stage 5 — Security Audit'
+    needs: lint-and-typecheck
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: ${{ env.PNPM_VERSION }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'pnpm'
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Dependency vulnerability scan
+        run: |
+          echo "Running pnpm audit..."
+          pnpm audit --audit-level=high 2>&1 | tee /tmp/audit.txt
+          # Fail on HIGH or CRITICAL vulnerabilities
+          if grep -qiE "(high|critical)" /tmp/audit.txt; then
+            echo "❌ HIGH or CRITICAL vulnerabilities found:"
+            cat /tmp/audit.txt
+            exit 1
+          fi
+          echo "✅ No high/critical vulnerabilities"
+
+      - name: Check all routes have authentication
+        run: |
+          echo "Verifying route auth coverage..."
+          node scripts/ci/check-route-auth.js --strict
+          echo "✅ All routes authenticated"
+
+      - name: Check ownership middleware on resource routes
+        run: |
+          echo "Checking ownership middleware on /sessions/:id and /scans/:id routes..."
+          node scripts/ci/check-ownership-middleware.js
+          echo "✅ Ownership middleware present on all resource routes"
+
+      - name: Check CSP header presence
+        run: |
+          echo "Verifying CSP headers are configured..."
+          grep -r "contentSecurityPolicy" artifacts/api-server/src/app.ts || {
+            echo "❌ CSP header not configured in app.ts"
+            exit 1
+          }
+          echo "✅ CSP configured"
+
+      - name: Check httpOnly cookie flags
+        run: |
+          echo "Checking cookie security flags..."
+          node scripts/ci/check-cookie-security.js
+          echo "✅ Cookies have httpOnly + SameSite=Strict"
+
+      - name: Scan for SQL injection patterns
+        run: |
+          echo "Checking for raw SQL string concatenation..."
+          FOUND=$(grep -rn \
+            --include="*.ts" \
+            -E "(execute|query)\s*\(\s*(sql\s*)?['\`].*\$\{" \
+            artifacts/api-server/src/ \
+            lib/db/src/ \
+            2>/dev/null || true)
+          if [ -n "$FOUND" ]; then
+            echo "❌ Potential SQL injection pattern found:"
+            echo "$FOUND"
+            exit 1
+          fi
+          echo "✅ No SQL injection patterns found"
+
+      - name: Upload security report
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: security-report-${{ github.run_number }}
+          path: /tmp/audit.txt
+          retention-days: 30
+
+  # ─────────────────────────────────────────────
+  # STAGE 6 — Build (production bundle)
+  # Only runs on main branch and phase/** PRs
+  # ─────────────────────────────────────────────
+  build:
+    name: 'Stage 6 — Production Build'
+    needs: [integration-tests, security-checks]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    if: |
+      github.ref == 'refs/heads/main' ||
+      startsWith(github.ref, 'refs/heads/phase/') ||
+      github.event_name == 'pull_request'
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: ${{ env.PNPM_VERSION }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'pnpm'
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build lib/db
+        run: |
+          cd lib/db
+          pnpm run build
+          echo "✅ lib/db built"
+
+      - name: Build lib/api-zod
+        run: |
+          cd lib/api-zod
+          pnpm run build
+          echo "✅ lib/api-zod built"
+
+      - name: Build api-server
+        run: |
+          cd artifacts/api-server
+          pnpm run build
+          echo "✅ api-server built"
+          # Verify the output file exists
+          test -f dist/index.mjs || { echo "❌ dist/index.mjs not found"; exit 1; }
+
+      - name: Build feeder-scanner (frontend)
+        run: |
+          cd artifacts/feeder-scanner
+          pnpm run build
+          echo "✅ feeder-scanner built"
+          # Verify index.html exists
+          test -f dist/public/index.html || { echo "❌ dist/public/index.html not found"; exit 1; }
+
+      - name: Check build sizes
+        run: |
+          echo "Build size report:"
+          echo "--- api-server ---"
+          du -sh artifacts/api-server/dist/
+          echo "--- feeder-scanner ---"
+          du -sh artifacts/feeder-scanner/dist/
+
+          # Fail if frontend bundle > 3MB (uncompressed)
+          BUNDLE_SIZE=$(du -sb artifacts/feeder-scanner/dist/public/assets/*.js 2>/dev/null | \
+            awk '{sum += $1} END {print sum}')
+          MAX_SIZE=$((3 * 1024 * 1024))
+          if [ "$BUNDLE_SIZE" -gt "$MAX_SIZE" ]; then
+            echo "❌ Frontend JS bundle too large: ${BUNDLE_SIZE} bytes (max 3MB)"
+            exit 1
+          fi
+          echo "✅ Bundle size within limit"
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-${{ github.sha }}-${{ github.run_number }}
+          path: |
+            artifacts/api-server/dist/
+            artifacts/feeder-scanner/dist/
+          retention-days: 7
+
+  # ─────────────────────────────────────────────
+  # STAGE 7 — Phase acceptance tests
+  # Only runs on phase/** branches
+  # Runs the actual phase-N.sh acceptance scripts
+  # ─────────────────────────────────────────────
+  phase-acceptance:
+    name: 'Stage 7 — Phase Acceptance Tests'
+    needs: [integration-tests, build]
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    if: startsWith(github.ref, 'refs/heads/phase/') || github.event_name == 'pull_request'
+
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: smt_test
+          POSTGRES_PASSWORD: smt_test
+          POSTGRES_DB: smt_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm + Node
+        uses: pnpm/action-setup@v4
+        with:
+          version: ${{ env.PNPM_VERSION }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'pnpm'
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Detect current phase from branch name
+        id: detect-phase
+        run: |
+          BRANCH="${{ github.head_ref || github.ref_name }}"
+          echo "Branch: $BRANCH"
+          # Extract phase number: phase/1-admin-dashboard → 1
+          PHASE=$(echo "$BRANCH" | grep -oP 'phase/\K\d+' || echo "0")
+          echo "phase=$PHASE" >> $GITHUB_OUTPUT
+          echo "Detected phase: $PHASE"
+
+      - name: Migrate + seed test DB
+        run: |
+          cd lib/db && npx drizzle-kit push
+          cd artifacts/api-server && npx tsx scripts/seed-users.ts
+
+      - name: Start API server in background
+        run: |
+          cd artifacts/api-server
+          NODE_ENV=test node dist/index.mjs &
+          echo "API_PID=$!" >> $GITHUB_ENV
+          # Wait for server to be ready
+          for i in {1..20}; do
+            if curl -sf http://localhost:3001/api/health > /dev/null 2>&1; then
+              echo "✅ API server ready"
+              break
+            fi
+            echo "Waiting for API server... ($i/20)"
+            sleep 2
+          done
+          curl -sf http://localhost:3001/api/health || { echo "❌ API server not ready"; exit 1; }
+
+      - name: Run phase acceptance script
+        run: |
+          PHASE="${{ steps.detect-phase.outputs.phase }}"
+          SCRIPT="scripts/acceptance/phase-${PHASE}.sh"
+          if [ ! -f "$SCRIPT" ]; then
+            echo "⚠️  No acceptance script found at $SCRIPT"
+            echo "Create $SCRIPT before merging this phase"
+            exit 1
+          fi
+          echo "Running $SCRIPT..."
+          chmod +x "$SCRIPT"
+          bash "$SCRIPT" 2>&1 | tee /tmp/acceptance-output.txt
+          EXIT_CODE=${PIPESTATUS[0]}
+          if [ $EXIT_CODE -ne 0 ]; then
+            echo "❌ Phase $PHASE acceptance FAILED"
+            cat /tmp/acceptance-output.txt
+            exit 1
+          fi
+          echo "✅ Phase $PHASE acceptance PASSED"
+
+      - name: Stop API server
+        if: always()
+        run: |
+          if [ -n "$API_PID" ]; then
+            kill $API_PID 2>/dev/null || true
+          fi
+
+      - name: Upload acceptance output
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: acceptance-phase-${{ steps.detect-phase.outputs.phase }}-${{ github.run_number }}
+          path: /tmp/acceptance-output.txt
+          retention-days: 30
+
+  # ─────────────────────────────────────────────
+  # STAGE 8 — Deploy to production
+  # ONLY on push to main, all previous stages must pass
+  # ─────────────────────────────────────────────
+  deploy:
+    name: 'Stage 8 — Deploy to Production'
+    needs: [build, integration-tests, security-checks]
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    environment: production
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Download build artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: build-${{ github.sha }}-${{ github.run_number }}
+          path: ./dist-download
+
+      - name: Pre-deploy DB backup
+        run: |
+          echo "Taking DB backup before deploy..."
+          BACKUP_FILE="backups/pre-deploy-$(date +%Y%m%d-%H%M%S).sql"
+          mkdir -p backups
+          pg_dump "${{ secrets.PRODUCTION_DATABASE_URL }}" \
+            --format=custom \
+            --no-owner \
+            --no-acl \
+            --file="$BACKUP_FILE"
+          echo "✅ Backup saved: $BACKUP_FILE"
+          echo "BACKUP_FILE=$BACKUP_FILE" >> $GITHUB_ENV
+
+      - name: Verify backup integrity
+        run: |
+          echo "Verifying backup is valid..."
+          pg_restore --list "$BACKUP_FILE" > /dev/null
+          echo "✅ Backup integrity verified"
+
+      - name: Apply migrations to production DB
+        run: |
+          echo "Applying migrations to production..."
+          DATABASE_URL="${{ secrets.PRODUCTION_DATABASE_URL }}" \
+            cd lib/db && npx drizzle-kit push --force
+          echo "✅ Migrations applied"
+        env:
+          DATABASE_URL: ${{ secrets.PRODUCTION_DATABASE_URL }}
+
+      - name: Stop current API server (graceful)
+        run: |
+          echo "Stopping current API server..."
+          # Graceful stop — waits for in-flight requests to complete
+          if systemctl is-active --quiet smt-api; then
+            systemctl stop smt-api
+            echo "✅ API server stopped"
+          else
+            echo "ℹ️  API server was not running"
+          fi
+
+      - name: Deploy API server
+        run: |
+          echo "Deploying api-server..."
+          DEPLOY_DIR="/opt/smt-verification"
+          mkdir -p "$DEPLOY_DIR/api-server"
+          # Copy built files
+          cp -r artifacts/api-server/dist/* "$DEPLOY_DIR/api-server/"
+          cp artifacts/api-server/package.json "$DEPLOY_DIR/api-server/"
+          # Install prod-only deps
+          cd "$DEPLOY_DIR/api-server"
+          pnpm install --prod --frozen-lockfile
+          echo "✅ API server deployed"
+
+      - name: Deploy frontend
+        run: |
+          echo "Deploying feeder-scanner frontend..."
+          DEPLOY_DIR="/opt/smt-verification"
+          mkdir -p "$DEPLOY_DIR/public"
+          cp -r artifacts/feeder-scanner/dist/public/* "$DEPLOY_DIR/public/"
+          echo "✅ Frontend deployed"
+
+      - name: Start API server
+        run: |
+          echo "Starting API server..."
+          systemctl start smt-api
+          sleep 3
+          if ! systemctl is-active --quiet smt-api; then
+            echo "❌ API server failed to start"
+            journalctl -u smt-api --no-pager -n 50
+            exit 1
+          fi
+          echo "✅ API server started"
+
+      - name: Production health check
+        run: |
+          echo "Running production health check..."
+          for i in {1..10}; do
+            HEALTH=$(curl -sf http://localhost:3001/api/health 2>/dev/null || echo "failed")
+            if echo "$HEALTH" | grep -q '"status":"ok"'; then
+              echo "✅ Production health check passed"
+              break
+            fi
+            echo "Waiting... ($i/10)"
+            sleep 3
+          done
+          HEALTH=$(curl -sf http://localhost:3001/api/health)
+          echo "$HEALTH" | grep -q '"status":"ok"' || {
+            echo "❌ Production health check FAILED"
+            echo "$HEALTH"
+            exit 1
+          }
+
+      - name: Smoke test — login endpoint
+        run: |
+          echo "Smoke testing login endpoint..."
+          RESPONSE=$(curl -sf -X POST http://localhost:3001/api/auth/login \
+            -H "Content-Type: application/json" \
+            -d '{"username":"invalid","password":"invalid"}' \
+            -w "\n%{http_code}" 2>/dev/null || echo "000")
+          HTTP_CODE=$(echo "$RESPONSE" | tail -1)
+          # Expect 401 (not 500 — server is up and responding correctly)
+          if [ "$HTTP_CODE" != "401" ]; then
+            echo "❌ Login endpoint smoke test failed (got HTTP $HTTP_CODE, expected 401)"
+            exit 1
+          fi
+          echo "✅ Login endpoint responding correctly"
+
+      - name: Smoke test — admin portal not at /admin
+        run: |
+          echo "Verifying admin portal is NOT accessible at /admin..."
+          HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" \
+            http://localhost:3001/admin 2>/dev/null || echo "000")
+          if [ "$HTTP_CODE" != "404" ]; then
+            echo "❌ /admin should return 404 but returned $HTTP_CODE"
+            exit 1
+          fi
+          echo "✅ Admin portal correctly hidden from /admin"
+
+      - name: Record deployment
+        if: success()
+        run: |
+          echo "Recording deployment..."
+          cat >> docs/deployments.log << EOF
+          $(date -u '+%Y-%m-%dT%H:%M:%SZ') | sha=${{ github.sha }} | run=${{ github.run_number }} | status=success | backup=$BACKUP_FILE
+          EOF
+          echo "✅ Deployment recorded"
+
+      - name: Rollback on failure
+        if: failure()
+        run: |
+          echo "⚠️  Deploy FAILED — initiating rollback..."
+          systemctl stop smt-api 2>/dev/null || true
+          if [ -n "$BACKUP_FILE" ] && [ -f "$BACKUP_FILE" ]; then
+            echo "Restoring DB from backup: $BACKUP_FILE"
+            pg_restore \
+              --dbname="${{ secrets.PRODUCTION_DATABASE_URL }}" \
+              --clean \
+              --if-exists \
+              "$BACKUP_FILE"
+            echo "✅ DB restored from backup"
+          fi
+          # Restore previous code from last successful build
+          # (this requires keeping the previous build in /opt/smt-verification/prev/)
+          if [ -d "/opt/smt-verification/prev" ]; then
+            cp -r /opt/smt-verification/prev/api-server/* /opt/smt-verification/api-server/
+            cp -r /opt/smt-verification/prev/public/* /opt/smt-verification/public/
+            systemctl start smt-api
+            echo "✅ Previous version restored"
+          fi
+          echo "❌ DEPLOY FAILED — see logs above. Previous version restored."
+          exit 1

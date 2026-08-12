@@ -1,0 +1,2286 @@
+{
+  "generatedAt": "2026-05-09",
+  "projectName": "SMT Verification System",
+  "description": "Comprehensive Surface Mount Technology feeder scanning and verification system with BOM management, reporting, and analytics",
+  "endpoints": [
+    {
+      "category": "Authentication",
+      "routes": [
+        {
+          "method": "POST",
+          "path": "/api/auth/login",
+          "description": "User login - returns JWT token in smt_token cookie",
+          "auth": "None",
+          "requestBody": {
+            "username": "string",
+            "password": "string",
+            "role": "operator | qa | engineer"
+          },
+          "responseBody": {
+            "userId": "string (UUID)",
+            "username": "string",
+            "role": "string"
+          },
+          "notes": "Sets httpOnly, secure cookie with 8-hour expiration"
+        },
+        {
+          "method": "POST",
+          "path": "/api/auth/logout",
+          "description": "Clear authentication cookie",
+          "auth": "Bearer token (cookie)",
+          "requestBody": null,
+          "responseBody": {
+            "success": "boolean"
+          }
+        },
+        {
+          "method": "GET",
+          "path": "/api/auth/me",
+          "description": "Get current authenticated user from token",
+          "auth": "Bearer token (cookie)",
+          "requestBody": null,
+          "responseBody": {
+            "userId": "string",
+            "username": "string",
+            "role": "string"
+          }
+        },
+        {
+          "method": "POST",
+          "path": "/api/auth/verify-override",
+          "description": "Verify supervisor/QA password for manual override approval",
+          "auth": "None",
+          "requestBody": {
+            "password": "string",
+            "role": "supervisor | qa"
+          },
+          "responseBody": {
+            "valid": "boolean"
+          }
+        }
+      ]
+    },
+    {
+      "category": "BOM (Bill of Materials)",
+      "routes": [
+        {
+          "method": "GET",
+          "path": "/api/bom",
+          "description": "List all BOMs (active or deleted based on query param)",
+          "auth": "Bearer token",
+          "queryParams": {
+            "deleted": "true | false - show deleted BOMs"
+          },
+          "responseBody": [
+            {
+              "id": "number",
+              "name": "string",
+              "description": "string",
+              "itemCount": "number",
+              "makesCount": "number",
+              "createdAt": "ISO8601",
+              "createdBy": "string"
+            }
+          ]
+        },
+        {
+          "method": "POST",
+          "path": "/api/bom",
+          "description": "Create new BOM - requires qa or engineer role",
+          "auth": "Bearer token, role: qa | engineer",
+          "requestBody": {
+            "name": "string",
+            "description": "string (optional)"
+          },
+          "responseBody": {
+            "id": "number",
+            "name": "string",
+            "description": "string",
+            "createdAt": "ISO8601"
+          }
+        },
+        {
+          "method": "GET",
+          "path": "/api/bom/:bomId",
+          "description": "Get BOM details with all items",
+          "auth": "Bearer token",
+          "responseBody": {
+            "id": "number",
+            "name": "string",
+            "description": "string",
+            "items": "array of bomItems"
+          }
+        },
+        {
+          "method": "PUT",
+          "path": "/api/bom/:bomId",
+          "description": "Update BOM - requires qa or engineer role",
+          "auth": "Bearer token, role: qa | engineer",
+          "requestBody": {
+            "name": "string (optional)",
+            "description": "string (optional)"
+          },
+          "responseBody": "BOM object"
+        },
+        {
+          "method": "DELETE",
+          "path": "/api/bom/:bomId",
+          "description": "Soft delete BOM - requires qa or engineer role",
+          "auth": "Bearer token, role: qa | engineer",
+          "responseBody": {
+            "success": "boolean"
+          }
+        },
+        {
+          "method": "POST",
+          "path": "/api/bom/:bomId/items",
+          "description": "Add item to BOM - requires qa or engineer role",
+          "auth": "Bearer token, role: qa | engineer",
+          "requestBody": "BomItem object with 16 fields",
+          "responseBody": "BomItem with id"
+        },
+        {
+          "method": "PUT",
+          "path": "/api/bom/:bomId/items/:itemId",
+          "description": "Update BOM item - requires qa or engineer role",
+          "auth": "Bearer token, role: qa | engineer",
+          "requestBody": "Partial BomItem fields",
+          "responseBody": "Updated BomItem"
+        },
+        {
+          "method": "DELETE",
+          "path": "/api/bom/:bomId/items/:itemId",
+          "description": "Delete BOM item - requires qa or engineer role",
+          "auth": "Bearer token, role: qa | engineer",
+          "responseBody": {
+            "success": "boolean"
+          }
+        },
+        {
+          "method": "POST",
+          "path": "/api/bom/:bomId/import",
+          "description": "Import BOM items from CSV - requires qa or engineer role",
+          "auth": "Bearer token, role: qa | engineer",
+          "requestBody": {
+            "csv": "string - CSV data"
+          },
+          "responseBody": {
+            "imported": "number",
+            "errors": "array of error messages"
+          }
+        }
+      ]
+    },
+    {
+      "category": "Verification Sessions",
+      "routes": [
+        {
+          "method": "POST",
+          "path": "/api/verification/sessions",
+          "description": "Create new verification session - requires operator, qa, or engineer",
+          "auth": "Bearer token",
+          "requestBody": {
+            "operatorId": "number | UUID",
+            "bomId": "number"
+          },
+          "responseBody": {
+            "id": "string (SMT_YYYYMMDD_NNNNNN)",
+            "operatorId": "UUID",
+            "bomId": "number",
+            "status": "active",
+            "startedAt": "ISO8601"
+          }
+        },
+        {
+          "method": "GET",
+          "path": "/api/verification/sessions",
+          "description": "List verification sessions based on role",
+          "auth": "Bearer token",
+          "queryParams": {
+            "role": "qa | engineer - get all sessions if specified"
+          },
+          "responseBody": "array of session objects"
+        },
+        {
+          "method": "GET",
+          "path": "/api/verification/sessions/mine",
+          "description": "Get authenticated operator's active sessions",
+          "auth": "Bearer token",
+          "responseBody": "array of session objects"
+        },
+        {
+          "method": "GET",
+          "path": "/api/verification/sessions/active",
+          "description": "Get active sessions (legacy - may have two sources)",
+          "auth": "Bearer token",
+          "responseBody": "session object or array"
+        },
+        {
+          "method": "GET",
+          "path": "/api/verification/sessions/:sessionId",
+          "description": "Get specific session details with enriched scans",
+          "auth": "Bearer token",
+          "responseBody": {
+            "session": "session object",
+            "scans": "array of enriched scan records with BOM data"
+          }
+        }
+      ]
+    },
+    {
+      "category": "Verification Scans",
+      "routes": [
+        {
+          "method": "POST",
+          "path": "/api/verification/scan",
+          "description": "Record feeder scan - requires operator session ownership",
+          "auth": "Bearer token, role: operator",
+          "requestBody": {
+            "sessionId": "string",
+            "feederNumber": "string",
+            "scannedValue": "string",
+            "lotCode": "string (optional)"
+          },
+          "responseBody": {
+            "id": "number",
+            "sessionId": "string",
+            "feederNumber": "string",
+            "status": "verified | failed | duplicate",
+            "matchedField": "internalPartNumber | mpn1 | mpn2 | mpn3",
+            "matchedMake": "string (optional)"
+          }
+        }
+      ]
+    },
+    {
+      "category": "Sessions & Reports",
+      "routes": [
+        {
+          "method": "GET",
+          "path": "/api/sessions/:sessionId",
+          "description": "Get session details with enriched data",
+          "auth": "Bearer token",
+          "responseBody": "session object with scans"
+        },
+        {
+          "method": "GET",
+          "path": "/api/sessions/:sessionId/report",
+          "description": "Get session report - requires qa or engineer role",
+          "auth": "Bearer token, role: qa | engineer",
+          "responseBody": {
+            "reportData": "PDF-ready report payload",
+            "metrics": "FPY, completion stats, feeder status"
+          }
+        },
+        {
+          "method": "GET",
+          "path": "/api/sessions/:sessionId/report/pdf",
+          "description": "Generate PDF report for session",
+          "auth": "Bearer token, role: qa | engineer",
+          "responseBody": "PDF file (Content-Type: application/pdf)"
+        }
+      ]
+    },
+    {
+      "category": "Reports & Analytics",
+      "routes": [
+        {
+          "method": "GET",
+          "path": "/api/reports/fpy",
+          "description": "First Pass Yield report",
+          "auth": "Bearer token",
+          "queryParams": {
+            "dateFilter": "today | yesterday | last7 | last30",
+            "startDate": "ISO8601",
+            "endDate": "ISO8601",
+            "line": "lineId",
+            "pcb": "pcbId",
+            "operator": "operatorId",
+            "shift": "shiftId"
+          },
+          "responseBody": {
+            "report": "array of FPY data",
+            "metadata": {
+              "generatedAt": "ISO8601",
+              "queryTimeMs": "number",
+              "recordCount": "number"
+            }
+          }
+        },
+        {
+          "method": "GET",
+          "path": "/api/reports/oee",
+          "description": "Overall Equipment Effectiveness report",
+          "auth": "Bearer token",
+          "queryParams": "same as FPY",
+          "responseBody": "array of OEE metrics"
+        },
+        {
+          "method": "GET",
+          "path": "/api/reports/operator",
+          "description": "Operator performance report",
+          "auth": "Bearer token",
+          "queryParams": "same as FPY",
+          "responseBody": "array of operator performance data"
+        },
+        {
+          "method": "GET",
+          "path": "/api/reports/operator-comparison",
+          "description": "Compare operators across metrics",
+          "auth": "Bearer token",
+          "queryParams": "same as FPY",
+          "responseBody": "array of operators with accuracy/speed/errors"
+        },
+        {
+          "method": "GET",
+          "path": "/api/reports/feeder",
+          "description": "Feeder performance analysis",
+          "auth": "Bearer token",
+          "queryParams": "same as FPY",
+          "responseBody": "array of feeder performance data"
+        },
+        {
+          "method": "GET",
+          "path": "/api/reports/feeder-reliability",
+          "description": "Feeder reliability and repeat failures",
+          "auth": "Bearer token",
+          "queryParams": "same as FPY",
+          "responseBody": "array of feeder reliability metrics"
+        },
+        {
+          "method": "GET",
+          "path": "/api/reports/alarm",
+          "description": "Alarm and mismatch analysis",
+          "auth": "Bearer token",
+          "queryParams": "same as FPY",
+          "responseBody": "array of alarm events"
+        },
+        {
+          "method": "GET",
+          "path": "/api/reports/error-analysis",
+          "description": "Error type and root cause analysis",
+          "auth": "Bearer token",
+          "queryParams": "same as FPY",
+          "responseBody": "array of error analysis data"
+        },
+        {
+          "method": "GET",
+          "path": "/api/reports/component-usage",
+          "description": "Component usage and failure tracking",
+          "auth": "Bearer token",
+          "queryParams": "same as FPY",
+          "responseBody": "array of component usage data"
+        },
+        {
+          "method": "GET",
+          "path": "/api/reports/lot-traceability",
+          "description": "Lot and date code traceability",
+          "auth": "Bearer token",
+          "queryParams": "same as FPY",
+          "responseBody": "array of lot traceability data"
+        },
+        {
+          "method": "GET",
+          "path": "/api/reports/export/:reportType",
+          "description": "Export report to Excel/CSV",
+          "auth": "Bearer token",
+          "queryParams": "dateFilter, startDate, endDate, format: xlsx | csv",
+          "responseBody": "File download (application/vnd.openxmlformats)"
+        }
+      ]
+    },
+    {
+      "category": "Audit & Traceability",
+      "routes": [
+        {
+          "method": "POST",
+          "path": "/api/audit/log",
+          "description": "Record audit log entry",
+          "auth": "Bearer token",
+          "requestBody": {
+            "entityType": "string",
+            "entityId": "string",
+            "action": "string",
+            "oldValue": "object (optional)",
+            "newValue": "object (optional)",
+            "changedBy": "string",
+            "description": "string (optional)"
+          },
+          "responseBody": {
+            "success": "boolean",
+            "log": "audit log object"
+          }
+        },
+        {
+          "method": "GET",
+          "path": "/api/audit/logs/:entityType/:entityId",
+          "description": "Get audit logs for an entity",
+          "auth": "Bearer token",
+          "responseBody": {
+            "entityType": "string",
+            "entityId": "string",
+            "count": "number",
+            "logs": "array of audit logs"
+          }
+        },
+        {
+          "method": "GET",
+          "path": "/api/traceability/reel/:reelId",
+          "description": "Find all scans using a specific reel",
+          "auth": "Bearer token",
+          "responseBody": {
+            "reelId": "string",
+            "count": "number",
+            "scans": "array of scan records"
+          }
+        },
+        {
+          "method": "GET",
+          "path": "/api/traceability/lot/:lotNumber",
+          "description": "Find all scans for a specific lot number",
+          "auth": "Bearer token",
+          "responseBody": {
+            "lotNumber": "string",
+            "count": "number",
+            "scans": "array of scan records"
+          }
+        },
+        {
+          "method": "GET",
+          "path": "/api/traceability/date-code/:dateCode",
+          "description": "Find all scans for a date code",
+          "auth": "Bearer token",
+          "responseBody": {
+            "dateCode": "string",
+            "count": "number",
+            "scans": "array of scan records"
+          }
+        },
+        {
+          "method": "GET",
+          "path": "/api/traceability/session/:sessionId/trace",
+          "description": "Full traceability for a session",
+          "auth": "Bearer token",
+          "responseBody": {
+            "sessionId": "number",
+            "count": "number",
+            "trace": "array of trace records"
+          }
+        },
+        {
+          "method": "GET",
+          "path": "/api/traceability/sessions-for-reel/:reelId",
+          "description": "Find all sessions using a specific reel",
+          "auth": "Bearer token",
+          "responseBody": {
+            "reelId": "string",
+            "count": "number",
+            "sessions": "array of session objects"
+          }
+        }
+      ]
+    },
+    {
+      "category": "Feeders & Components",
+      "routes": [
+        {
+          "method": "GET",
+          "path": "/api/feeders",
+          "description": "List all feeders",
+          "auth": "Bearer token",
+          "queryParams": {
+            "status": "optional - filter by status"
+          },
+          "responseBody": "array of feeder objects"
+        },
+        {
+          "method": "GET",
+          "path": "/api/feeders/:feederId",
+          "description": "Get feeder by business ID (e.g., FDR_001)",
+          "auth": "Bearer token",
+          "responseBody": "feeder object"
+        },
+        {
+          "method": "POST",
+          "path": "/api/feeders",
+          "description": "Create new feeder",
+          "auth": "Bearer token",
+          "requestBody": {
+            "feederId": "string",
+            "feederType": "string",
+            "size": "string",
+            "make": "string",
+            "description": "string (optional)"
+          },
+          "responseBody": "created feeder object"
+        },
+        {
+          "method": "PUT",
+          "path": "/api/feeders/:id",
+          "description": "Update feeder",
+          "auth": "Bearer token",
+          "requestBody": "partial feeder fields",
+          "responseBody": "updated feeder object"
+        },
+        {
+          "method": "DELETE",
+          "path": "/api/feeders/:id",
+          "description": "Deactivate feeder",
+          "auth": "Bearer token",
+          "responseBody": {
+            "success": "boolean"
+          }
+        },
+        {
+          "method": "GET",
+          "path": "/api/components",
+          "description": "List all components",
+          "auth": "Bearer token",
+          "responseBody": "array of component objects"
+        },
+        {
+          "method": "GET",
+          "path": "/api/components/by-mpn/:mpn",
+          "description": "Get component by MPN",
+          "auth": "Bearer token",
+          "responseBody": "component object"
+        },
+        {
+          "method": "GET",
+          "path": "/api/components/by-part-id/:partId",
+          "description": "Get component by Part ID",
+          "auth": "Bearer token",
+          "responseBody": "component object"
+        },
+        {
+          "method": "GET",
+          "path": "/api/components/:id",
+          "description": "Get component by database ID",
+          "auth": "Bearer token",
+          "responseBody": "component object"
+        },
+        {
+          "method": "POST",
+          "path": "/api/components",
+          "description": "Create new component",
+          "auth": "Bearer token",
+          "requestBody": {
+            "partId": "string",
+            "mpn": "string",
+            "description": "string (optional)",
+            "manufacturer": "string (optional)",
+            "category": "string (optional)"
+          },
+          "responseBody": "created component object"
+        }
+      ]
+    },
+    {
+      "category": "Dashboard & Analytics",
+      "routes": [
+        {
+          "method": "GET",
+          "path": "/api/dashboard/kpi",
+          "description": "Dashboard KPI metrics",
+          "auth": "Bearer token",
+          "queryParams": {
+            "sessionId": "optional - specific session"
+          },
+          "responseBody": {
+            "totalScans": "number",
+            "passRate": "number",
+            "defectRate": "number",
+            "passScanCount": "number",
+            "mismatchCount": "number",
+            "alternatePassCount": "number",
+            "avgCycleTime": "number (seconds)",
+            "uniqueOperators": "number"
+          }
+        },
+        {
+          "method": "GET",
+          "path": "/api/dashboard/verification",
+          "description": "Verification records table for dashboard",
+          "auth": "Bearer token",
+          "queryParams": {
+            "sessionId": "optional",
+            "limit": "default 50"
+          },
+          "responseBody": {
+            "records": "array of verification records",
+            "total": "number",
+            "returned": "number"
+          }
+        },
+        {
+          "method": "GET",
+          "path": "/api/dashboard/alarms",
+          "description": "Alarm panel with problematic feeders",
+          "auth": "Bearer token",
+          "queryParams": {
+            "sessionId": "optional"
+          },
+          "responseBody": {
+            "alarms": "array of alarm objects",
+            "totalMismatches": "number",
+            "activeAlarms": "number"
+          }
+        },
+        {
+          "method": "GET",
+          "path": "/api/analytics/overview",
+          "description": "Analytics overview metrics",
+          "auth": "Bearer token",
+          "responseBody": {
+            "totalSessions": "number",
+            "activeSessions": "number",
+            "completedSessions": "number",
+            "totalScans": "number",
+            "totalOk": "number",
+            "totalReject": "number",
+            "overallOkRate": "number",
+            "totalBoms": "number",
+            "avgDurationMinutes": "number"
+          }
+        }
+      ]
+    },
+    {
+      "category": "System Health",
+      "routes": [
+        {
+          "method": "GET",
+          "path": "/api/health",
+          "description": "System health check",
+          "auth": "None",
+          "responseBody": {
+            "status": "ok"
+          }
+        },
+        {
+          "method": "GET",
+          "path": "/api/healthz",
+          "description": "Kubernetes-style health probe (alias for /health)",
+          "auth": "None",
+          "responseBody": {
+            "status": "ok"
+          }
+        },
+        {
+          "method": "HEAD",
+          "path": "/api/health",
+          "description": "HEAD request for health checks",
+          "auth": "None",
+          "responseBody": "200 status only"
+        }
+      ]
+    },
+    {
+      "category": "Test Endpoints (Dev Only)",
+      "routes": [
+        {
+          "method": "POST",
+          "path": "/api/test/seed",
+          "description": "Seed test data (DISABLED in production)",
+          "auth": "None",
+          "responseBody": {
+            "success": "boolean",
+            "message": "string"
+          },
+          "notes": "Returns 404 when NODE_ENV=production"
+        },
+        {
+          "method": "POST",
+          "path": "/api/test/clear",
+          "description": "Clear database (DISABLED in production)",
+          "auth": "None",
+          "requestHeaders": {
+            "x-confirm-clear": "CLEAR_DATABASE_CONFIRMED"
+          },
+          "responseBody": {
+            "success": "boolean"
+          },
+          "notes": "Returns 404 when NODE_ENV=production"
+        },
+        {
+          "method": "GET",
+          "path": "/api/test/stats",
+          "description": "Get database statistics (DISABLED in production)",
+          "auth": "None",
+          "responseBody": {
+            "sessionCount": "number",
+            "scanCount": "number",
+            "bomCount": "number"
+          },
+          "notes": "Returns 404 when NODE_ENV=production"
+        }
+      ]
+    }
+  ],
+  "services": [
+    {
+      "file": "artifacts/api-server/src/services/verificationService.ts",
+      "description": "Core verification and MPN matching logic",
+      "functions": [
+        {
+          "name": "verifyMPN",
+          "description": "Verify scanned MPN against BOM row, check internal part numbers and all MPN alternatives",
+          "params": {
+            "scanned": "string - scanned value",
+            "bomRow": "BomItemForVerification"
+          },
+          "returns": "VerifyResult with matched field and make"
+        },
+        {
+          "name": "verifyFeederScan",
+          "description": "Record feeder scan in database with verification status",
+          "params": {
+            "sessionId": "string",
+            "feederNumber": "string",
+            "scannedValue": "string",
+            "bomId": "number",
+            "lotCode": "string (optional)"
+          },
+          "returns": "Promise<FeederScan object>"
+        },
+        {
+          "name": "getSessionProgress",
+          "description": "Calculate session progress metrics and verification statistics",
+          "params": {
+            "sessionId": "string"
+          },
+          "returns": "Promise<Progress object with verified/total counts>"
+        }
+      ]
+    },
+    {
+      "file": "artifacts/api-server/src/services/report-service.ts",
+      "description": "Report generation for FPY, OEE, operator performance, feeder reliability, etc.",
+      "functions": [
+        {
+          "name": "generateFPYReport",
+          "description": "First Pass Yield report by date/line/PCB",
+          "params": {
+            "filters": "ReportFilters with date range and optional grouping"
+          },
+          "returns": "Promise<FPYReportData[]>"
+        },
+        {
+          "name": "generateOEEReport",
+          "description": "Overall Equipment Effectiveness (Quality × Efficiency × Availability)",
+          "params": {
+            "filters": "ReportFilters"
+          },
+          "returns": "Promise<OEEReportData[]>",
+          "notes": "Returns 0.0-1.0 scale for all metrics"
+        },
+        {
+          "name": "generateOperatorReport",
+          "description": "Operator performance metrics - scans, pass rate, speed",
+          "params": {
+            "filters": "ReportFilters"
+          },
+          "returns": "Promise<OperatorPerformanceData[]>",
+          "notes": "Calculates per-session average to avoid high-volume bias"
+        },
+        {
+          "name": "generateOperatorComparisonReport",
+          "description": "Compare multiple operators on accuracy, speed, error count",
+          "params": {
+            "filters": "ReportFilters"
+          },
+          "returns": "Promise<OperatorComparisonData>"
+        },
+        {
+          "name": "generateFeederReport",
+          "description": "Feeder performance analysis - usage and failure tracking",
+          "params": {
+            "filters": "ReportFilters"
+          },
+          "returns": "Promise<FeederPerformanceData[]>"
+        },
+        {
+          "name": "generateFeederReliabilityReport",
+          "description": "Feeder reliability - repeat failures and warning frequency",
+          "params": {
+            "filters": "ReportFilters"
+          },
+          "returns": "Promise<FeederReliabilityData[]>"
+        },
+        {
+          "name": "generateAlarmReport",
+          "description": "Alarm and mismatch events - type, location, severity",
+          "params": {
+            "filters": "ReportFilters"
+          },
+          "returns": "Promise<AlarmReportData[]>"
+        },
+        {
+          "name": "generateErrorAnalysisReport",
+          "description": "Error type analysis - feeder vs component errors",
+          "params": {
+            "filters": "ReportFilters"
+          },
+          "returns": "Promise<ErrorAnalysisData[]>"
+        },
+        {
+          "name": "generateComponentUsageReport",
+          "description": "Component usage tracking and failure rates",
+          "params": {
+            "filters": "ReportFilters"
+          },
+          "returns": "Promise<ComponentUsageData[]>"
+        },
+        {
+          "name": "generateLotTraceabilityReport",
+          "description": "Lot number and date code traceability",
+          "params": {
+            "filters": "ReportFilters"
+          },
+          "returns": "Promise<LotTraceabilityData[]>"
+        }
+      ],
+      "notes": "KNOWN ISSUES: OEE scale inconsistency, feeders_per_minute bias, alarm type unreachable default, bomUsageCount hardcoded to 0"
+    },
+    {
+      "file": "artifacts/api-server/src/services/audit-service.ts",
+      "description": "Audit trail recording and querying",
+      "functions": [
+        {
+          "name": "recordAuditLog",
+          "description": "Create audit log entry for entity changes",
+          "params": {
+            "entityType": "string",
+            "entityId": "string",
+            "action": "string",
+            "oldValue": "JSON string (optional)",
+            "newValue": "JSON string (optional)",
+            "changedBy": "string",
+            "description": "string (optional)"
+          },
+          "returns": "Promise<AuditLog>"
+        },
+        {
+          "name": "getAuditLogsForEntity",
+          "description": "Get all audit logs for a specific entity",
+          "params": {
+            "entityType": "string",
+            "entityId": "string"
+          },
+          "returns": "Promise<AuditLog[]>"
+        },
+        {
+          "name": "getAuditLogsByAction",
+          "description": "Get all audit logs for a specific action type",
+          "params": {
+            "action": "string"
+          },
+          "returns": "Promise<AuditLog[]>"
+        },
+        {
+          "name": "getAuditLogsByUser",
+          "description": "Get all audit logs for a specific user",
+          "params": {
+            "userId": "string"
+          },
+          "returns": "Promise<AuditLog[]>"
+        }
+      ]
+    },
+    {
+      "file": "artifacts/api-server/src/services/traceability-service.ts",
+      "description": "Component traceability and reel/lot tracking",
+      "functions": [
+        {
+          "name": "findScansForReel",
+          "description": "Find all scans using a specific reel ID",
+          "params": {
+            "reelId": "string"
+          },
+          "returns": "Promise<Scan[]>"
+        },
+        {
+          "name": "findScansForLot",
+          "description": "Find all scans for a lot number",
+          "params": {
+            "lotNumber": "string"
+          },
+          "returns": "Promise<Scan[]>"
+        },
+        {
+          "name": "findScansForDateCode",
+          "description": "Find all scans for a date code",
+          "params": {
+            "dateCode": "string"
+          },
+          "returns": "Promise<Scan[]>"
+        },
+        {
+          "name": "getSessionTraceability",
+          "description": "Full traceability data for a session",
+          "params": {
+            "sessionId": "number"
+          },
+          "returns": "Promise<TraceRecord[]>"
+        },
+        {
+          "name": "findSessionsForReel",
+          "description": "Find all sessions using a specific reel",
+          "params": {
+            "reelId": "string"
+          },
+          "returns": "Promise<Session[]>"
+        }
+      ]
+    },
+    {
+      "file": "artifacts/api-server/src/services/filter-service.ts",
+      "description": "Report filter validation and date range handling",
+      "functions": [
+        {
+          "name": "validateFilters",
+          "description": "Validate report filter date ranges and combinations",
+          "params": {
+            "filters": "ReportFilters"
+          },
+          "returns": "{ valid: boolean, errors: string[] }",
+          "notes": "Enforces both startDate/endDate required, rejects ambiguous combinations"
+        },
+        {
+          "name": "getDateRange",
+          "description": "Convert dateFilter to start/end timestamps",
+          "params": {
+            "dateFilter": "today | yesterday | last7 | last30"
+          },
+          "returns": "{ startDate: Date, endDate: Date }"
+        }
+      ]
+    },
+    {
+      "file": "artifacts/api-server/src/services/export-service.ts",
+      "description": "Export report data to Excel/CSV with streaming",
+      "functions": [
+        {
+          "name": "exportToExcel",
+          "description": "Stream report data to Excel file",
+          "params": {
+            "data": "array of report rows",
+            "filename": "string"
+          },
+          "returns": "Promise<void>",
+          "notes": "Uses createWriteStream for memory efficiency"
+        },
+        {
+          "name": "exportToCsv",
+          "description": "Stream report data to CSV file",
+          "params": {
+            "data": "array of report rows",
+            "filename": "string"
+          },
+          "returns": "Promise<void>",
+          "notes": "Quotes all values for safety"
+        },
+        {
+          "name": "getExportPath",
+          "description": "Get safe export file path",
+          "params": {
+            "filename": "string"
+          },
+          "returns": "string - validated path",
+          "notes": "Validates against path traversal attacks"
+        }
+      ]
+    },
+    {
+      "file": "artifacts/api-server/src/services/validation-service.ts",
+      "description": "Input validation using Zod schemas",
+      "functions": [
+        {
+          "name": "validateBomCreate",
+          "description": "Validate BOM creation request",
+          "returns": "ZodSchema"
+        },
+        {
+          "name": "validateReportFilters",
+          "description": "Validate report filter parameters",
+          "returns": "ZodSchema"
+        }
+      ]
+    },
+    {
+      "file": "artifacts/api-server/src/services/component-service.ts",
+      "description": "Component CRUD and lookup operations",
+      "functions": [
+        {
+          "name": "getComponents",
+          "description": "Fetch all components",
+          "returns": "Promise<Component[]>"
+        },
+        {
+          "name": "getComponentByMpn",
+          "description": "Look up component by MPN",
+          "params": {
+            "mpn": "string"
+          },
+          "returns": "Promise<Component | null>"
+        },
+        {
+          "name": "getComponentByPartId",
+          "description": "Look up component by Part ID",
+          "params": {
+            "partId": "string"
+          },
+          "returns": "Promise<Component | null>"
+        },
+        {
+          "name": "getComponentById",
+          "description": "Fetch component by database ID",
+          "params": {
+            "id": "number"
+          },
+          "returns": "Promise<Component | null>"
+        },
+        {
+          "name": "createComponent",
+          "description": "Create new component record",
+          "params": {
+            "partId": "string",
+            "mpn": "string",
+            "description": "string (optional)",
+            "manufacturer": "string (optional)",
+            "category": "string (optional)"
+          },
+          "returns": "Promise<Component>"
+        }
+      ],
+      "notes": "File marked with @ts-nocheck - needs proper types"
+    },
+    {
+      "file": "artifacts/api-server/src/services/feeder-service.ts",
+      "description": "Feeder CRUD and status tracking",
+      "functions": [
+        {
+          "name": "getFeeders",
+          "description": "List all feeders with optional status filter",
+          "params": {
+            "filter": "{ status?: string }"
+          },
+          "returns": "Promise<Feeder[]>"
+        },
+        {
+          "name": "getFeederByFeederId",
+          "description": "Look up feeder by business ID",
+          "params": {
+            "feederId": "string"
+          },
+          "returns": "Promise<Feeder | null>"
+        },
+        {
+          "name": "createFeeder",
+          "description": "Create new feeder",
+          "params": {
+            "feederId": "string",
+            "feederType": "string",
+            "size": "string",
+            "make": "string",
+            "description": "string (optional)"
+          },
+          "returns": "Promise<Feeder>"
+        },
+        {
+          "name": "updateFeeder",
+          "description": "Update feeder properties",
+          "params": {
+            "id": "number",
+            "updates": "Partial<Feeder>"
+          },
+          "returns": "Promise<Feeder | null>"
+        },
+        {
+          "name": "deleteFeeder",
+          "description": "Deactivate feeder",
+          "params": {
+            "id": "number"
+          },
+          "returns": "Promise<boolean>"
+        }
+      ],
+      "notes": "File marked with @ts-nocheck - needs proper types"
+    },
+    {
+      "file": "artifacts/api-server/src/services/seed-service.ts",
+      "description": "Database seeding for test data and default users",
+      "functions": [
+        {
+          "name": "seedUsers",
+          "description": "Create default operator, qa, engineer, and admin users with bcrypt hashed passwords",
+          "returns": "Promise<void>",
+          "notes": "Reads from environment variables: SEED_OPERATOR_PASSWORD, SEED_QA_PASSWORD, SEED_ENGINEER_PASSWORD, SEED_ADMIN_PASSWORD"
+        },
+        {
+          "name": "seedTestData",
+          "description": "Populate test BOMs, sessions, and scans",
+          "returns": "Promise<void>"
+        }
+      ],
+      "notes": "File marked with @ts-nocheck - needs proper types"
+    },
+    {
+      "file": "artifacts/api-server/src/services/timestamp-service.ts",
+      "description": "Session timestamp validation and consistency checks",
+      "functions": [
+        {
+          "name": "validateSessionTimestamps",
+          "description": "Validate session start/end/created times for logical consistency",
+          "params": {
+            "startTime": "Date",
+            "endTime": "Date (optional)",
+            "createdAt": "Date"
+          },
+          "returns": "{ valid: boolean, issues: string[] }",
+          "notes": "Checks for future times, end before start, created in future"
+        }
+      ]
+    }
+  ],
+  "components": {
+    "pages": [
+      {
+        "path": "artifacts/feeder-scanner/src/pages/login.tsx",
+        "name": "Login",
+        "description": "Role-based authentication page with operator/qa/engineer selection",
+        "props": "None (standalone page)",
+        "state": {
+          "username": "string",
+          "password": "string",
+          "role": "operator | qa | engineer | null",
+          "error": "string"
+        },
+        "hooks": ["useState", "useAuth", "useLocation", "useNotification"],
+        "complexLogic": "Role selection UI, form validation, error handling"
+      },
+      {
+        "path": "artifacts/feeder-scanner/src/pages/verification.tsx",
+        "name": "Verification",
+        "description": "Main verification workflow - scan feeders, MPNs, lot codes",
+        "state": {
+          "lotCodeValue": "string",
+          "showResetConfirm": "boolean",
+          "resetConfirmStep": "pending | confirmed"
+        },
+        "hooks": ["useVerificationStore", "useScanner", "useNotification", "useLocation"],
+        "complexLogic": "Multi-step verification workflow, scanner input handling, progress tracking",
+        "notes": "File marked with @ts-nocheck"
+      },
+      {
+        "path": "artifacts/feeder-scanner/src/pages/session-active.tsx",
+        "name": "SessionActive",
+        "description": "Monitor active verification session in real-time",
+        "state": "Uses TanStack Query for session data",
+        "hooks": ["useQuery", "useLocation", "useAuth"],
+        "complexLogic": "Real-time session monitoring, feeder status tracking"
+      },
+      {
+        "path": "artifacts/feeder-scanner/src/pages/session-new.tsx",
+        "name": "SessionNew",
+        "description": "Create new verification session with BOM selection",
+        "state": {
+          "selectedBomId": "number | null",
+          "operatorId": "number | null",
+          "creatingSession": "boolean"
+        },
+        "hooks": ["useState", "useBomList", "useLocation"],
+        "complexLogic": "BOM selection, operator mapping, session creation"
+      },
+      {
+        "path": "artifacts/feeder-scanner/src/pages/session-report.tsx",
+        "name": "SessionReport",
+        "description": "View and generate session completion report",
+        "state": "Fetches report data via TanStack Query",
+        "hooks": ["useQuery", "useParams"],
+        "complexLogic": "Report generation, PDF export, metrics calculation"
+      },
+      {
+        "path": "artifacts/feeder-scanner/src/pages/bom-manager.tsx",
+        "name": "BomManager",
+        "description": "Manage and create BOMs with item editing",
+        "state": {
+          "selectedBomId": "number | null",
+          "editingItem": "BomItem | null",
+          "showItemForm": "boolean"
+        },
+        "hooks": ["useState", "useBomList", "useQuery", "useMutation"],
+        "complexLogic": "BOM CRUD, item management, CSV import validation"
+      },
+      {
+        "path": "artifacts/feeder-scanner/src/pages/reports.tsx",
+        "name": "Reports",
+        "description": "Analytics dashboard with report generation and export",
+        "state": {
+          "selectedReport": "string",
+          "filters": "ReportFilters",
+          "reportData": "any",
+          "loading": "boolean"
+        },
+        "hooks": ["useState", "useQuery", "useReportFilters"],
+        "complexLogic": "Report type switching, filter validation, export handling",
+        "notes": "File marked with @ts-nocheck, assumes response structure"
+      },
+      {
+        "path": "artifacts/feeder-scanner/src/pages/dashboard.tsx",
+        "name": "Dashboard",
+        "description": "Real-time production dashboard with KPIs and alarms",
+        "state": "Uses TanStack Query for KPI and alarm data",
+        "hooks": ["useQuery", "useInterval"],
+        "complexLogic": "Real-time metric updates, alarm visualization, cycle time calculation"
+      },
+      {
+        "path": "artifacts/feeder-scanner/src/pages/analytics.tsx",
+        "name": "Analytics",
+        "description": "Historical analytics and trends",
+        "state": "Analytics data from server",
+        "hooks": ["useQuery"],
+        "complexLogic": "Data aggregation, trend analysis"
+      },
+      {
+        "path": "artifacts/feeder-scanner/src/pages/splicing.tsx",
+        "name": "Splicing",
+        "description": "Feeder splicing workflow (reel changeover)",
+        "state": "Splice session tracking",
+        "hooks": ["useLocation", "useSplicingStore"],
+        "complexLogic": "Splice record management, old/new spool tracking"
+      },
+      {
+        "path": "artifacts/feeder-scanner/src/pages/trash-bin.tsx",
+        "name": "TrashBin",
+        "description": "View and restore soft-deleted records",
+        "state": {
+          "deletedItems": "array",
+          "selectedIds": "Set<number>"
+        },
+        "hooks": ["useState", "useQuery"],
+        "complexLogic": "Soft delete restoration, multi-select operations"
+      }
+    ],
+    "majorComponents": [
+      {
+        "path": "artifacts/feeder-scanner/src/components/AppShell.tsx",
+        "name": "AppShell",
+        "description": "Main application layout - header, nav, footer with session status",
+        "props": {
+          "children": "React.ReactNode"
+        },
+        "state": {
+          "time": "string - current time",
+          "lastActionTime": "string",
+          "bomLoaded": "boolean"
+        },
+        "hooks": ["useAuth", "useSession", "useEffect", "useInterval"],
+        "complexLogic": "Real-time clock, session tracking, status indicators"
+      },
+      {
+        "path": "artifacts/feeder-scanner/src/components/alternate-selector.tsx",
+        "name": "AlternateSelector",
+        "description": "Component alternate selection modal for MPN verification",
+        "props": {
+          "alternates": "array of alternate MPNs",
+          "onSelect": "function"
+        },
+        "state": "Selected alternate index",
+        "hooks": ["useState"],
+        "complexLogic": "Alternate display and selection logic"
+      },
+      {
+        "path": "artifacts/feeder-scanner/src/components/item-form-modal.tsx",
+        "name": "ItemFormModal",
+        "description": "BOM item form for creating/editing items",
+        "props": {
+          "bomId": "number",
+          "item": "BomItem (optional)",
+          "onClose": "function",
+          "onSave": "function"
+        },
+        "state": "Form field values, validation errors",
+        "hooks": ["useState", "useForm", "useMutation"],
+        "complexLogic": "16-field validation, form submission, error handling"
+      },
+      {
+        "path": "artifacts/feeder-scanner/src/components/NotificationSystem.tsx",
+        "name": "NotificationSystem",
+        "description": "Toast notification system with success/error/warning types",
+        "state": "Notification queue management",
+        "hooks": ["useState", "useEffect"],
+        "complexLogic": "Auto-dismiss, queue ordering, animation timing"
+      },
+      {
+        "path": "artifacts/feeder-scanner/src/components/reporting/ReportDisplay.tsx",
+        "name": "ReportDisplay",
+        "description": "Render report data in table format",
+        "props": {
+          "data": "array of report rows",
+          "columns": "array of column definitions"
+        },
+        "state": "Pagination, sorting",
+        "hooks": ["useState"],
+        "complexLogic": "Dynamic column rendering, null value handling",
+        "notes": "File marked with @ts-nocheck, missing ARIA attributes"
+      },
+      {
+        "path": "artifacts/feeder-scanner/src/components/reporting/ReportFilters.tsx",
+        "name": "ReportFilters",
+        "description": "Filter controls for report generation",
+        "props": {
+          "onFiltersChange": "function"
+        },
+        "state": {
+          "dateFilter": "today | yesterday | last7 | last30 | custom",
+          "startDate": "Date (optional)",
+          "endDate": "Date (optional)",
+          "operatorId": "string (optional)"
+        },
+        "hooks": ["useState", "useCallback"],
+        "complexLogic": "Date range validation, timezone handling, state updates",
+        "notes": "File marked with @ts-nocheck, missing label associations"
+      },
+      {
+        "path": "artifacts/feeder-scanner/src/components/reporting/ReportChart.tsx",
+        "name": "ReportChart",
+        "description": "Chart visualization for report metrics",
+        "props": {
+          "data": "array of data points",
+          "title": "string",
+          "type": "bar | line | pie"
+        },
+        "state": "Chart configuration",
+        "hooks": ["useMemo"],
+        "complexLogic": "Chart type switching, data transformation",
+        "notes": "File marked with @ts-nocheck"
+      },
+      {
+        "path": "artifacts/feeder-scanner/src/components/reporting/ExportControls.tsx",
+        "name": "ExportControls",
+        "description": "Export report to Excel or CSV",
+        "props": {
+          "reportType": "string",
+          "filters": "ReportFilters"
+        },
+        "state": "Export loading state",
+        "hooks": ["useState", "useCallback"],
+        "complexLogic": "Format selection, export API call, error handling"
+      },
+      {
+        "path": "artifacts/feeder-scanner/src/components/scan-feedback.tsx",
+        "name": "ScanFeedback",
+        "description": "Visual feedback for scan results (pass/fail/alternate)",
+        "props": {
+          "result": "VerifyResult",
+          "animated": "boolean"
+        },
+        "state": "Animation state",
+        "hooks": ["useState", "useEffect"],
+        "complexLogic": "Result display logic, animation timing"
+      },
+      {
+        "path": "artifacts/feeder-scanner/src/components/LogPanel.tsx",
+        "name": "LogPanel",
+        "description": "Debug log display during verification",
+        "state": "Log entries from store",
+        "hooks": ["useVerificationStore"],
+        "complexLogic": "Log filtering, level-based coloring"
+      },
+      {
+        "path": "artifacts/feeder-scanner/src/components/ManualOverrideModal.tsx",
+        "name": "ManualOverrideModal",
+        "description": "Password-protected manual verification override",
+        "props": {
+          "feederNumber": "string",
+          "expectedMpn": "string",
+          "onApprove": "function",
+          "onCancel": "function"
+        },
+        "state": "Password input, loading",
+        "hooks": ["useState"],
+        "complexLogic": "Override authentication, audit logging"
+      }
+    ]
+  },
+  "tables": [
+    {
+      "name": "users",
+      "description": "System users with role-based access control",
+      "columns": [
+        {
+          "name": "id",
+          "type": "UUID",
+          "constraint": "PRIMARY KEY, auto-generated"
+        },
+        {
+          "name": "username",
+          "type": "TEXT",
+          "constraint": "NOT NULL, indexed"
+        },
+        {
+          "name": "password",
+          "type": "TEXT",
+          "constraint": "NOT NULL - bcrypt hashed"
+        },
+        {
+          "name": "displayName",
+          "type": "TEXT",
+          "constraint": "default empty string"
+        },
+        {
+          "name": "name",
+          "type": "TEXT",
+          "constraint": "default empty string"
+        },
+        {
+          "name": "role",
+          "type": "TEXT",
+          "constraint": "NOT NULL - operator|qa|engineer|admin"
+        },
+        {
+          "name": "employee_id",
+          "type": "TEXT",
+          "constraint": "nullable - required by live database schema"
+        },
+        {
+          "name": "createdAt",
+          "type": "TIMESTAMP",
+          "constraint": "default now()"
+        }
+      ]
+    },
+    {
+      "name": "boms",
+      "description": "Bill of Materials master records",
+      "columns": [
+        {
+          "name": "id",
+          "type": "SERIAL",
+          "constraint": "PRIMARY KEY"
+        },
+        {
+          "name": "name",
+          "type": "TEXT",
+          "constraint": "NOT NULL"
+        },
+        {
+          "name": "description",
+          "type": "TEXT"
+        },
+        {
+          "name": "createdAt",
+          "type": "TIMESTAMP",
+          "constraint": "default now()"
+        },
+        {
+          "name": "createdBy",
+          "type": "TEXT"
+        },
+        {
+          "name": "deletedAt",
+          "type": "TIMESTAMP",
+          "constraint": "nullable - soft delete"
+        },
+        {
+          "name": "deletedBy",
+          "type": "TEXT"
+        },
+        {
+          "name": "revisionLabel",
+          "type": "TEXT",
+          "constraint": "e.g., Rev A, Rev B"
+        },
+        {
+          "name": "parentBomId",
+          "type": "INTEGER",
+          "constraint": "FK to boms (self-reference for revisions)"
+        },
+        {
+          "name": "revisionNotes",
+          "type": "TEXT"
+        },
+        {
+          "name": "isLatest",
+          "type": "BOOLEAN",
+          "constraint": "default true"
+        }
+      ]
+    },
+    {
+      "name": "bom_items",
+      "description": "Individual items within a BOM with 16-field specification",
+      "columns": [
+        {
+          "name": "id",
+          "type": "SERIAL",
+          "constraint": "PRIMARY KEY"
+        },
+        {
+          "name": "bomId",
+          "type": "INTEGER",
+          "constraint": "NOT NULL, FK to boms, CASCADE delete"
+        },
+        {
+          "name": "srNo",
+          "type": "TEXT"
+        },
+        {
+          "name": "feederNumber",
+          "type": "TEXT",
+          "constraint": "NOT NULL - indexed"
+        },
+        {
+          "name": "ucalIntPn",
+          "type": "TEXT"
+        },
+        {
+          "name": "quantity",
+          "type": "NUMERIC(12,2)",
+          "constraint": "NOT NULL"
+        },
+        {
+          "name": "reference",
+          "type": "TEXT"
+        },
+        {
+          "name": "description",
+          "type": "TEXT"
+        },
+        {
+          "name": "package",
+          "type": "TEXT"
+        },
+        {
+          "name": "make1",
+          "type": "TEXT"
+        },
+        {
+          "name": "mpn1",
+          "type": "TEXT"
+        },
+        {
+          "name": "make2",
+          "type": "TEXT"
+        },
+        {
+          "name": "mpn2",
+          "type": "TEXT"
+        },
+        {
+          "name": "make3",
+          "type": "TEXT"
+        },
+        {
+          "name": "mpn3",
+          "type": "TEXT"
+        },
+        {
+          "name": "remarks",
+          "type": "TEXT"
+        },
+        {
+          "name": "action",
+          "type": "TEXT"
+        },
+        {
+          "name": "manufacturer",
+          "type": "TEXT"
+        },
+        {
+          "name": "cost",
+          "type": "NUMERIC(10,4)"
+        },
+        {
+          "name": "leadTime",
+          "type": "INTEGER",
+          "constraint": "days"
+        },
+        {
+          "name": "deletedAt",
+          "type": "TIMESTAMP",
+          "constraint": "soft delete"
+        },
+        {
+          "name": "isDeleted",
+          "type": "BOOLEAN",
+          "constraint": "default false"
+        }
+      ]
+    },
+    {
+      "name": "changeover_sessions",
+      "description": "Verification sessions using new UUID-based design",
+      "columns": [
+        {
+          "name": "id",
+          "type": "TEXT",
+          "constraint": "PRIMARY KEY - format SMT_YYYYMMDD_NNNNNN"
+        },
+        {
+          "name": "operatorId",
+          "type": "UUID",
+          "constraint": "NOT NULL, FK to users, indexed"
+        },
+        {
+          "name": "bomId",
+          "type": "INTEGER",
+          "constraint": "NOT NULL, FK to boms, CASCADE delete"
+        },
+        {
+          "name": "verificationMode",
+          "type": "TEXT",
+          "constraint": "AUTO or MANUAL, default AUTO"
+        },
+        {
+          "name": "status",
+          "type": "ENUM",
+          "constraint": "active|completed|cancelled"
+        },
+        {
+          "name": "startedAt",
+          "type": "TIMESTAMP",
+          "constraint": "default now()"
+        },
+        {
+          "name": "completedAt",
+          "type": "TIMESTAMP",
+          "constraint": "nullable"
+        },
+        {
+          "name": "createdAt",
+          "type": "TIMESTAMP",
+          "constraint": "default now()"
+        }
+      ]
+    },
+    {
+      "name": "feeder_scans",
+      "description": "Individual feeder scans with verification results",
+      "columns": [
+        {
+          "name": "id",
+          "type": "SERIAL",
+          "constraint": "PRIMARY KEY"
+        },
+        {
+          "name": "sessionId",
+          "type": "TEXT",
+          "constraint": "NOT NULL, FK to changeover_sessions"
+        },
+        {
+          "name": "feederNumber",
+          "type": "TEXT",
+          "constraint": "NOT NULL, indexed"
+        },
+        {
+          "name": "scannedValue",
+          "type": "TEXT",
+          "constraint": "NOT NULL - the actual scanned MPN/ID"
+        },
+        {
+          "name": "matchedField",
+          "type": "TEXT",
+          "constraint": "internalPartNumber|mpn1|mpn2|mpn3"
+        },
+        {
+          "name": "matchedMake",
+          "type": "TEXT"
+        },
+        {
+          "name": "lotCode",
+          "type": "TEXT"
+        },
+        {
+          "name": "verificationMode",
+          "type": "TEXT",
+          "constraint": "AUTO or MANUAL"
+        },
+        {
+          "name": "status",
+          "type": "ENUM",
+          "constraint": "verified|failed|duplicate"
+        },
+        {
+          "name": "scannedAt",
+          "type": "TIMESTAMP",
+          "constraint": "default now()"
+        },
+        {
+          "name": "operatorId",
+          "type": "UUID",
+          "constraint": "NOT NULL, FK to users"
+        }
+      ]
+    },
+    {
+      "name": "sessions",
+      "description": "Legacy session records (may be consolidated with changeover_sessions)",
+      "columns": [
+        {
+          "name": "id",
+          "type": "SERIAL",
+          "constraint": "PRIMARY KEY"
+        },
+        {
+          "name": "bomId",
+          "type": "INTEGER",
+          "constraint": "FK to boms"
+        },
+        {
+          "name": "companyName",
+          "type": "TEXT",
+          "constraint": "NOT NULL"
+        },
+        {
+          "name": "customerName",
+          "type": "TEXT"
+        },
+        {
+          "name": "panelName",
+          "type": "TEXT",
+          "constraint": "NOT NULL"
+        },
+        {
+          "name": "supervisorName",
+          "type": "TEXT",
+          "constraint": "NOT NULL"
+        },
+        {
+          "name": "operatorName",
+          "type": "TEXT",
+          "constraint": "NOT NULL"
+        },
+        {
+          "name": "qaName",
+          "type": "TEXT"
+        },
+        {
+          "name": "shiftName",
+          "type": "TEXT",
+          "constraint": "NOT NULL"
+        },
+        {
+          "name": "shiftDate",
+          "type": "TEXT",
+          "constraint": "NOT NULL"
+        },
+        {
+          "name": "verificationMode",
+          "type": "TEXT",
+          "constraint": "AUTO or MANUAL, default AUTO"
+        },
+        {
+          "name": "status",
+          "type": "TEXT",
+          "constraint": "active or completed"
+        },
+        {
+          "name": "startTime",
+          "type": "TIMESTAMP",
+          "constraint": "default now()"
+        },
+        {
+          "name": "endTime",
+          "type": "TIMESTAMP",
+          "constraint": "nullable"
+        },
+        {
+          "name": "createdAt",
+          "type": "TIMESTAMP",
+          "constraint": "default now()"
+        },
+        {
+          "name": "deletedAt",
+          "type": "TIMESTAMP",
+          "constraint": "soft delete"
+        }
+      ]
+    },
+    {
+      "name": "scan_records",
+      "description": "Scan verification records with component details",
+      "columns": [
+        {
+          "name": "id",
+          "type": "SERIAL",
+          "constraint": "PRIMARY KEY"
+        },
+        {
+          "name": "sessionId",
+          "type": "INTEGER",
+          "constraint": "NOT NULL, FK to sessions"
+        },
+        {
+          "name": "feederNumber",
+          "type": "TEXT",
+          "constraint": "NOT NULL"
+        },
+        {
+          "name": "feederId",
+          "type": "INTEGER",
+          "constraint": "FK to feeders"
+        },
+        {
+          "name": "spoolBarcode",
+          "type": "TEXT"
+        },
+        {
+          "name": "status",
+          "type": "TEXT",
+          "constraint": "NOT NULL"
+        },
+        {
+          "name": "partNumber",
+          "type": "TEXT"
+        },
+        {
+          "name": "componentId",
+          "type": "INTEGER",
+          "constraint": "FK to components"
+        },
+        {
+          "name": "scannedMpn",
+          "type": "TEXT",
+          "constraint": "indexed - actual MPN scanned"
+        },
+        {
+          "name": "lotNumber",
+          "type": "TEXT"
+        },
+        {
+          "name": "dateCode",
+          "type": "TEXT"
+        },
+        {
+          "name": "reelId",
+          "type": "TEXT"
+        },
+        {
+          "name": "alternateUsed",
+          "type": "BOOLEAN",
+          "constraint": "default false"
+        },
+        {
+          "name": "validationResult",
+          "type": "TEXT",
+          "constraint": "pass|alternate_pass|mismatch|alternate_not_found"
+        },
+        {
+          "name": "verificationMode",
+          "type": "TEXT",
+          "constraint": "AUTO or MANUAL"
+        },
+        {
+          "name": "matchScore",
+          "type": "INTEGER",
+          "constraint": "0-100 match percentage"
+        },
+        {
+          "name": "matchingAlgorithm",
+          "type": "TEXT",
+          "constraint": "exact|fuzzy|normalized"
+        },
+        {
+          "name": "expectedValue",
+          "type": "TEXT"
+        },
+        {
+          "name": "suggestions",
+          "type": "TEXT",
+          "constraint": "JSON array of alternative matches"
+        },
+        {
+          "name": "scannedAt",
+          "type": "TIMESTAMP",
+          "constraint": "default now(), indexed"
+        }
+      ]
+    },
+    {
+      "name": "components",
+      "description": "Component master data",
+      "columns": [
+        {
+          "name": "id",
+          "type": "SERIAL",
+          "constraint": "PRIMARY KEY"
+        },
+        {
+          "name": "partId",
+          "type": "TEXT",
+          "constraint": "NOT NULL, UNIQUE - e.g., DIO_5V1_001"
+        },
+        {
+          "name": "mpn",
+          "type": "TEXT",
+          "constraint": "NOT NULL, UNIQUE - e.g., MM1Z5V1"
+        },
+        {
+          "name": "description",
+          "type": "TEXT"
+        },
+        {
+          "name": "manufacturer",
+          "type": "TEXT"
+        },
+        {
+          "name": "category",
+          "type": "TEXT",
+          "constraint": "resistor|capacitor|diode|etc"
+        },
+        {
+          "name": "createdAt",
+          "type": "TIMESTAMP",
+          "constraint": "default now()"
+        },
+        {
+          "name": "updatedAt",
+          "type": "TIMESTAMP",
+          "constraint": "default now()"
+        }
+      ]
+    },
+    {
+      "name": "audit_logs",
+      "description": "Complete audit trail for all entity changes",
+      "columns": [
+        {
+          "name": "id",
+          "type": "SERIAL",
+          "constraint": "PRIMARY KEY"
+        },
+        {
+          "name": "entityType",
+          "type": "TEXT",
+          "constraint": "NOT NULL, indexed - feeder|component|bom_item|etc"
+        },
+        {
+          "name": "entityId",
+          "type": "TEXT",
+          "constraint": "NOT NULL, indexed"
+        },
+        {
+          "name": "action",
+          "type": "TEXT",
+          "constraint": "NOT NULL - create|update|delete|approve|etc"
+        },
+        {
+          "name": "oldValue",
+          "type": "TEXT",
+          "constraint": "JSON string of previous state"
+        },
+        {
+          "name": "newValue",
+          "type": "TEXT",
+          "constraint": "JSON string of new state"
+        },
+        {
+          "name": "changedBy",
+          "type": "TEXT",
+          "constraint": "user who made the change"
+        },
+        {
+          "name": "description",
+          "type": "TEXT"
+        },
+        {
+          "name": "createdAt",
+          "type": "TIMESTAMP",
+          "constraint": "default now(), indexed"
+        }
+      ]
+    }
+  ],
+  "bugs": [
+    {
+      "severity": "HIGH",
+      "category": "Security - Authentication",
+      "description": "Export routes lack authentication middleware and body filter validation",
+      "location": "artifacts/api-server/src/routes/reports.ts (lines 364-367)",
+      "status": "OPEN",
+      "impact": "Unauthenticated users can request exports; falls back to 'system' user when no auth",
+      "fix": "Add attachActor middleware and validate filters before processing"
+    },
+    {
+      "severity": "HIGH",
+      "category": "Data Accuracy - Report Calculations",
+      "description": "feeders_per_minute calculation biased by session aggregation",
+      "location": "artifacts/api-server/src/services/report-service.ts (lines 233-246)",
+      "status": "OPEN",
+      "impact": "Operators with high-volume sessions appear faster than they actually are",
+      "fix": "Compute feeders_per_minute per-session first, then average across sessions per operator",
+      "notes": "Needs second query for per-session rates"
+    },
+    {
+      "severity": "HIGH",
+      "category": "Data Accuracy - Report Calculations",
+      "description": "OEE components returned in inconsistent units (percentage vs decimal vs raw)",
+      "location": "artifacts/api-server/src/services/report-service.ts (lines 196-212)",
+      "status": "OPEN",
+      "impact": "OEE calculation unreliable; API clients confused about scale",
+      "fix": "Normalize all metrics to 0.0-1.0 decimal in service, multiply by 100 only in serialization layer"
+    },
+    {
+      "severity": "HIGH",
+      "category": "Data Accuracy - Report Calculations",
+      "description": "ComponentUsageData bomUsageCount hardcoded to 0",
+      "location": "artifacts/api-server/src/services/report-service.ts (lines 483-488)",
+      "status": "OPEN",
+      "impact": "Fail-rate calculations meaningless; no BOM context for components",
+      "fix": "LEFT JOIN with bom_items table to fetch real BOM usage counts per MPN"
+    },
+    {
+      "severity": "MEDIUM",
+      "category": "Code Quality - Unreachable Logic",
+      "description": "alarmType mapping has unreachable 'low' fallback",
+      "location": "artifacts/api-server/src/services/report-service.ts (lines 397-408)",
+      "status": "OPEN",
+      "impact": "Query only returns 'mismatch' or 'feeder_not_found', never hits fallback",
+      "fix": "Use explicit switch statement with logging for unknown alarm types"
+    },
+    {
+      "severity": "MEDIUM",
+      "category": "Data Accuracy - Report Calculations",
+      "description": "ErrorAnalysisData type always returns 'feeder' not 'component'",
+      "location": "artifacts/api-server/src/services/report-service.ts (lines 443-448)",
+      "status": "OPEN",
+      "impact": "Cannot distinguish between feeder vs component failures in error analysis",
+      "fix": "Add logic to query and categorize errors by type"
+    },
+    {
+      "severity": "MEDIUM",
+      "category": "Frontend - TypeScript",
+      "description": "Multiple page components marked with @ts-nocheck",
+      "files": [
+        "artifacts/feeder-scanner/src/pages/verification.tsx",
+        "artifacts/feeder-scanner/src/pages/session-new.tsx",
+        "artifacts/feeder-scanner/src/pages/reports.tsx",
+        "artifacts/feeder-scanner/src/pages/dashboard.tsx"
+      ],
+      "status": "OPEN",
+      "impact": "Type safety not enforced; potential runtime errors",
+      "fix": "Add proper TypeScript types and interfaces"
+    },
+    {
+      "severity": "MEDIUM",
+      "category": "Frontend - Report Filters",
+      "description": "ReportFilters missing custom date range validation and timezone handling",
+      "location": "artifacts/feeder-scanner/src/components/reporting/ReportFilters.tsx",
+      "status": "OPEN",
+      "impact": "User can select invalid date ranges; timezone shifts cause UTC mismatch",
+      "fix": "Add startDate > endDate validation; handle timezone properly"
+    },
+    {
+      "severity": "MEDIUM",
+      "category": "Frontend - Report Components",
+      "description": "Reports page assumes response.report and response.metadata exist without defensive checks",
+      "location": "artifacts/feeder-scanner/src/pages/reports.tsx (lines 292-301)",
+      "status": "OPEN",
+      "impact": "Crashes if API response structure unexpected",
+      "fix": "Add defensive checks and fallback values"
+    },
+    {
+      "severity": "MEDIUM",
+      "category": "Frontend - UI Accessibility",
+      "description": "ReportDisplay loading spinner missing ARIA attributes",
+      "location": "artifacts/feeder-scanner/src/components/reporting/ReportDisplay.tsx",
+      "status": "OPEN",
+      "impact": "Screen readers don't announce loading state",
+      "fix": "Add role='status' aria-label='Loading' to spinner"
+    },
+    {
+      "severity": "MEDIUM",
+      "category": "Backend - Export Service",
+      "description": "Excel export method needs review for similar stream handling issues as PDF",
+      "location": "artifacts/api-server/src/services/export-service.ts",
+      "status": "OPEN",
+      "impact": "Excel exports may have memory issues on large files",
+      "fix": "Verify all export methods use proper stream piping"
+    },
+    {
+      "severity": "LOW",
+      "category": "TypeScript - Services",
+      "description": "Multiple service files marked with @ts-nocheck",
+      "files": [
+        "artifacts/api-server/src/services/feeder-service.ts",
+        "artifacts/api-server/src/services/component-service.ts",
+        "artifacts/api-server/src/services/seed-service.ts"
+      ],
+      "status": "OPEN",
+      "impact": "Type inference issues; suggests incomplete types",
+      "fix": "Add proper Drizzle type exports and service interfaces"
+    },
+    {
+      "severity": "LOW",
+      "category": "TypeScript - Routes",
+      "description": "Multiple route files marked with @ts-nocheck",
+      "files": [
+        "artifacts/api-server/src/routes/sessions.ts",
+        "artifacts/api-server/src/routes/feeders.ts",
+        "artifacts/api-server/src/routes/components.ts"
+      ],
+      "status": "OPEN",
+      "impact": "Type safety issues in request/response handling",
+      "fix": "Add proper TypeScript types to route handlers"
+    },
+    {
+      "severity": "LOW",
+      "category": "Database - Schema",
+      "description": "report_exports table stores raw ip_address and user_agent without anonymization",
+      "location": "lib/db/drizzle/0006_add_reporting_tables.sql",
+      "status": "OPEN",
+      "impact": "PII retention violates GDPR/DPDP compliance",
+      "fix": "Use SHA256 hashing for IP and user-agent; add 90-day purge policy"
+    },
+    {
+      "severity": "LOW",
+      "category": "Code Quality - Legacy Code",
+      "description": "TODO comment indicating incomplete splice deletion logic",
+      "location": "artifacts/api-server/src/routes/verification.ts (line 668)",
+      "status": "OPEN",
+      "impact": "Splices may not be fully cleaned up when sessions deleted",
+      "fix": "Implement CASCADE delete or explicit cleanup"
+    }
+  ],
+  "middleware": {
+    "authChecks": [
+      {
+        "function": "attachActor",
+        "description": "Extract JWT from cookie and attach to request",
+        "implementation": "Reads smt_token cookie, verifies JWT, returns 401 if invalid",
+        "appliedTo": "All protected routes (most /api/* routes)",
+        "location": "artifacts/api-server/src/middleware/auth.ts"
+      },
+      {
+        "function": "requireRole",
+        "description": "Role-based authorization - checks if user has one of allowed roles",
+        "params": "...allowedRoles - variable args like requireRole('qa', 'engineer')",
+        "returns": "Middleware function that returns 403 if role not in list",
+        "appliedTo": "BOM CRUD routes, report generation, session creation",
+        "location": "artifacts/api-server/src/middleware/auth.ts"
+      },
+      {
+        "function": "requireQaOrEngineer",
+        "description": "Specific guard for QA or Engineer roles",
+        "returns": "403 Forbidden if role not qa or engineer",
+        "appliedTo": "Report routes (legacy, may be replaced by requireRole)",
+        "location": "artifacts/api-server/src/middleware/auth.ts"
+      },
+      {
+        "function": "requireOperatorSessionOwnership",
+        "description": "Verify operator owns the session they're scanning into",
+        "implementation": "Checks sessionId in request body matches operator's ID in database",
+        "returns": "403 Forbidden if session doesn't belong to operator",
+        "appliedTo": "POST /api/verification/scan",
+        "location": "artifacts/api-server/src/middleware/auth.ts"
+      },
+      {
+        "function": "requireSessionReadAccess",
+        "description": "Allow QA/Engineer to read any session; operators can only read their own",
+        "implementation": "QA/Engineer bypass ownership check; operators checked against operatorId",
+        "returns": "403 Forbidden if operator doesn't own session",
+        "appliedTo": "GET /api/sessions/:sessionId, report generation",
+        "location": "artifacts/api-server/src/middleware/auth.ts"
+      }
+    ],
+    "validation": [
+      {
+        "function": "validateDateFilters",
+        "description": "Express middleware to validate report date filters",
+        "implementation": "Checks for required dateFilter or startDate/endDate; validates ISO8601 format",
+        "returns": "400 Bad Request if validation fails",
+        "appliedTo": "All /api/reports/* routes",
+        "location": "artifacts/api-server/src/routes/reports.ts"
+      },
+      {
+        "function": "validateFilters",
+        "description": "Service-level filter validation with date range logic",
+        "implementation": "Drizzle ORM query building with proper type casting",
+        "location": "artifacts/api-server/src/services/filter-service.ts"
+      }
+    ],
+    "security": [
+      {
+        "name": "Content Security Policy (CSP)",
+        "location": "artifacts/api-server/src/app.ts (lines 50-67)",
+        "description": "Helmet middleware for CSP headers",
+        "development": "scriptSrc: ['self', 'unsafe-eval'] - allows Vite HMR",
+        "production": "scriptSrc: ['self'] - removes unsafe-eval",
+        "workerSrc": "['self'] - allows Web Workers"
+      },
+      {
+        "name": "Rate Limiting",
+        "description": "Express rate limiting middleware",
+        "limits": {
+          "login": "10 per 15 minutes",
+          "scan": "60 per minute",
+          "general": "200 per minute"
+        }
+      },
+      {
+        "name": "CORS",
+        "allowedOrigins": "http://localhost:3000, http://localhost:5173",
+        "envVar": "ALLOWED_ORIGINS"
+      },
+      {
+        "name": "JWT Token",
+        "location": "artifacts/api-server/src/routes/auth.ts",
+        "expiration": "8 hours",
+        "storage": "httpOnly cookie (secure in production)",
+        "payload": {
+          "userId": "string (UUID)",
+          "username": "string",
+          "role": "operator | qa | engineer"
+        }
+      },
+      {
+        "name": "Password Security",
+        "implementation": "bcryptjs with 12 salt rounds",
+        "location": "artifacts/api-server/src/routes/auth.ts",
+        "requirements": "8+ characters, uppercase, lowercase, number, special character"
+      }
+    ],
+    "logging": [
+      {
+        "name": "Audit Logger",
+        "function": "auditLog",
+        "description": "Log all security-relevant events",
+        "events": [
+          "LOGIN_SUCCESS",
+          "LOGIN_FAILURE",
+          "LOGOUT",
+          "BOM_CREATE",
+          "BOM_DELETE",
+          "SCAN_VERIFICATION",
+          "REPORT_EXPORT"
+        ],
+        "location": "artifacts/api-server/src/lib/auditLogger"
+      },
+      {
+        "name": "Application Logger",
+        "implementation": "pino - structured JSON logging",
+        "location": "artifacts/api-server/src/lib/logger",
+        "levels": "debug, info, warn, error"
+      }
+    ]
+  },
+  "summary": {
+    "totalEndpoints": 72,
+    "totalServices": 12,
+    "totalPages": 11,
+    "totalComponents": 15,
+    "totalTables": 10,
+    "totalBugs": 15,
+    "highSeverityBugs": 5,
+    "mediumSeverityBugs": 7,
+    "lowSeverityBugs": 3,
+    "criticalSecurityGaps": [
+      "Export routes lack authentication",
+      "Multiple @ts-nocheck indicators",
+      "OEE calculation scale inconsistency"
+    ],
+    "architectureNotes": "Monorepo with Express backend (port 3001/3000), React frontend (port 5173), PostgreSQL database with Drizzle ORM, JWT authentication with role-based access control (operator/qa/engineer), comprehensive audit logging, soft-delete support, multi-table verification workflow"
+  }
+}

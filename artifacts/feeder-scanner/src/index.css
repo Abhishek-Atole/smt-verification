@@ -1,0 +1,663 @@
+@import "tailwindcss";
+@import "tw-animate-css";
+@plugin "@tailwindcss/typography";
+
+@custom-variant dark (&:is(.dark *));
+
+@theme inline {
+  --color-background: hsl(var(--background));
+  --color-foreground: hsl(var(--foreground));
+  --color-border: hsl(var(--border));
+  --color-input: hsl(var(--input));
+  --color-ring: hsl(var(--ring));
+
+  --color-card: hsl(var(--card));
+  --color-card-foreground: hsl(var(--card-foreground));
+  --color-card-border: hsl(var(--card-border));
+
+  --color-popover: hsl(var(--popover));
+  --color-popover-foreground: hsl(var(--popover-foreground));
+  --color-popover-border: hsl(var(--popover-border));
+
+  --color-primary: hsl(var(--primary));
+  --color-primary-foreground: hsl(var(--primary-foreground));
+
+  --color-secondary: hsl(var(--secondary));
+  --color-secondary-foreground: hsl(var(--secondary-foreground));
+
+  --color-muted: hsl(var(--muted));
+  --color-muted-foreground: hsl(var(--muted-foreground));
+
+  --color-accent: hsl(var(--accent));
+  --color-accent-foreground: hsl(var(--accent-foreground));
+
+  --color-destructive: hsl(var(--destructive));
+  --color-destructive-foreground: hsl(var(--destructive-foreground));
+  
+  --color-success: hsl(var(--success));
+  --color-success-foreground: hsl(var(--success-foreground));
+
+  --color-sidebar: hsl(var(--sidebar));
+  --color-sidebar-foreground: hsl(var(--sidebar-foreground));
+  --color-sidebar-border: hsl(var(--sidebar-border));
+  --color-sidebar-primary: hsl(var(--sidebar-primary));
+  --color-sidebar-primary-foreground: hsl(var(--sidebar-primary-foreground));
+  --color-sidebar-accent: hsl(var(--sidebar-accent));
+  --color-sidebar-accent-foreground: hsl(var(--sidebar-accent-foreground));
+  --color-sidebar-ring: hsl(var(--sidebar-ring));
+
+  --color-chart-1: hsl(var(--chart-1));
+  --color-chart-2: hsl(var(--chart-2));
+  --color-chart-3: hsl(var(--chart-3));
+  --color-chart-4: hsl(var(--chart-4));
+  --color-chart-5: hsl(var(--chart-5));
+
+  --font-sans: ui-sans-serif, system-ui, sans-serif;
+  --font-mono: ui-monospace, SFMono-Regular, monospace;
+  --font-mono-data: ui-monospace, SFMono-Regular, "JetBrains Mono", "Cascadia Code", monospace;
+
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 4px);
+
+  /* Annexure: Navy scale (industrial primary) */
+  --color-navy-50: #EFF3F9;
+  --color-navy-400: #4A6FA0;
+  --color-navy-600: #1B3A6B;
+  --color-navy-700: #152F58;
+
+  /* Annexure: Ink (text shades) */
+  --color-ink-primary: #0F1A2E;
+  --color-ink-secondary: #374151;
+  --color-ink-muted: #6B7280;
+  --color-ink-subtle: #9CA3AF;
+
+  /* Annexure: Canvas / surface */
+  --color-canvas: #FFFFFF;
+  --color-section: #F4F6F9;
+  --color-alt-row: #F9FAFB;
+
+  /* Annexure: Border */
+  --color-border-subtle: #E5E7EB;
+  --color-border-default: #D1D5DB;
+  --color-border-strong: #9CA3AF;
+
+  /* Annexure: Stage colors */
+  --color-stage-laser: #1A4A6B;
+  --color-stage-spi: #1A4A6B;
+  --color-stage-pnp: #5B2C6F;
+  --color-stage-aoi: #006666;
+  --color-stage-reflow: #6B3A1A;
+
+  /* Annexure: Status (semantic) */
+  --color-status-success: #1A5C34;
+  --color-status-success-bg: #D6EBDD;
+  --color-status-error: #8B0000;
+  --color-status-error-bg: #F5D6D6;
+  --color-status-warning: #B8860B;
+  --color-status-warning-bg: #F5E9C8;
+
+
+  /* Admin: dark control panel */
+  --color-admin-bg: #0a0e1a;
+  --color-admin-surface: #111827;
+  --color-admin-accent: #00d4ff;
+  --color-admin-danger: #ff4444;
+  --color-admin-success: #00ff88;
+  --color-admin-warning: #ffaa00;
+  --color-admin-border: #1e2a3a;
+}
+
+:root {
+  --background: 210 20% 98%;
+  --foreground: 222 47% 11%;
+  --card: 0 0% 100%;
+  --card-foreground: 222 47% 11%;
+  --card-border: 214 32% 91%;
+  --popover: 0 0% 100%;
+  --popover-foreground: 222 47% 11%;
+  --popover-border: 214 32% 91%;
+  --primary: 221 83% 53%;
+  --primary-foreground: 0 0% 100%;
+  --secondary: 210 40% 96%;
+  --secondary-foreground: 222 47% 11%;
+  --muted: 210 40% 96%;
+  --muted-foreground: 215 16% 47%;
+  --accent: 221 83% 96%;
+  --accent-foreground: 221 83% 40%;
+  --destructive: 0 84% 60%;
+  --destructive-foreground: 0 0% 100%;
+  --border: 214 32% 91%;
+  --input: 214 32% 91%;
+  --ring: 221 83% 53%;
+  --radius: 0.5rem;
+
+  --sidebar: 222 47% 11%;
+  --sidebar-foreground: 210 20% 90%;
+  --sidebar-border: 222 40% 20%;
+  --sidebar-primary: 221 83% 53%;
+  --sidebar-primary-foreground: 0 0% 100%;
+  --sidebar-accent: 222 40% 18%;
+  --sidebar-accent-foreground: 210 20% 90%;
+  --sidebar-ring: 221 83% 53%;
+
+  --chart-1: 221 83% 53%;
+  --chart-2: 160 84% 39%;
+  --chart-3: 36 91% 65%;
+  --chart-4: 0 84% 60%;
+  --chart-5: 262 83% 58%;
+
+  --success: 142 71% 45%;
+  --success-foreground: 0 0% 100%;
+}
+
+.dark {
+  --background: 222 47% 8%;
+  --foreground: 210 20% 90%;
+  --card: 222 47% 11%;
+  --card-foreground: 210 20% 90%;
+  --card-border: 222 40% 18%;
+  --popover: 222 47% 11%;
+  --popover-foreground: 210 20% 90%;
+  --popover-border: 222 40% 18%;
+  --primary: 221 83% 60%;
+  --primary-foreground: 0 0% 100%;
+  --secondary: 222 40% 15%;
+  --secondary-foreground: 210 20% 90%;
+  --muted: 222 40% 15%;
+  --muted-foreground: 215 20% 55%;
+  --accent: 222 40% 18%;
+  --accent-foreground: 221 83% 70%;
+  --destructive: 0 70% 55%;
+  --destructive-foreground: 0 0% 100%;
+  --border: 222 40% 18%;
+  --input: 222 40% 18%;
+  --ring: 221 83% 60%;
+
+  --sidebar: 222 47% 6%;
+  --sidebar-foreground: 210 20% 85%;
+  --sidebar-border: 222 40% 15%;
+  --sidebar-primary: 221 83% 60%;
+  --sidebar-primary-foreground: 0 0% 100%;
+  --sidebar-accent: 222 40% 12%;
+  --sidebar-accent-foreground: 210 20% 85%;
+  --sidebar-ring: 221 83% 60%;
+
+  --chart-1: 221 83% 60%;
+  --chart-2: 160 84% 50%;
+  --chart-3: 36 91% 65%;
+  --chart-4: 0 70% 60%;
+  --chart-5: 262 83% 68%;
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+  body {
+    @apply font-sans antialiased bg-background text-foreground selection:bg-primary selection:text-primary-foreground;
+    background-image:
+      radial-gradient(circle at top left, hsl(var(--primary) / 0.08), transparent 28%),
+      radial-gradient(circle at bottom right, hsl(var(--success) / 0.08), transparent 24%),
+      linear-gradient(180deg, hsl(var(--background)), hsl(var(--background)));
+  }
+}
+
+.app-noise {
+  background-image:
+    linear-gradient(135deg, hsl(var(--background) / 0.92), hsl(var(--background) / 0.98)),
+    radial-gradient(circle at 20% 20%, hsl(var(--primary) / 0.08), transparent 22%),
+    radial-gradient(circle at 80% 0%, hsl(var(--success) / 0.06), transparent 20%),
+    radial-gradient(circle at 100% 100%, hsl(var(--destructive) / 0.05), transparent 18%);
+}
+
+.panel-pop {
+  animation: panelPop 480ms ease-out both;
+}
+
+.scan-surface {
+  position: relative;
+  overflow: hidden;
+  isolation: isolate;
+}
+
+.scan-surface::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background: linear-gradient(120deg, transparent 0%, hsl(var(--primary) / 0.14) 50%, transparent 100%);
+  transform: translateX(-120%);
+  animation: scanSweep 7s linear infinite;
+  mix-blend-mode: screen;
+}
+
+.scan-surface::after {
+  content: "";
+  position: absolute;
+  inset: 1px;
+  pointer-events: none;
+  border-radius: inherit;
+  background: linear-gradient(180deg, hsl(var(--foreground) / 0.02), transparent 28%);
+}
+
+.scan-input-surface {
+  transition: box-shadow 180ms ease, border-color 180ms ease, transform 180ms ease;
+}
+
+.scan-input-surface:focus-visible {
+  box-shadow: 0 0 0 1px hsl(var(--primary) / 0.4), 0 0 0 6px hsl(var(--primary) / 0.12);
+  transform: translateY(-1px);
+}
+
+.progress-ring {
+  animation: ringPulse 2.8s ease-in-out infinite;
+  filter: drop-shadow(0 0 10px hsl(var(--primary) / 0.18));
+}
+
+.recent-log-highlight {
+  animation: recentLogHighlight 1.6s ease-out both;
+}
+
+.flash-green {
+  animation: flashGreen 900ms ease-out 1;
+}
+
+.flash-red {
+  animation: flashRed 900ms ease-out 1;
+}
+
+@keyframes flashGreen {
+  0% { background-color: hsl(var(--success) / 0.75); }
+  18% { background-color: hsl(var(--success) / 0.45); }
+  42% { background-color: hsl(var(--success) / 0.7); }
+  100% { background-color: hsl(var(--background)); }
+}
+
+@keyframes flashRed {
+  0% { background-color: hsl(var(--destructive) / 0.82); }
+  16% { background-color: hsl(var(--destructive) / 0.42); }
+  36% { background-color: hsl(var(--destructive) / 0.78); }
+  58% { background-color: hsl(var(--destructive) / 0.45); }
+  100% { background-color: hsl(var(--background)); }
+}
+
+@keyframes panelPop {
+  0% {
+    opacity: 0;
+    transform: translateY(10px) scale(0.985);
+  }
+  100% {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+@keyframes scanSweep {
+  0% {
+    transform: translateX(-120%);
+  }
+  100% {
+    transform: translateX(120%);
+  }
+}
+
+@keyframes ringPulse {
+  0%, 100% {
+    filter: drop-shadow(0 0 6px hsl(var(--primary) / 0.18));
+    opacity: 0.92;
+  }
+  50% {
+    filter: drop-shadow(0 0 14px hsl(var(--primary) / 0.3));
+    opacity: 1;
+  }
+}
+
+@keyframes recentLogHighlight {
+  0% {
+    background-color: hsl(var(--secondary) / 0.95);
+    transform: translateY(-2px);
+  }
+  100% {
+    background-color: transparent;
+    transform: translateY(0);
+  }
+}
+
+@keyframes logEntryFadeIn {
+  0% {
+    opacity: 0;
+    transform: translateY(-4px);
+  }
+  100% {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.animate-logEntryFadeIn {
+  animation: logEntryFadeIn 0.3s ease-out;
+}
+
+/* ============================================================================
+ * RESPONSIVE DESIGN — Mobile-First Approach
+ * ============================================================================ */
+
+/* Minimum font size for input fields on mobile (prevents iOS zoom) */
+@media (max-width: 640px) {
+  input[type="text"],
+  input[type="password"],
+  input[type="email"],
+  input[type="search"],
+  input[type="number"],
+  textarea,
+  select {
+    font-size: 18px !important;
+  }
+
+  /* Scan input surface maintains large, touchable size */
+  .scan-input-surface {
+    font-size: 20px !important;
+    min-height: 56px;
+    padding: 12px;
+  }
+
+  /* Tables and list containers never cause horizontal scroll */
+  table,
+  [role="grid"],
+  .overflow-table {
+    overflow-x: auto;
+    display: block;
+    -webkit-overflow-scrolling: touch;
+  }
+
+  /* Stack scan card and progress side-by-side on small screens */
+  .verification-layout {
+    flex-direction: column;
+  }
+
+  /* Progress panel moves above scan card on mobile */
+  .progress-panel {
+    order: -1;
+  }
+
+  /* Log panel becomes a collapsible drawer on mobile */
+  .log-panel-container {
+    position: fixed;
+    bottom: 0;
+    left: 0;
+    right: 0;
+    max-height: 40vh;
+    border-radius: 12px 12px 0 0;
+    z-index: 40;
+    box-shadow: 0 -2px 12px rgba(0, 0, 0, 0.15);
+  }
+
+  /* Notification stack centers on mobile instead of top-right */
+  .notification-stack {
+    position: fixed !important;
+    top: 50% !important;
+    left: 50% !important;
+    right: auto !important;
+    transform: translate(-50%, -50%) !important;
+    max-width: calc(100vw - 32px);
+  }
+}
+
+/* Tablet/Medium screens (768px and above) */
+@media (min-width: 768px) {
+  /* Log panel becomes a sidebar */
+  .log-panel-container {
+    position: relative;
+    max-height: 100%;
+  }
+
+  /* Notification stack top-right on larger screens */
+  .notification-stack {
+    position: fixed !important;
+    top: 20px !important;
+    right: 20px !important;
+  }
+}
+
+/* Ensure no horizontal scroll on any viewport */
+html,
+body,
+.app-container {
+  overflow-x: hidden;
+}
+
+/* Active Scan Card responsive width */
+.scan-card {
+  min-width: 320px;
+  max-width: 600px;
+  width: 100%;
+}
+
+@media (max-width: 1024px) {
+  .scan-card {
+    max-width: 100%;
+  }
+}
+
+/* Table responsive columns */
+@media (max-width: 768px) {
+  .table-column-mpn,
+  .table-column-lot {
+    display: none;
+  }
+
+  .table-show-more {
+    display: inline-block;
+  }
+}
+
+@media (min-width: 768px) {
+  .table-column-mpn,
+  .table-column-lot {
+    display: table-cell;
+  }
+
+  .table-show-more {
+    display: none;
+  }
+}
+
+/* ============================================================================
+ * UI MICRO-POLISH — Animations & Effects (Step 11)
+ * ============================================================================ */
+
+/* Progress ring animation on load */
+@keyframes progressRingDraw {
+  from {
+    stroke-dashoffset: var(--ring-circumference, 264);
+  }
+}
+
+.progress-ring {
+  animation: progressRingDraw 1.2s ease-out forwards;
+  transition: stroke-dashoffset 0.6s ease-in-out;
+}
+
+/* Feeder list dot animations */
+@keyframes dotPulse {
+  0%, 100% {
+    opacity: 0.6;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+
+.feeder-dot {
+  animation: dotPulse 2s ease-in-out infinite;
+}
+
+.feeder-dot:nth-child(1) {
+  animation-delay: 0s;
+}
+
+.feeder-dot:nth-child(2) {
+  animation-delay: 0.3s;
+}
+
+.feeder-dot:nth-child(3) {
+  animation-delay: 0.6s;
+}
+
+/* Scanning gradient animation on input */
+@keyframes scanGradient {
+  0% {
+    background-position: 0% 50%;
+  }
+  50% {
+    background-position: 100% 50%;
+  }
+  100% {
+    background-position: 0% 50%;
+  }
+}
+
+.scan-input-surface:focus {
+  animation: scanGradient 2s ease-in-out infinite;
+  background: linear-gradient(
+    90deg,
+    transparent,
+    rgba(var(--primary-rgb, 59, 130, 246), 0.1),
+    transparent
+  );
+  background-size: 200% 100%;
+}
+
+/* Error state card border flash red twice */
+@keyframes errorFlashBorder {
+  0%, 100% {
+    border-color: hsl(var(--destructive));
+  }
+  25%, 75% {
+    border-color: transparent;
+  }
+}
+
+.scan-surface.error-state {
+  animation: errorFlashBorder 0.6s ease-out;
+  border-color: hsl(var(--destructive));
+}
+
+/* Confetti animation for completion */
+@keyframes confetti {
+  0% {
+    transform: translateY(0) rotate(0deg);
+    opacity: 1;
+  }
+  100% {
+    transform: translateY(-100px) rotate(360deg);
+    opacity: 0;
+  }
+}
+
+.confetti {
+  animation: confetti 2s ease-out forwards;
+  position: fixed;
+  pointer-events: none;
+}
+
+/* Completion state celebration */
+@keyframes completionPop {
+  0% {
+    transform: scale(0.9);
+    opacity: 0;
+  }
+  50% {
+    transform: scale(1.05);
+  }
+  100% {
+    transform: scale(1);
+    opacity: 1;
+  }
+}
+
+.completion-celebration {
+  animation: completionPop 0.5s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+/* Input focus animation with subtle glow */
+@keyframes inputGlow {
+  0%, 100% {
+    box-shadow: 0 0 0 0 rgba(var(--primary-rgb, 59, 130, 246), 0.4);
+  }
+  50% {
+    box-shadow: 0 0 0 8px rgba(var(--primary-rgb, 59, 130, 246), 0);
+  }
+}
+
+input:focus,
+textarea:focus {
+  animation: inputGlow 1.5s ease-out;
+}
+
+/* Grid/dot background texture */
+.app-noise::before {
+  content: "";
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background-image:
+    radial-gradient(
+      circle,
+      rgba(var(--foreground-rgb, 15, 23, 42), 0.03) 1px,
+      transparent 1px
+    );
+  background-size: 20px 20px;
+  pointer-events: none;
+  z-index: 1;
+}
+
+.app-noise {
+  position: relative;
+  overflow-x: hidden;
+}
+
+/* Dynamic page title effect (handled via JavaScript, but add CSS support) */
+@keyframes titlePulse {
+  0%, 100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.7;
+  }
+}
+
+/* Scan entry highlight with fade-out */
+.scan-entry-highlight {
+  animation: recentLogHighlight 1.6s ease-out forwards;
+  background-color: rgba(34, 197, 94, 0.1);
+}
+
+/* Annexure module: custom utility classes */
+@layer utilities {
+  .label-caps {
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    font-size: 0.6875rem;
+    font-weight: 600;
+  }
+
+  .font-mono-data {
+    font-family: var(--font-mono-data);
+    font-feature-settings: "tnum" 1, "cv11" 1;
+  }
+
+  .tabular {
+    font-variant-numeric: tabular-nums;
+  }
+
+  /* Admin: pulse animation for status dots */
+  @keyframes adminPulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.5; }
+  }
+}

@@ -1,0 +1,24 @@
+{
+  "timestamp": "2026-05-01T21:50:15.130Z",
+  "configuration": {
+    "maxConcurrency": 50,
+    "iterationsPerWorker": 10,
+    "totalScans": 500
+  },
+  "results": {
+    "successful": 0,
+    "duplicates": 500,
+    "noMatches": 0,
+    "errors": 0,
+    "totalRequests": 500,
+    "rps": 171,
+    "latency": {
+      "p50": 623,
+      "p95": 1200,
+      "p99": 2733,
+      "avg": 717
+    },
+    "passed": false
+  },
+  "errorDetails": []
+}

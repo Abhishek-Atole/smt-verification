@@ -1,0 +1,65 @@
+{
+  "name": "@workspace/api-server",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "export NODE_ENV=development && node ./build.mjs && DOTENV_CONFIG_PATH=../../.env node --import dotenv/config --enable-source-maps ./dist/index.mjs",
+    "build": "node ./build.mjs",
+    "start": "node --enable-source-maps ./dist/index.mjs",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run",
+    "test:integration": "vitest run src/__tests__/integration",
+    "seed:users": "tsx scripts/seed-users.ts"
+  },
+  "dependencies": {
+    "@types/compression": "^1.8.1",
+    "@types/qrcode": "^1.5.6",
+    "@workspace/api-zod": "workspace:*",
+    "@workspace/db": "workspace:*",
+    "bcryptjs": "^3.0.3",
+    "compression": "^1.8.1",
+    "cookie-parser": "^1.4.7",
+    "cors": "^2",
+    "dotenv": "^16.6.1",
+    "drizzle-orm": "catalog:",
+    "exceljs": "^4.4.0",
+    "express": "^5",
+    "express-rate-limit": "^8.5.0",
+    "fuse.js": "^7.0.0",
+    "helmet": "^8.1.0",
+    "jsonwebtoken": "^9.0.3",
+    "lru-cache": "^11.1.0",
+    "pdfkit": "^0.13.0",
+    "pg": "^8.20.0",
+    "pg-cursor": "^2.20.0",
+    "pino": "^9",
+    "pino-http": "^10",
+    "qrcode": "^1.5.4",
+    "zod": "catalog:"
+  },
+  "devDependencies": {
+    "@types/bcryptjs": "^3.0.0",
+    "@types/cookie-parser": "^1.4.10",
+    "@types/cors": "^2.8.19",
+    "@types/express": "^5.0.6",
+    "@types/jsonwebtoken": "^9.0.10",
+    "@types/multer": "^2.2.0",
+    "@types/node": "catalog:",
+    "@types/papaparse": "^5.5.2",
+    "@types/pdfkit": "^0.12.11",
+    "@types/supertest": "^7.2.0",
+    "esbuild": "^0.28.1",
+    "esbuild-plugin-pino": "^2.3.3",
+    "pino-pretty": "^13",
+    "supertest": "^7.2.2",
+    "thread-stream": "3.1.0",
+    "tsx": "catalog:",
+    "vitest": "^4.1.5"
+  },
+  "pnpm": {
+    "overrides": {
+      "ip-address": ">=10.1.1"
+    }
+  }
+}

@@ -1,0 +1,177 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum UserRole {
+  operator
+  qa
+  engineer
+  admin
+}
+
+enum ChangeoverStatus {
+  in_progress
+  verified
+  splicing
+  complete
+  aborted
+}
+
+enum MatchType {
+  mpn1
+  mpn2
+  mpn3
+  ucal_part_number
+}
+
+model User {
+  id         String   @id @default(uuid()) @db.Uuid
+  employeeId String   @unique @map("employee_id") @db.VarChar(20)
+  name       String   @db.VarChar(100)
+  role       UserRole @default(operator)
+  isActive   Boolean  @default(true) @map("is_active")
+  createdAt  DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  changeovers       Changeover[]       @relation("OperatorChangeovers")
+  verificationScans VerificationScan[] @relation("ScannedBy")
+  spliceRecords     SpliceRecord[]     @relation("SplicedBy")
+  auditLogs         AuditLog[]
+
+  @@map("users")
+}
+
+model BomHeader {
+  id               String   @id @default(uuid()) @db.Uuid
+  bomNumber        String   @unique @map("bom_number") @db.VarChar(60)
+  revision         String   @db.VarChar(10)
+  bomDate          DateTime @map("bom_date") @db.Date
+  customerName     String?  @map("customer_name") @db.VarChar(200)
+  partNameInternal String?  @map("part_name_internal") @db.VarChar(200)
+  isActive         Boolean  @default(true) @map("is_active")
+  createdAt        DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  lineItems   BomLineItem[]
+  changeovers Changeover[]
+
+  @@map("bom_headers")
+}
+
+model BomLineItem {
+  id                String   @id @default(uuid()) @db.Uuid
+  bomHeaderId       String   @map("bom_header_id") @db.Uuid
+  srNo              Int      @map("sr_no")
+  feederNumber      String   @map("feeder_number") @db.VarChar(20)
+  ucalPartNumbers   String[] @map("ucal_part_numbers")
+  requiredQty       Int      @default(1) @map("required_qty")
+  referenceLocation String?  @map("reference_location") @db.VarChar(50)
+  description       String?  @db.VarChar(200)
+  packageDesc       String?  @map("package_desc") @db.VarChar(30)
+  remarks           String?
+
+  bomHeader         BomHeader          @relation(fields: [bomHeaderId], references: [id])
+  alternatives      BomAlternative[]
+  verificationScans VerificationScan[]
+  spliceRecords     SpliceRecord[]
+
+  @@unique([bomHeaderId, feederNumber])
+  @@map("bom_line_items")
+}
+
+model BomAlternative {
+  id           String  @id @default(uuid()) @db.Uuid
+  lineItemId   String  @map("line_item_id") @db.Uuid
+  rank         Int
+  make         String  @db.VarChar(100)
+  mpn          String  @db.VarChar(150)
+  supplierCode String? @map("supplier_code") @db.VarChar(50)
+
+  lineItem          BomLineItem        @relation(fields: [lineItemId], references: [id], onDelete: Cascade)
+  verificationScans VerificationScan[]
+
+  @@unique([lineItemId, rank])
+  @@map("bom_alternatives")
+}
+
+model Changeover {
+  id          String           @id @default(uuid()) @db.Uuid
+  bomHeaderId String           @map("bom_header_id") @db.Uuid
+  operatorId  String           @map("operator_id") @db.Uuid
+  lineNumber  String?          @map("line_number") @db.VarChar(30)
+  shift       String?          @db.VarChar(20)
+  status      ChangeoverStatus @default(in_progress)
+  startedAt   DateTime         @default(now()) @map("started_at") @db.Timestamptz(6)
+  completedAt DateTime?        @map("completed_at") @db.Timestamptz(6)
+  notes       String?
+  version     Int              @default(0)
+
+  bomHeader         BomHeader          @relation(fields: [bomHeaderId], references: [id])
+  operator          User               @relation("OperatorChangeovers", fields: [operatorId], references: [id])
+  verificationScans VerificationScan[]
+  spliceRecords     SpliceRecord[]
+  auditLogs         AuditLog[]
+
+  @@index([operatorId], map: "idx_changeover_operator")
+  @@index([status], map: "idx_changeover_status")
+  @@map("changeovers")
+}
+
+model VerificationScan {
+  id             String   @id @default(uuid()) @db.Uuid
+  changeoverId   String   @map("changeover_id") @db.Uuid
+  lineItemId     String   @map("line_item_id") @db.Uuid
+  alternativeId  String   @map("alternative_id") @db.Uuid
+  scannedMpn     String   @map("scanned_mpn") @db.VarChar(150)
+  scannedLotCode String?  @map("scanned_lot_code") @db.VarChar(100)
+  matchType      MatchType @map("match_type")
+  isAlternate    Boolean  @default(false) @map("is_alternate")
+  scannedAt      DateTime @default(now()) @map("scanned_at") @db.Timestamptz(6)
+  scannedBy      String   @map("scanned_by") @db.Uuid
+
+  changeover    Changeover     @relation(fields: [changeoverId], references: [id], onDelete: Cascade)
+  lineItem      BomLineItem    @relation(fields: [lineItemId], references: [id])
+  alternative   BomAlternative @relation(fields: [alternativeId], references: [id])
+  scannedByUser User           @relation("ScannedBy", fields: [scannedBy], references: [id])
+
+  @@unique([changeoverId, lineItemId])
+  @@index([changeoverId], map: "idx_vscan_changeover")
+  @@map("verification_scans")
+}
+
+model SpliceRecord {
+  id          String   @id @default(uuid()) @db.Uuid
+  changeoverId String  @map("changeover_id") @db.Uuid
+  lineItemId   String  @map("line_item_id") @db.Uuid
+  oldSpoolMpn  String  @map("old_spool_mpn") @db.VarChar(150)
+  oldSpoolLot  String? @map("old_spool_lot") @db.VarChar(100)
+  newSpoolMpn  String  @map("new_spool_mpn") @db.VarChar(150)
+  newSpoolLot  String? @map("new_spool_lot") @db.VarChar(100)
+  splicedAt    DateTime @default(now()) @map("spliced_at") @db.Timestamptz(6)
+  splicedBy    String   @map("spliced_by") @db.Uuid
+
+  changeover   Changeover  @relation(fields: [changeoverId], references: [id], onDelete: Cascade)
+  lineItem     BomLineItem @relation(fields: [lineItemId], references: [id])
+  splicedByUser User       @relation("SplicedBy", fields: [splicedBy], references: [id])
+
+  @@map("splice_records")
+}
+
+model AuditLog {
+  id          String   @id @default(uuid()) @db.Uuid
+  changeoverId String? @map("changeover_id") @db.Uuid
+  userId      String   @map("user_id") @db.Uuid
+  eventType   String   @map("event_type") @db.VarChar(50)
+  payload     Json     @default("{}")
+  occurredAt  DateTime @default(now()) @map("occurred_at") @db.Timestamptz(6)
+
+  changeover Changeover? @relation(fields: [changeoverId], references: [id])
+  user       User        @relation(fields: [userId], references: [id])
+
+  @@index([changeoverId], map: "idx_audit_changeover")
+  @@index([occurredAt(sort: Desc)], map: "idx_audit_occurred")
+  @@map("audit_log")
+}

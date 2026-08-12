@@ -1,0 +1,30 @@
+[Unit]
+Description=SMT Verification System Auto-Start & Recovery
+After=network.target postgresql.service
+Wants=postgresql.service
+StartLimitIntervalSec=300
+StartLimitBurst=3
+
+[Service]
+Type=exec
+User=root
+Group=root
+ExecStartPre=/bin/sleep 5
+ExecStart=/usr/bin/env bash /usr/local/bin/system-restart-recovery.sh recover
+ExecStop=/usr/bin/env bash /usr/local/bin/system-restart-recovery.sh stop
+ExecReload=/usr/bin/env bash /usr/local/bin/system-restart-recovery.sh restart
+RemainAfterExit=no
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=smt-verification
+Restart=on-failure
+RestartSec=10
+
+# Environment variables for database connection
+Environment="DB_HOST=localhost"
+Environment="DB_USER=postgres"
+Environment="DB_NAME=smt_verification"
+Environment="DB_PORT=5432"
+
+[Install]
+WantedBy=multi-user.target

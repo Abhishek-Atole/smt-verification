@@ -1,0 +1,8 @@
+{
+  "env": {
+    "ANTHROPIC_BASE_URL": "http://127.0.0.1:8082",
+    "ANTHROPIC_AUTH_TOKEN": "skip"
+  },
+  "model": "claude-3-haiku-20240307",
+  "theme": "auto"
+}

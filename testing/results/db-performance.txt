@@ -1,0 +1,238 @@
+Timing is on.
+=== TEST 1: MPN Lookup (bom_alternatives) ===
+                                                              QUERY PLAN                                                               
+---------------------------------------------------------------------------------------------------------------------------------------
+ Limit  (cost=6.33..6.33 rows=1 width=85) (actual time=0.301..0.303 rows=1 loops=1)
+   Buffers: shared hit=107
+   InitPlan 1 (returns $0)
+     ->  Limit  (cost=0.00..0.03 rows=1 width=16) (actual time=0.004..0.004 rows=1 loops=1)
+           Buffers: shared hit=1
+           ->  Seq Scan on bom_headers  (cost=0.00..1.52 rows=52 width=16) (actual time=0.003..0.004 rows=1 loops=1)
+                 Buffers: shared hit=1
+   ->  Sort  (cost=6.30..6.30 rows=1 width=85) (actual time=0.299..0.300 rows=1 loops=1)
+         Sort Key: ba.rank
+         Sort Method: quicksort  Memory: 25kB
+         Buffers: shared hit=107
+         ->  Nested Loop  (cost=0.00..6.29 rows=1 width=85) (actual time=0.058..0.248 rows=1 loops=1)
+               Buffers: shared hit=104
+               ->  Nested Loop  (cost=0.00..4.63 rows=1 width=101) (actual time=0.056..0.243 rows=1 loops=1)
+                     Join Filter: (ba.line_item_id = bli.id)
+                     Rows Removed by Join Filter: 150
+                     Buffers: shared hit=103
+                     ->  Seq Scan on bom_alternatives ba  (cost=0.00..1.93 rows=1 width=60) (actual time=0.035..0.054 rows=51 loops=1)
+                           Filter: (upper((mpn)::text) = 'C0603C472K5RACAUTO'::text)
+                           Rows Removed by Filter: 11
+                           Buffers: shared hit=1
+                     ->  Seq Scan on bom_line_items bli  (cost=0.00..2.69 rows=1 width=57) (actual time=0.001..0.003 rows=3 loops=51)
+                           Filter: (bom_header_id = $0)
+                           Rows Removed by Filter: 51
+                           Buffers: shared hit=102
+               ->  Seq Scan on bom_headers bh  (cost=0.00..1.65 rows=1 width=16) (actual time=0.001..0.003 rows=1 loops=1)
+                     Filter: (id = $0)
+                     Rows Removed by Filter: 51
+                     Buffers: shared hit=1
+ Planning:
+   Buffers: shared hit=331
+ Planning Time: 1.133 ms
+ Execution Time: 0.456 ms
+(33 rows)
+
+Time: 5.752 ms
+=== TEST 2: UCAL Part Number Array Search ===
+                                                     QUERY PLAN                                                      
+---------------------------------------------------------------------------------------------------------------------
+ Seq Scan on bom_line_items  (cost=0.03..3.40 rows=1 width=78) (actual time=0.008..0.012 rows=1 loops=1)
+   Filter: ((bom_header_id = $0) AND ('RDSCAP0353'::text = ANY (ucal_part_numbers)))
+   Rows Removed by Filter: 54
+   Buffers: shared hit=3
+   InitPlan 1 (returns $0)
+     ->  Limit  (cost=0.00..0.03 rows=1 width=16) (actual time=0.003..0.003 rows=1 loops=1)
+           Buffers: shared hit=1
+           ->  Seq Scan on bom_headers  (cost=0.00..1.52 rows=52 width=16) (actual time=0.002..0.002 rows=1 loops=1)
+                 Buffers: shared hit=1
+ Planning:
+   Buffers: shared hit=54
+ Planning Time: 0.156 ms
+ Execution Time: 0.026 ms
+(13 rows)
+
+Time: 0.436 ms
+=== TEST 3: Progress Calculation ===
+                                                                                              QUERY PLAN                                                                                               
+-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+ Nested Loop  (cost=11.03..11.08 rows=1 width=48) (actual time=0.259..0.261 rows=1 loops=1)
+   Buffers: shared hit=7
+   CTE changeover_data
+     ->  Limit  (cost=0.00..0.03 rows=1 width=32) (actual time=0.003..0.003 rows=1 loops=1)
+           Buffers: shared hit=1
+           ->  Seq Scan on changeovers c  (cost=0.00..254.03 rows=10003 width=32) (actual time=0.003..0.003 rows=1 loops=1)
+                 Buffers: shared hit=1
+   ->  Aggregate  (cost=2.80..2.81 rows=1 width=8) (actual time=0.038..0.039 rows=1 loops=1)
+         Buffers: shared hit=3
+         ->  Hash Join  (cost=0.03..2.80 rows=1 width=0) (actual time=0.029..0.036 rows=2 loops=1)
+               Hash Cond: (bli.bom_header_id = cd.bom_header_id)
+               Buffers: shared hit=3
+               ->  Seq Scan on bom_line_items bli  (cost=0.00..2.55 rows=55 width=16) (actual time=0.003..0.006 rows=55 loops=1)
+                     Buffers: shared hit=2
+               ->  Hash  (cost=0.02..0.02 rows=1 width=16) (actual time=0.014..0.015 rows=1 loops=1)
+                     Buckets: 1024  Batches: 1  Memory Usage: 9kB
+                     Buffers: shared hit=1
+                     ->  CTE Scan on changeover_data cd  (cost=0.00..0.02 rows=1 width=16) (actual time=0.006..0.006 rows=1 loops=1)
+                           Buffers: shared hit=1
+   ->  Aggregate  (cost=8.21..8.22 rows=1 width=8) (actual time=0.022..0.023 rows=1 loops=1)
+         Buffers: shared hit=4
+         ->  Sort  (cost=8.20..8.21 rows=1 width=16) (actual time=0.022..0.022 rows=0 loops=1)
+               Sort Key: vs.line_item_id
+               Sort Method: quicksort  Memory: 25kB
+               Buffers: shared hit=4
+               ->  Nested Loop  (cost=0.14..8.19 rows=1 width=16) (actual time=0.004..0.005 rows=0 loops=1)
+                     Buffers: shared hit=1
+                     ->  CTE Scan on changeover_data cd_1  (cost=0.00..0.02 rows=1 width=16) (actual time=0.000..0.000 rows=1 loops=1)
+                     ->  Index Only Scan using verification_scans_changeover_id_line_item_id_key on verification_scans vs  (cost=0.14..8.16 rows=1 width=32) (actual time=0.003..0.003 rows=0 loops=1)
+                           Index Cond: (changeover_id = cd_1.id)
+                           Heap Fetches: 0
+                           Buffers: shared hit=1
+ Planning:
+   Buffers: shared hit=129 read=1
+ Planning Time: 0.777 ms
+ Execution Time: 0.304 ms
+(36 rows)
+
+Time: 2.556 ms
+=== TEST 4: Role-Filtered Changeover List ===
+                                                                             QUERY PLAN                                                                              
+---------------------------------------------------------------------------------------------------------------------------------------------------------------------
+ Limit  (cost=1815.88..1816.00 rows=50 width=98) (actual time=26.170..26.186 rows=50 loops=1)
+   Buffers: shared hit=166
+   InitPlan 1 (returns $0)
+     ->  Limit  (cost=0.00..0.09 rows=1 width=16) (actual time=0.006..0.007 rows=1 loops=1)
+           Buffers: shared hit=1
+           ->  Seq Scan on users  (cost=0.00..23.55 rows=251 width=16) (actual time=0.006..0.007 rows=1 loops=1)
+                 Filter: (role = 'operator'::"UserRole")
+                 Buffers: shared hit=1
+   ->  Sort  (cost=1815.79..1840.79 rows=10003 width=98) (actual time=26.168..26.180 rows=50 loops=1)
+         Sort Key: c.started_at DESC
+         Sort Method: top-N heapsort  Memory: 36kB
+         Buffers: shared hit=166
+         ->  GroupAggregate  (cost=1183.40..1483.49 rows=10003 width=98) (actual time=10.993..23.587 rows=10005 loops=1)
+               Group Key: c.id, u.name, u.employee_id, bh.bom_number, bh.revision
+               Buffers: shared hit=163
+               ->  Sort  (cost=1183.40..1208.41 rows=10003 width=114) (actual time=10.949..12.920 rows=10007 loops=1)
+                     Sort Key: c.id, u.name, u.employee_id, bh.bom_number, bh.revision, vs.id
+                     Sort Method: quicksort  Memory: 1557kB
+                     Buffers: shared hit=163
+                     ->  Hash Left Join  (cost=26.49..518.80 rows=10003 width=114) (actual time=0.075..6.515 rows=10007 loops=1)
+                           Hash Cond: (c.id = sr.changeover_id)
+                           Buffers: shared hit=160
+                           ->  Hash Left Join  (cost=15.14..469.34 rows=10003 width=98) (actual time=0.063..5.357 rows=10007 loops=1)
+                                 Hash Cond: (c.id = vs.changeover_id)
+                                 Buffers: shared hit=160
+                                 ->  Hash Join  (cost=2.44..417.92 rows=10003 width=82) (actual time=0.048..4.166 rows=10005 loops=1)
+                                       Hash Cond: (c.bom_header_id = bh.id)
+                                       Buffers: shared hit=159
+                                       ->  Nested Loop  (cost=0.28..387.36 rows=10003 width=80) (actual time=0.019..2.568 rows=10005 loops=1)
+                                             Buffers: shared hit=158
+                                             ->  Index Scan using users_pkey on users u  (cost=0.28..8.29 rows=1 width=38) (actual time=0.017..0.022 rows=1 loops=1)
+                                                   Index Cond: (id = $0)
+                                                   Buffers: shared hit=4
+                                             ->  Seq Scan on changeovers c  (cost=0.00..279.04 rows=10003 width=74) (actual time=0.002..1.539 rows=10005 loops=1)
+                                                   Filter: (operator_id = $0)
+                                                   Buffers: shared hit=154
+                                       ->  Hash  (cost=1.52..1.52 rows=52 width=34) (actual time=0.016..0.017 rows=52 loops=1)
+                                             Buckets: 1024  Batches: 1  Memory Usage: 12kB
+                                             Buffers: shared hit=1
+                                             ->  Seq Scan on bom_headers bh  (cost=0.00..1.52 rows=52 width=34) (actual time=0.003..0.007 rows=52 loops=1)
+                                                   Buffers: shared hit=1
+                                 ->  Hash  (cost=11.20..11.20 rows=120 width=32) (actual time=0.006..0.007 rows=4 loops=1)
+                                       Buckets: 1024  Batches: 1  Memory Usage: 9kB
+                                       Buffers: shared hit=1
+                                       ->  Seq Scan on verification_scans vs  (cost=0.00..11.20 rows=120 width=32) (actual time=0.003..0.004 rows=4 loops=1)
+                                             Buffers: shared hit=1
+                           ->  Hash  (cost=10.60..10.60 rows=60 width=32) (actual time=0.001..0.001 rows=0 loops=1)
+                                 Buckets: 1024  Batches: 1  Memory Usage: 8kB
+                                 ->  Seq Scan on splice_records sr  (cost=0.00..10.60 rows=60 width=32) (actual time=0.001..0.001 rows=0 loops=1)
+ Planning:
+   Buffers: shared hit=130
+ Planning Time: 0.864 ms
+ Execution Time: 26.439 ms
+(53 rows)
+
+Time: 28.460 ms
+=== TEST 5: Audit Log — Last 1000 Events ===
+                                                                   QUERY PLAN                                                                    
+-------------------------------------------------------------------------------------------------------------------------------------------------
+ Limit  (cost=205.62..205.74 rows=50 width=105) (actual time=2.930..2.937 rows=51 loops=1)
+   Buffers: shared hit=66
+   InitPlan 1 (returns $0)
+     ->  Limit  (cost=0.00..0.03 rows=1 width=16) (actual time=0.005..0.006 rows=1 loops=1)
+           Buffers: shared hit=1
+           ->  Seq Scan on changeovers  (cost=0.00..254.03 rows=10003 width=16) (actual time=0.005..0.005 rows=1 loops=1)
+                 Buffers: shared hit=1
+   ->  Sort  (cost=205.59..205.72 rows=50 width=105) (actual time=2.929..2.933 rows=51 loops=1)
+         Sort Key: al.occurred_at DESC
+         Sort Method: quicksort  Memory: 33kB
+         Buffers: shared hit=66
+         ->  Nested Loop  (cost=5.10..204.18 rows=50 width=105) (actual time=0.064..2.901 rows=51 loops=1)
+               Buffers: shared hit=66
+               ->  Bitmap Heap Scan on audit_log al  (cost=4.81..194.41 rows=50 width=99) (actual time=0.052..2.853 rows=51 loops=1)
+                     Recheck Cond: (changeover_id = $0)
+                     Heap Blocks: exact=50
+                     Buffers: shared hit=54
+                     ->  Bitmap Index Scan on idx_audit_changeover  (cost=0.00..4.80 rows=50 width=0) (actual time=0.042..0.042 rows=51 loops=1)
+                           Index Cond: (changeover_id = $0)
+                           Buffers: shared hit=4
+               ->  Memoize  (cost=0.29..1.74 rows=1 width=38) (actual time=0.001..0.001 rows=1 loops=51)
+                     Cache Key: al.user_id
+                     Cache Mode: logical
+                     Hits: 47  Misses: 4  Evictions: 0  Overflows: 0  Memory Usage: 1kB
+                     Buffers: shared hit=12
+                     ->  Index Scan using users_pkey on users u  (cost=0.28..1.73 rows=1 width=38) (actual time=0.004..0.004 rows=1 loops=4)
+                           Index Cond: (id = al.user_id)
+                           Buffers: shared hit=12
+ Planning:
+   Buffers: shared hit=68
+ Planning Time: 0.780 ms
+ Execution Time: 2.980 ms
+(32 rows)
+
+Time: 4.568 ms
+=== TEST 6: Unique Constraint Performance ===
+                                                                                    QUERY PLAN                                                                                     
+-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+ Result  (cost=8.23..8.24 rows=1 width=1) (actual time=0.014..0.014 rows=1 loops=1)
+   Buffers: shared hit=3
+   InitPlan 3 (returns $2)
+     ->  Index Only Scan using verification_scans_changeover_id_line_item_id_key on verification_scans  (cost=0.21..8.23 rows=1 width=0) (actual time=0.013..0.013 rows=0 loops=1)
+           Index Cond: ((changeover_id = $0) AND (line_item_id = $1))
+           Heap Fetches: 0
+           Buffers: shared hit=3
+           InitPlan 1 (returns $0)
+             ->  Limit  (cost=0.00..0.03 rows=1 width=16) (actual time=0.004..0.005 rows=1 loops=1)
+                   Buffers: shared hit=1
+                   ->  Seq Scan on changeovers  (cost=0.00..254.03 rows=10003 width=16) (actual time=0.004..0.004 rows=1 loops=1)
+                         Buffers: shared hit=1
+           InitPlan 2 (returns $1)
+             ->  Limit  (cost=0.00..0.05 rows=1 width=16) (actual time=0.002..0.002 rows=1 loops=1)
+                   Buffers: shared hit=1
+                   ->  Seq Scan on bom_line_items  (cost=0.00..2.55 rows=55 width=16) (actual time=0.002..0.002 rows=1 loops=1)
+                         Buffers: shared hit=1
+ Planning Time: 0.096 ms
+ Execution Time: 0.026 ms
+(19 rows)
+
+Time: 0.345 ms
+=== TABLE ROW COUNTS ===
+ schemaname |     table_name     | row_count | total_size 
+------------+--------------------+-----------+------------
+ public     | audit_log          |    500015 | 115 MB
+ public     | changeovers        |     10005 | 1896 kB
+ public     | users              |      1004 | 216 kB
+ public     | bom_alternatives   |        62 | 40 kB
+ public     | bom_line_items     |        55 | 80 kB
+ public     | bom_headers        |        52 | 40 kB
+ public     | verification_scans |         4 | 56 kB
+ public     | _prisma_migrations |         0 | 32 kB
+ public     | splice_records     |         0 | 16 kB
+(9 rows)
+
+Time: 13.380 ms

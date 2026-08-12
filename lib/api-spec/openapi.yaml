@@ -1,0 +1,950 @@
+openapi: 3.1.0
+info:
+  title: Api
+  version: 0.1.0
+  description: SMT Feeder Scanning & Verification System API
+servers:
+  - url: /api
+    description: Base API path
+tags:
+  - name: health
+    description: Health operations
+  - name: bom
+    description: Bill of Materials operations
+  - name: sessions
+    description: Production session operations
+  - name: feeders
+    description: Feeder scan operations
+  - name: reports
+    description: Report generation
+  - name: analytics
+    description: Analytics and statistics
+paths:
+  /healthz:
+    get:
+      operationId: healthCheck
+      tags: [health]
+      summary: Health check
+      responses:
+        "200":
+          description: Healthy
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HealthStatus"
+
+  /bom:
+    get:
+      operationId: listBoms
+      tags: [bom]
+      summary: List all BOMs
+      responses:
+        "200":
+          description: List of BOMs
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Bom"
+    post:
+      operationId: createBom
+      tags: [bom]
+      summary: Create a new BOM
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateBomRequest"
+      responses:
+        "201":
+          description: BOM created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Bom"
+
+  /bom/{bomId}:
+    get:
+      operationId: getBom
+      tags: [bom]
+      summary: Get a BOM by ID
+      parameters:
+        - name: bomId
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: BOM detail
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BomDetail"
+    patch:
+      operationId: updateBom
+      tags: [bom]
+      summary: Update a BOM
+      parameters:
+        - name: bomId
+          in: path
+          required: true
+          schema:
+            type: integer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateBomRequest"
+      responses:
+        "200":
+          description: Updated BOM
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Bom"
+    delete:
+      operationId: deleteBom
+      tags: [bom]
+      summary: Delete a BOM
+      parameters:
+        - name: bomId
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "204":
+          description: Deleted
+
+  /bom/{bomId}/items:
+    post:
+      operationId: addBomItem
+      tags: [bom]
+      summary: Add a feeder item to BOM
+      parameters:
+        - name: bomId
+          in: path
+          required: true
+          schema:
+            type: integer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateBomItemRequest"
+      responses:
+        "201":
+          description: BOM item created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BomItem"
+
+  /bom/{bomId}/items/{itemId}:
+    delete:
+      operationId: deleteBomItem
+      tags: [bom]
+      summary: Delete a BOM item
+      parameters:
+        - name: bomId
+          in: path
+          required: true
+          schema:
+            type: integer
+        - name: itemId
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "204":
+          description: Item deleted
+
+  /sessions:
+    get:
+      operationId: listSessions
+      tags: [sessions]
+      summary: List all production sessions
+      responses:
+        "200":
+          description: List of sessions
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Session"
+    post:
+      operationId: createSession
+      tags: [sessions]
+      summary: Create a new production session
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateSessionRequest"
+      responses:
+        "201":
+          description: Session created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Session"
+
+  /sessions/{sessionId}:
+    get:
+      operationId: getSession
+      tags: [sessions]
+      summary: Get a session with all scan results
+      parameters:
+        - name: sessionId
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: Session detail
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SessionDetail"
+    patch:
+      operationId: updateSession
+      tags: [sessions]
+      summary: Update session (end time, count, etc.)
+      parameters:
+        - name: sessionId
+          in: path
+          required: true
+          schema:
+            type: integer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateSessionRequest"
+      responses:
+        "200":
+          description: Updated session
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Session"
+
+  /sessions/{sessionId}/scans:
+    post:
+      operationId: scanFeeder
+      tags: [feeders]
+      summary: Scan a feeder (with optional spool barcode) and verify against BOM
+      parameters:
+        - name: sessionId
+          in: path
+          required: true
+          schema:
+            type: integer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ScanFeederRequest"
+      responses:
+        "200":
+          description: Scan result
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ScanResult"
+
+  /sessions/{sessionId}/splices:
+    get:
+      operationId: listSplices
+      tags: [feeders]
+      summary: List all splice records for a session
+      parameters:
+        - name: sessionId
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: List of splice records
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/SpliceRecord"
+    post:
+      operationId: recordSplice
+      tags: [feeders]
+      summary: Record a feeder spool splice event
+      parameters:
+        - name: sessionId
+          in: path
+          required: true
+          schema:
+            type: integer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateSpliceRequest"
+      responses:
+        "201":
+          description: Splice recorded
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SpliceRecord"
+
+  /sessions/{sessionId}/summary:
+    get:
+      operationId: getSessionSummary
+      tags: [sessions]
+      summary: Get session verification summary stats
+      parameters:
+        - name: sessionId
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: Summary
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SessionSummary"
+
+  /sessions/{sessionId}/report:
+    get:
+      operationId: getSessionReport
+      tags: [reports]
+      summary: Get full session report data for PDF/Excel export
+      parameters:
+        - name: sessionId
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: Full report data
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SessionReport"
+
+  /analytics/overview:
+    get:
+      operationId: getAnalyticsOverview
+      tags: [analytics]
+      summary: Get overall system analytics overview
+      responses:
+        "200":
+          description: Analytics overview
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AnalyticsOverview"
+
+  /analytics/pareto:
+    get:
+      operationId: getAnalyticsPareto
+      tags: [analytics]
+      summary: Get Pareto rejection analysis across all sessions
+      parameters:
+        - name: sessionId
+          in: query
+          required: false
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: Pareto rejection data
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ParetoData"
+
+  /analytics/trends:
+    get:
+      operationId: getAnalyticsTrends
+      tags: [analytics]
+      summary: Get session trend data over the last 30 days
+      responses:
+        "200":
+          description: Trend data by date
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/SessionTrend"
+
+components:
+  schemas:
+    HealthStatus:
+      type: object
+      properties:
+        status:
+          type: string
+      required: [status]
+
+    Bom:
+      type: object
+      properties:
+        id:
+          type: integer
+        name:
+          type: string
+        description:
+          type: string
+        itemCount:
+          type: integer
+        createdAt:
+          type: string
+          format: date-time
+      required: [id, name, itemCount, createdAt]
+
+    BomItem:
+      type: object
+      properties:
+        id:
+          type: integer
+        bomId:
+          type: integer
+        srNo:
+          type: string
+        feederNumber:
+          type: string
+        partNumber:
+          type: string
+        itemName:
+          type: string
+        rdeplyPartNo:
+          type: string
+        referenceDesignator:
+          type: string
+        description:
+          type: string
+        location:
+          type: string
+        packageDescription:
+          type: string
+        dnpParts:
+          type: string
+        supplier1:
+          type: string
+        partNo1:
+          type: string
+        supplier2:
+          type: string
+        partNo2:
+          type: string
+        supplier3:
+          type: string
+        partNo3:
+          type: string
+        remarks:
+          type: string
+        quantity:
+          type: integer
+        expectedMpn:
+          type: string
+        internalId:
+          type: string
+        isAlternate:
+          type: boolean
+        parentItemId:
+          type: integer
+        mpn:
+          type: string
+        manufacturer:
+          type: string
+        cost:
+          type: string
+        leadTime:
+          type: integer
+      required: [id, bomId, feederNumber, partNumber, quantity]
+
+    BomDetail:
+      type: object
+      properties:
+        id:
+          type: integer
+        name:
+          type: string
+        description:
+          type: string
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/BomItem"
+        createdAt:
+          type: string
+          format: date-time
+      required: [id, name, items, createdAt]
+
+    CreateBomRequest:
+      type: object
+      properties:
+        name:
+          type: string
+        description:
+          type: string
+      required: [name]
+
+    UpdateBomRequest:
+      type: object
+      properties:
+        name:
+          type: string
+        description:
+          type: string
+
+    CreateBomItemRequest:
+      type: object
+      properties:
+        srNo:
+          type: string
+        feederNumber:
+          type: string
+        partNumber:
+          type: string
+        itemName:
+          type: string
+        rdeplyPartNo:
+          type: string
+        referenceDesignator:
+          type: string
+        description:
+          type: string
+        location:
+          type: string
+        packageDescription:
+          type: string
+        dnpParts:
+          type: string
+        supplier1:
+          type: string
+        partNo1:
+          type: string
+        supplier2:
+          type: string
+        partNo2:
+          type: string
+        supplier3:
+          type: string
+        partNo3:
+          type: string
+        remarks:
+          type: string
+        quantity:
+          type: integer
+      required: [feederNumber, partNumber, quantity]
+
+    Session:
+      type: object
+      properties:
+        id:
+          type: integer
+        bomId:
+          type: integer
+        bomName:
+          type: string
+        companyName:
+          type: string
+        customerName:
+          type: string
+        panelName:
+          type: string
+        supervisorName:
+          type: string
+        operatorName:
+          type: string
+        shiftName:
+          type: string
+        shiftDate:
+          type: string
+        logoUrl:
+          type: string
+        productionCount:
+          type: integer
+        verificationMode:
+          type: string
+          enum: [AUTO, MANUAL]
+        status:
+          type: string
+          enum: [active, completed]
+        startTime:
+          type: string
+          format: date-time
+        endTime:
+          type: string
+          format: date-time
+        createdAt:
+          type: string
+          format: date-time
+      required: [id, bomId, companyName, panelName, supervisorName, operatorName, shiftName, shiftDate, status, startTime, createdAt]
+
+    SessionDetail:
+      type: object
+      properties:
+        id:
+          type: integer
+        bomId:
+          type: integer
+        bomName:
+          type: string
+        panelId:
+          type: string
+        companyName:
+          type: string
+        customerName:
+          type: string
+        customer:
+          type: string
+        panelName:
+          type: string
+        supervisorName:
+          type: string
+        operatorName:
+          type: string
+        shiftName:
+          type: string
+        shift:
+          type: string
+        shiftDate:
+          type: string
+        line:
+          type: string
+        machine:
+          type: string
+        qaName:
+          type: string
+        logoUrl:
+          type: string
+        productionCount:
+          type: integer
+        verificationMode:
+          type: string
+          enum: [AUTO, MANUAL]
+        status:
+          type: string
+          enum: [active, completed, cancelled]
+        startTime:
+          type: string
+          format: date-time
+        startedAt:
+          type: string
+          format: date-time
+        endTime:
+          type: string
+          format: date-time
+        completedAt:
+          type: string
+          format: date-time
+        bomVersion:
+          type: string
+        pcbPartNumber:
+          type: string
+        scans:
+          type: array
+          items:
+            $ref: "#/components/schemas/ScanRecord"
+        createdAt:
+          type: string
+          format: date-time
+      required: [id, bomId, companyName, panelName, supervisorName, operatorName, shiftName, shiftDate, status, startTime, scans, createdAt]
+
+    ScanRecord:
+      type: object
+      properties:
+        id:
+          type: integer
+        sessionId:
+          type: integer
+        feederNumber:
+          type: string
+        spoolBarcode:
+          type: string
+        status:
+          type: string
+          enum: [ok, reject]
+        partNumber:
+          type: string
+        description:
+          type: string
+        location:
+          type: string
+        scannedAt:
+          type: string
+          format: date-time
+      required: [id, sessionId, feederNumber, status, scannedAt]
+
+    SpliceRecord:
+      type: object
+      properties:
+        id:
+          type: integer
+        sessionId:
+          type: integer
+        feederNumber:
+          type: string
+        operatorId:
+          type: string
+        oldSpoolBarcode:
+          type: string
+        newSpoolBarcode:
+          type: string
+        splicedAt:
+          type: string
+          format: date-time
+        durationSeconds:
+          type: integer
+      required: [id, sessionId, feederNumber, operatorId, oldSpoolBarcode, newSpoolBarcode, splicedAt]
+
+    CreateSpliceRequest:
+      type: object
+      properties:
+        feederNumber:
+          type: string
+        operatorId:
+          type: string
+        oldSpoolBarcode:
+          type: string
+        newSpoolBarcode:
+          type: string
+        durationSeconds:
+          type: integer
+      required: [feederNumber, operatorId, oldSpoolBarcode, newSpoolBarcode]
+
+    CreateSessionRequest:
+      type: object
+      properties:
+        bomId:
+          type: integer
+        companyName:
+          type: string
+        customerName:
+          type: string
+        panelName:
+          type: string
+        supervisorName:
+          type: string
+        operatorName:
+          type: string
+        shiftName:
+          type: string
+        shiftDate:
+          type: string
+        logoUrl:
+          type: string
+        productionCount:
+          type: integer
+      required: [bomId, companyName, panelName, supervisorName, operatorName, shiftName, shiftDate]
+
+    UpdateSessionRequest:
+      type: object
+      properties:
+        endTime:
+          type: string
+          format: date-time
+        productionCount:
+          type: integer
+        status:
+          type: string
+          enum: [active, completed, cancelled]
+        logoUrl:
+          type: string
+
+    ScanFeederRequest:
+      type: object
+      properties:
+        sessionId:
+          type: integer
+        feederNumber:
+          type: string
+        mpnOrInternalId:
+          type: string
+        lotCode:
+          type: string
+        internalIdType:
+          type: string
+        verificationMode:
+          type: string
+          enum: [AUTO, MANUAL]
+        selectedItemId:
+          type: integer
+        spoolBarcode:
+          type: string
+      required: [sessionId, feederNumber]
+
+    ScanResult:
+      type: object
+      properties:
+        scan:
+          $ref: "#/components/schemas/ScanRecord"
+        status:
+          type: string
+          enum: [ok, reject]
+        message:
+          type: string
+      required: [scan, status, message]
+
+    SessionSummary:
+      type: object
+      properties:
+        sessionId:
+          type: integer
+        totalBomItems:
+          type: integer
+        scannedCount:
+          type: integer
+        okCount:
+          type: integer
+        rejectCount:
+          type: integer
+        missingCount:
+          type: integer
+        completionPercent:
+          type: number
+        durationMinutes:
+          type: number
+      required: [sessionId, totalBomItems, scannedCount, okCount, rejectCount, missingCount, completionPercent]
+
+    SessionReportRow:
+      type: object
+      properties:
+        feederNumber:
+          type: string
+        referenceLocation:
+          type: string
+        location:
+          type: string
+        description:
+          type: string
+        packageDescription:
+          type: string
+        internalPartNumber:
+          type: string
+        make1:
+          type: string
+        mpn1:
+          type: string
+        make2:
+          type: string
+        mpn2:
+          type: string
+        make3:
+          type: string
+        mpn3:
+          type: string
+        scannedValue:
+          type: string
+        lotCode:
+          type: string
+        scanStatus:
+          type: string
+        matchedField:
+          type: string
+        matchedMake:
+          type: string
+        scannedAt:
+          type: string
+          format: date-time
+
+    SessionReport:
+      type: object
+      properties:
+        session:
+          $ref: "#/components/schemas/SessionDetail"
+        summary:
+          $ref: "#/components/schemas/SessionSummary"
+        bomItems:
+          type: array
+          items:
+            $ref: "#/components/schemas/BomItem"
+        reportRows:
+          type: array
+          items:
+            $ref: "#/components/schemas/SessionReportRow"
+      required: [session, summary, bomItems]
+
+    AnalyticsOverview:
+      type: object
+      properties:
+        totalSessions:
+          type: integer
+        activeSessions:
+          type: integer
+        completedSessions:
+          type: integer
+        totalScans:
+          type: integer
+        totalOk:
+          type: integer
+        totalReject:
+          type: integer
+        overallOkRate:
+          type: number
+        totalBoms:
+          type: integer
+        avgDurationMinutes:
+          type: number
+      required: [totalSessions, activeSessions, completedSessions, totalScans, totalOk, totalReject, overallOkRate, totalBoms]
+
+    ParetoItem:
+      type: object
+      properties:
+        feederNumber:
+          type: string
+        partNumber:
+          type: string
+        description:
+          type: string
+        rejectCount:
+          type: integer
+        cumulativePercent:
+          type: number
+      required: [feederNumber, rejectCount, cumulativePercent]
+
+    ParetoData:
+      type: object
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/ParetoItem"
+        totalRejects:
+          type: integer
+      required: [items, totalRejects]
+
+    SessionTrend:
+      type: object
+      properties:
+        date:
+          type: string
+        sessions:
+          type: integer
+        totalScans:
+          type: integer
+        okCount:
+          type: integer
+        rejectCount:
+          type: integer
+        okRate:
+          type: number
+      required: [date, sessions, totalScans, okCount, rejectCount, okRate]

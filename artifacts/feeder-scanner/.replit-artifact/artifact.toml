@@ -1,0 +1,31 @@
+kind = "web"
+previewPath = "/"
+title = "SMT Feeder Scanner"
+version = "1.0.0"
+id = "artifacts/feeder-scanner"
+router = "path"
+
+[[integratedSkills]]
+name = "react-vite"
+version = "1.0.0"
+
+[[services]]
+name = "web"
+paths = [ "/" ]
+localPort = 24803
+
+[services.development]
+run = "pnpm --filter @workspace/feeder-scanner run dev"
+
+[services.production]
+build = [ "pnpm", "--filter", "@workspace/feeder-scanner", "run", "build" ]
+publicDir = "artifacts/feeder-scanner/dist/public"
+serve = "static"
+
+[[services.production.rewrites]]
+from = "/*"
+to = "/index.html"
+
+[services.env]
+PORT = "24803"
+BASE_PATH = "/"

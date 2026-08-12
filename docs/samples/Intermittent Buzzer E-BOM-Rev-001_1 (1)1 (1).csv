@@ -1,0 +1,31 @@
+,,,,,BILL OF MATERIAL,,,,,,,,Format No.: RF/,,
+,,,,,,,,,,,,,Rev No :- 00,,
+,,,,,,,,,,,,,Rev Date : 01/01/17,,
+CUSTOMER NAME& Part Number: Mahindra Last Mile Mobility Limited,,,,,,,,,BOM NO:- RD/BOM/INTBUZ/R1.1,,,,,,
+PART NAME/INTERNAL NO. : - INTBUZ/R&D/R1.1 /T-206506,,,,,,,,,BOM REV NO /  DATE:- R00/ 06-01-2026,,,,,,
+SR NO ,Feeder Number ,Item Name,RDEPL PART NO.,"
+Required Qty  
+",Reference,Values,"Package/
+Description",DNP Parts,"Make/
+Supplier 1",Part No. ,"Make/
+Supplier 2",Part No. ,"Make/
+Supplier 3",Part No. ,Remarks
+,,,,,,,,,,,,,,,
+1,YSM-001,CAPACITOR,"RDSCAP0353 
+RDSCAP0312 YAGEO",2,"C1, C2",4.7nF/50V 10 %,0603,,KEMET,C0603C472K5RACAUTO,YAGEO,CC0603KRX7R9BB472,,,
+2,YSM-002,CAPACITOR,RDSCAP0037,2,"C3,C4", 0.1uF/50V/10%,0603,,KEMET,C0603C104K5RACAUTO,YAGEO,CC0603KRX7R9BB104,,,
+13,YSM-003,RESISTOR,RDSRES0987,1,R3,"4.7K,±1%",0603,,Royal Ohm,CQ03WAF4701T5E,YAGEO,RC0603FR-074K7L,,,
+14,YSM-004,RESISTOR,RDSRES0502 YAGEO,1,R4,270K 1%,0805,,Royal Ohm,"CQ05S8F2703T5E/
+0805S8F2703T5E",YAGEO,RC0805FR-07270KL,,,
+15,YSM-005,RESISTOR,RDSRES0235 YAGEO,1,R5,10K 5%,0805,,Royal Ohm,CQ0558J0103T5E,YAGEO, RC0805JR-0710KL,,,
+16,YSM-006,RESISTOR,RDSRES1109 ROYAL OHM,1,R6,2.7K 1%,0603,,Royal Ohm, CQ03SAF2701T5E,YAGEO,"RC0603FR-072K7L
+RC0603JR-072K7L",,,
+17,YSM-007,RESISTOR,RDSRES0985,1,R7,10K 1%,0603,,Royal Ohm, CQ03WAF1002T5E,YAGEO, RC0603FR-0710KL,,,
+18,YSM-008,555 IC,RDSDIOD0266 Diodes,1,U1,SE555QS-13,SO-8,,Diodes Inc,SE555QS-13,,,,,
+19,,PCB,BARE PCB INTBUZ/R&D/R1.1,1,,INTBUZ/R&D/R1.1,,,,,,,,,
+,,,,,,,,,,,,,,,
+Sr.No.,,Rev. No.,,Rev. Date,Revision Details,,,,Revision By :,,,Approved By :,,,
+,,,,,,,,,,,,,,,
+,,,,,,,,,,,,,,,
+,,,,,,,,,,,,,,,
+PREPARED BY- MS. VAI,,,,,,             VERIFIED BY : MR.                                                            ,,,,,,   APPROVED BY- GIRINARAYANAN.V,,,

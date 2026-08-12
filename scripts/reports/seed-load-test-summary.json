@@ -1,0 +1,130 @@
+{
+  "bomCount": 20,
+  "totalItems": 2330,
+  "loadTestItems": 1000000,
+  "durationMs": 94157,
+  "runId": "seed_load_test_20260429_172737",
+  "loadTestDurationMs": 93674,
+  "boms": [
+    {
+      "id": 76,
+      "name": "LT-BOM-001",
+      "revisionLabel": "Rev A",
+      "itemCount": 50
+    },
+    {
+      "id": 77,
+      "name": "LT-BOM-002",
+      "revisionLabel": "Rev B",
+      "itemCount": 57
+    },
+    {
+      "id": 78,
+      "name": "LT-BOM-003",
+      "revisionLabel": "Rev C",
+      "itemCount": 64
+    },
+    {
+      "id": 79,
+      "name": "LT-BOM-004",
+      "revisionLabel": "Rev D",
+      "itemCount": 71
+    },
+    {
+      "id": 80,
+      "name": "LT-BOM-005",
+      "revisionLabel": "Rev E",
+      "itemCount": 78
+    },
+    {
+      "id": 81,
+      "name": "LT-BOM-006",
+      "revisionLabel": "Rev F",
+      "itemCount": 85
+    },
+    {
+      "id": 82,
+      "name": "LT-BOM-007",
+      "revisionLabel": "Rev G",
+      "itemCount": 92
+    },
+    {
+      "id": 83,
+      "name": "LT-BOM-008",
+      "revisionLabel": "Rev H",
+      "itemCount": 99
+    },
+    {
+      "id": 84,
+      "name": "LT-BOM-009",
+      "revisionLabel": "Rev I",
+      "itemCount": 106
+    },
+    {
+      "id": 85,
+      "name": "LT-BOM-010",
+      "revisionLabel": "Rev J",
+      "itemCount": 113
+    },
+    {
+      "id": 86,
+      "name": "LT-BOM-011",
+      "revisionLabel": "Rev K",
+      "itemCount": 120
+    },
+    {
+      "id": 87,
+      "name": "LT-BOM-012",
+      "revisionLabel": "Rev L",
+      "itemCount": 127
+    },
+    {
+      "id": 88,
+      "name": "LT-BOM-013",
+      "revisionLabel": "Rev M",
+      "itemCount": 134
+    },
+    {
+      "id": 89,
+      "name": "LT-BOM-014",
+      "revisionLabel": "Rev N",
+      "itemCount": 141
+    },
+    {
+      "id": 90,
+      "name": "LT-BOM-015",
+      "revisionLabel": "Rev O",
+      "itemCount": 148
+    },
+    {
+      "id": 91,
+      "name": "LT-BOM-016",
+      "revisionLabel": "Rev P",
+      "itemCount": 155
+    },
+    {
+      "id": 92,
+      "name": "LT-BOM-017",
+      "revisionLabel": "Rev Q",
+      "itemCount": 162
+    },
+    {
+      "id": 93,
+      "name": "LT-BOM-018",
+      "revisionLabel": "Rev R",
+      "itemCount": 169
+    },
+    {
+      "id": 94,
+      "name": "LT-BOM-019",
+      "revisionLabel": "Rev S",
+      "itemCount": 176
+    },
+    {
+      "id": 95,
+      "name": "LT-BOM-020",
+      "revisionLabel": "Rev T",
+      "itemCount": 183
+    }
+  ]
+}

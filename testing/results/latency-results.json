@@ -1,0 +1,40 @@
+{
+  "timestamp": "2026-05-01T21:46:08.098Z",
+  "thresholds": {
+    "p50": 50,
+    "p95": 200,
+    "p99": 500
+  },
+  "results": [
+    {
+      "endpoint": "/api/changeovers",
+      "p50": 1812,
+      "p95": 2352,
+      "p99": 2643,
+      "average": 1807,
+      "rps": 4,
+      "errors": 0,
+      "passed": false
+    },
+    {
+      "endpoint": "/api/changeovers/eb00fab7-e308-4aed-b58b-12c87abbe9c5/progress",
+      "p50": 152,
+      "p95": 1728,
+      "p99": 1733,
+      "average": 541,
+      "rps": 18,
+      "errors": 0,
+      "passed": false
+    },
+    {
+      "endpoint": "/api/changeovers/eb00fab7-e308-4aed-b58b-12c87abbe9c5/scans",
+      "p50": 226,
+      "p95": 287,
+      "p99": 299,
+      "average": 212,
+      "rps": 46,
+      "errors": 0,
+      "passed": false
+    }
+  ]
+}

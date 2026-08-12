@@ -1,0 +1,50 @@
+{
+  "timestamp": "2026-05-01T21:51:53.055Z",
+  "configuration": {
+    "thresholds": {
+      "executionTime": 50
+    },
+    "testData": {
+      "auditLogs": 500015,
+      "changeovers": 10005,
+      "users": 1004,
+      "bomAlternatives": 62,
+      "bomLineItems": 55,
+      "bomHeaders": 52,
+      "verificationScans": 4
+    }
+  },
+  "results": [
+    {
+      "test": "MPN Lookup (bom_alternatives)",
+      "executionTimeMs": 0.456,
+      "passed": true
+    },
+    {
+      "test": "UCAL Part Number Array Search",
+      "executionTimeMs": 0.026,
+      "passed": true
+    },
+    {
+      "test": "Progress Calculation",
+      "executionTimeMs": 0.304,
+      "passed": true
+    },
+    {
+      "test": "Role-Filtered Changeover List",
+      "executionTimeMs": 26.439,
+      "passed": true
+    },
+    {
+      "test": "Audit Log Query",
+      "executionTimeMs": 2.98,
+      "passed": true
+    },
+    {
+      "test": "Unique Constraint Performance",
+      "executionTimeMs": 0.026,
+      "passed": true
+    }
+  ],
+  "passed": true
+}

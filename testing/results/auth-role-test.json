@@ -1,0 +1,154 @@
+{
+  "timestamp": "2026-05-01T21:46:39.145Z",
+  "summary": {
+    "passed": 18,
+    "failed": 0,
+    "avgLatency": 76
+  },
+  "results": [
+    {
+      "name": "GET /api/changeovers without auth",
+      "passed": true,
+      "status": 401,
+      "expected": 401,
+      "latencyMs": 52,
+      "detail": "unauthenticated access"
+    },
+    {
+      "name": "POST /api/changeovers without auth",
+      "passed": true,
+      "status": 401,
+      "expected": 401,
+      "latencyMs": 16,
+      "detail": "unauthenticated access"
+    },
+    {
+      "name": "Operator login",
+      "passed": true,
+      "status": 200,
+      "expected": 200,
+      "latencyMs": 0,
+      "detail": "OP001"
+    },
+    {
+      "name": "QA login",
+      "passed": true,
+      "status": 200,
+      "expected": 200,
+      "latencyMs": 0,
+      "detail": "QA001"
+    },
+    {
+      "name": "Engineer login",
+      "passed": true,
+      "status": 200,
+      "expected": 200,
+      "latencyMs": 0,
+      "detail": "ENG001"
+    },
+    {
+      "name": "Admin login",
+      "passed": true,
+      "status": 200,
+      "expected": 200,
+      "latencyMs": 0,
+      "detail": "ADM001"
+    },
+    {
+      "name": "Operator session role",
+      "passed": true,
+      "status": 200,
+      "expected": 200,
+      "latencyMs": 33,
+      "detail": "operator"
+    },
+    {
+      "name": "QA session role",
+      "passed": true,
+      "status": 200,
+      "expected": 200,
+      "latencyMs": 35,
+      "detail": "qa"
+    },
+    {
+      "name": "Engineer session role",
+      "passed": true,
+      "status": 200,
+      "expected": 200,
+      "latencyMs": 36,
+      "detail": "engineer"
+    },
+    {
+      "name": "Admin session role",
+      "passed": true,
+      "status": 200,
+      "expected": 200,
+      "latencyMs": 38,
+      "detail": "admin"
+    },
+    {
+      "name": "Operator can create changeover",
+      "passed": true,
+      "status": 201,
+      "expected": 201,
+      "latencyMs": 34,
+      "detail": "create changeover"
+    },
+    {
+      "name": "QA cannot create changeover",
+      "passed": true,
+      "status": 403,
+      "expected": 403,
+      "latencyMs": 17,
+      "detail": "role gate"
+    },
+    {
+      "name": "Engineer can list changeovers",
+      "passed": true,
+      "status": 200,
+      "expected": 200,
+      "latencyMs": 469,
+      "detail": "privileged read"
+    },
+    {
+      "name": "Operator can list changeovers",
+      "passed": true,
+      "status": 200,
+      "expected": 200,
+      "latencyMs": 437,
+      "detail": "own changeovers only"
+    },
+    {
+      "name": "Valid scan succeeds",
+      "passed": true,
+      "status": 201,
+      "expected": 201,
+      "latencyMs": 97,
+      "detail": "C0603C472K5RACAUTO"
+    },
+    {
+      "name": "Duplicate scan returns 409",
+      "passed": true,
+      "status": 409,
+      "expected": 409,
+      "latencyMs": 32,
+      "detail": "YSM-001"
+    },
+    {
+      "name": "Unknown scan returns 422",
+      "passed": true,
+      "status": 422,
+      "expected": 422,
+      "latencyMs": 26,
+      "detail": "NO_MATCH"
+    },
+    {
+      "name": "QA cannot scan",
+      "passed": true,
+      "status": 403,
+      "expected": 403,
+      "latencyMs": 39,
+      "detail": "role gate"
+    }
+  ]
+}
