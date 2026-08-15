@@ -205,7 +205,11 @@ router.post("/users/:id/reset-password", requireAdminAuth, slideAdminCookie, asy
     return;
   }
   const password_hash = await bcrypt.hash(password, 12);
-  const updated = await db.update(usersTable).set({ password_hash }).where(eq(usersTable.id, id)).returning({ id: usersTable.id });
+  // PRD §Phase-1:203 — an admin reset sets a temporary password, so re-arm the
+  // forced-change flag: the user must set their own password on next login,
+  // exactly like first login (APP-FLOW §5). Without this, a user whose flag was
+  // already cleared would keep using the admin's default indefinitely.
+  const updated = await db.update(usersTable).set({ password_hash, must_change_password: true }).where(eq(usersTable.id, id)).returning({ id: usersTable.id });
   if (updated.length === 0) { res.status(404).json({ error: "User not found" }); return; }
   // Force the user off — their existing token is revoked.
   revokeUser(id);

@@ -33,7 +33,16 @@ export interface RequestActor {
   username: string;
   name: string;
   role: UserRole;
+  mustChangePassword: boolean;
 }
+
+// APP-FLOW §5 — while must_change_password is true, every protected route
+// answers 423 so no real work happens until the password is rotated. These
+// two routes are the only exits: change-password clears the flag, logout
+// abandons the session. Both use attachActor, so without this exemption the
+// user would be trapped. Matched on the /api-relative req.path (routes mount
+// with no prefix under app.use("/api", router)).
+const MUST_CHANGE_EXEMPT_PATHS = new Set(["/auth/change-password", "/auth/logout"]);
 
 export interface AuthRequest extends Request {
   actor?: RequestActor;
@@ -58,7 +67,21 @@ export function attachActor(req: AuthRequest, res: Response, next: NextFunction)
     username: actor.username,
     name: actor.name || actor.username,
     role: actor.role,
+    mustChangePassword: actor.mustChangePassword === true,
   };
+
+  // APP-FLOW §5 — defense-in-depth for the forced first-login change. The UI
+  // redirects to /change-password, but a caller could hit the API directly;
+  // this 423 blocks every protected route until the flag is cleared, except
+  // the change-password / logout exits above.
+  if (req.actor.mustChangePassword && !MUST_CHANGE_EXEMPT_PATHS.has(req.path)) {
+    res.status(423).json({
+      error: "locked_must_change_password",
+      message: "You must change your password before continuing.",
+    });
+    return;
+  }
+
   next();
 }
 

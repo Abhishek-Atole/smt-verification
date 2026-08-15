@@ -1,4 +1,4 @@
-import { Switch, Route, Router as WouterRouter, useLocation } from "wouter";
+import { Switch, Route, Router as WouterRouter, useLocation, Redirect } from "wouter";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { Toaster } from "@/components/ui/toaster";
 import { TooltipProvider } from "@/components/ui/tooltip";
@@ -16,6 +16,7 @@ import SessionActive from "@/feeder/pages/ActiveSession";
 import SessionReport from "@/pages/session-report";
 import SessionHistory from "@/feeder/pages/SessionHistory";
 import Login from "@/pages/login";
+import ChangePassword from "@/pages/change-password";
 import Analytics from "@/pages/analytics";
 import TrashBin from "@/pages/trash-bin";
 import RealTimeDashboard from "@/pages/real-time-dashboard";
@@ -61,6 +62,8 @@ function ProtectedRoute({ component: Component, allowedRoles }: { component: any
 
     if (!user) {
       setLocation("/login");
+    } else if (user.mustChangePassword) {
+      setLocation("/change-password");
     } else if (allowedRoles && !allowedRoles.includes(user.role)) {
       setLocation("/");
     }
@@ -69,6 +72,7 @@ function ProtectedRoute({ component: Component, allowedRoles }: { component: any
   if (loading) return null;
 
   if (!user) return null;
+  if (user.mustChangePassword) return null;
   if (allowedRoles && !allowedRoles.includes(user.role)) return null;
 
   return <Component />;
@@ -116,9 +120,18 @@ function Router() {
     return <AdminGate />;
   }
 
+  // APP-FLOW §5 — a logged-in user with must_change_password is confined to
+  // /change-password. Covers routes that don't go through ProtectedRoute
+  // (e.g. /sessions, the catch-all) so there's no gap around the gate. The
+  // backend also 423s every protected API call, so data never loads anyway.
+  if (!loading && user && user.mustChangePassword && location !== "/change-password") {
+    return <Redirect to="/change-password" />;
+  }
+
   return (
     <Switch>
       <Route path="/login" component={Login} />
+      <Route path="/change-password" component={ChangePassword} />
       <Route>
         {loading ? null : user ? (
           <AppShell>

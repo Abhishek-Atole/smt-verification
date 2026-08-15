@@ -35,8 +35,8 @@ export default function Login() {
     if (!username.trim() || !role) return;
     try {
       setError("");
-      await login(username.trim(), role, password);
-      setLocation("/");
+      const { mustChangePassword } = await login(username.trim(), role, password);
+      setLocation(mustChangePassword ? "/change-password" : "/");
     } catch (error: unknown) {
       const rawErrorMessage = error instanceof Error ? error.message : "Authentication failed. Please try again.";
       const errorMessage =

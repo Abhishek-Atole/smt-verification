@@ -8,6 +8,7 @@ interface User {
   userId: number | string;
   name: string;
   role: Role;
+  mustChangePassword: boolean;
 }
 
 interface AuthSessionResponse {
@@ -15,6 +16,7 @@ interface AuthSessionResponse {
   userId: number | string;
   username: string;
   role: Role;
+  mustChangePassword: boolean;
 }
 
 const AUTH_SESSION_HINT_KEY = "feeder-scanner-auth-session";
@@ -67,14 +69,16 @@ function normalizeAuthSession(payload: unknown): AuthSessionResponse | null {
     userId,
     username,
     role,
+    mustChangePassword: source.mustChangePassword === true,
   };
 }
 
 interface AuthContextType {
   user: User | null;
   loading: boolean;
-  login: (username: string, role: Role, password: string) => Promise<void>;
+  login: (username: string, role: Role, password: string) => Promise<{ mustChangePassword: boolean }>;
   logout: () => Promise<void>;
+  changePassword: (oldPassword: string, newPassword: string) => Promise<void>;
 }
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
@@ -149,7 +153,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         const session = normalizeAuthSession(sessionPayload);
         if (active) {
           if (session) {
-            setUser({ userId: session.userId, name: session.username, role: session.role });
+            setUser({ userId: session.userId, name: session.username, role: session.role, mustChangePassword: session.mustChangePassword });
             setAuthSessionHint(true);
           } else {
             setUser(null);
@@ -225,7 +229,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       setLoading(false);
     }
 
-    setUser({ userId: session.userId, name: session.username, role: session.role });
+    setUser({ userId: session.userId, name: session.username, role: session.role, mustChangePassword: session.mustChangePassword });
     setAuthSessionHint(true);
     recordDailyMetric({ loginSuccesses: 1 });
     appendAuditEntry({
@@ -241,6 +245,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       });
       saveActiveSessions(sessions);
     } catch {}
+
+    return { mustChangePassword: session.mustChangePassword };
   };
 
   const logout = async () => {
@@ -260,8 +266,25 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setLoading(false);
   };
 
+  const changePassword = async (oldPassword: string, newPassword: string) => {
+    try {
+      await fetchWithCredentials<{ success: boolean }>("/api/auth/change-password", {
+        method: "POST",
+        body: JSON.stringify({ oldPassword, newPassword }),
+      });
+    } catch (error) {
+      if (error instanceof Response) {
+        throw await toAuthError(error);
+      }
+      throw error instanceof Error ? error : new Error("Password change failed.");
+    }
+    // Backend cleared must_change_password and re-issued cookies for this
+    // device; reflect it locally so the redirect gate releases.
+    setUser((prev) => (prev ? { ...prev, mustChangePassword: false } : prev));
+  };
+
   return (
-    <AuthContext.Provider value={{ user, loading, login, logout }}>
+    <AuthContext.Provider value={{ user, loading, login, logout, changePassword }}>
       {children}
     </AuthContext.Provider>
   );

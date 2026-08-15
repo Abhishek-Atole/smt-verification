@@ -24,6 +24,7 @@ import { type AuthRequest, type UserRole, attachActor, requireAuth } from "../mi
 import { auditLog } from "../lib/auditLogger";
 import { logger } from "../lib/logger";
 import { checkLockout, recordFailure, recordSuccess } from "../lib/lockoutStore";
+import { unrevoke } from "../lib/tokenBlacklist";
 
 // ─── constants ──────────────────────────────────────────────────────────────
 const PASSWORD_MAX_LENGTH = 128;
@@ -231,6 +232,14 @@ router.post("/auth/login", async (req: Request, res: Response) => {
     res.status(403).json({ error: "forbidden_inactive", message: "Your account is disabled. Contact your supervisor." });
     return;
   }
+
+  // U17 — a successful, credential-verified login clears any stale userId
+  // revocation. revokeUser() (admin reset / force-logout) is keyed by userId to
+  // kill EXISTING tokens on their next request; without this, the fresh token we
+  // are about to issue would also be rejected for up to 8h, trapping the user —
+  // including on the /change-password escape hatch after an admin reset. Bans are
+  // unaffected: disabled/deleted accounts never reach this line (see checks above).
+  unrevoke(user.id);
 
   const fingerprint = computeFingerprint(req.get("user-agent"), req.ip);
   const refresh     = await issueRefresh({
