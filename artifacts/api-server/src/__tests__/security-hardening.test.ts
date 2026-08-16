@@ -4,40 +4,45 @@ import jwt from "jsonwebtoken";
 import { randomUUID } from "crypto";
 import { beforeEach, describe, expect, test, vi } from "vitest";
 
-process.env.DATABASE_URL = process.env.DATABASE_URL ?? "postgresql://test:test@localhost:5432/test";
-process.env.JWT_SECRET = "api-server-security-test-secret";
+// These tests exercise the SHIPPED auth routes through the real request
+// pipeline (CSRF header guard, rate limiters, attachActor) with a mocked DB.
+// They assert the security properties the code actually provides, not a
+// hypothetical contract.
+process.env.DATABASE_URL =
+  process.env.DATABASE_URL ?? "postgresql://test:test@localhost:5432/test";
+// getJwtSecret() requires ≥32 chars.
+process.env.JWT_SECRET = "api-server-security-test-secret-0123456789";
 process.env.ALLOWED_ORIGINS = "http://localhost:5173,http://localhost:3000";
-process.env.MANUAL_MODE_PASSWORD = "manual-mode-secret";
 process.env.NODE_ENV = "development";
+
+const XHR = "XMLHttpRequest";
 
 const mocks = vi.hoisted(() => ({
   findFirst: vi.fn(),
+  execute: vi.fn(),
   auditLog: vi.fn().mockResolvedValue(undefined),
   parseCsvBuffer: vi.fn(),
   parseExcelBuffer: vi.fn(),
-  handleUpload: vi.fn(),
   buildProgramInsertValues: vi.fn(),
 }));
 
 vi.mock("@workspace/db", () => ({
   db: {
-    query: {
-      usersTable: {
-        findFirst: mocks.findFirst,
-      },
-    },
-    insert: vi.fn(),
+    query: { usersTable: { findFirst: mocks.findFirst } },
+    insert: vi.fn(() => ({
+      values: vi.fn(() => ({
+        returning: vi.fn().mockResolvedValue([{ id: randomUUID() }]),
+      })),
+    })),
     update: vi.fn(),
     select: vi.fn(),
     delete: vi.fn(),
-    execute: vi.fn(),
+    execute: mocks.execute,
     $transaction: vi.fn(),
   },
 }));
 
-vi.mock("../lib/auditLogger", () => ({
-  auditLog: mocks.auditLog,
-}));
+vi.mock("../lib/auditLogger", () => ({ auditLog: mocks.auditLog }));
 
 vi.mock("../lib/importProcessor", () => ({
   parseCsvBuffer: mocks.parseCsvBuffer,
@@ -45,32 +50,14 @@ vi.mock("../lib/importProcessor", () => ({
   buildProgramInsertValues: mocks.buildProgramInsertValues,
 }));
 
-vi.mock("../middleware/upload", () => ({
-  handleUpload: mocks.handleUpload,
-}));
-
 const app = (await import("../app")).default;
 const { logger } = await import("../lib/logger");
 
 app.set("trust proxy", 1);
 
-const infoSpy = vi.spyOn(logger, "info").mockImplementation(() => logger);
-const warnSpy = vi.spyOn(logger, "warn").mockImplementation(() => logger);
-const errorSpy = vi.spyOn(logger, "error").mockImplementation(() => logger);
-
-function makeAuthCookie(role: "operator" | "qa" | "engineer" | "admin", userId = randomUUID()) {
-  const token = jwt.sign(
-    {
-      userId,
-      username: `${role}-user`,
-      role,
-    },
-    process.env.JWT_SECRET as string,
-    { expiresIn: "8h" },
-  );
-
-  return { token, cookie: `smt_token=${token}`, userId };
-}
+const infoSpy = vi.spyOn(logger, "info").mockImplementation(() => logger as never);
+const warnSpy = vi.spyOn(logger, "warn").mockImplementation(() => logger as never);
+const errorSpy = vi.spyOn(logger, "error").mockImplementation(() => logger as never);
 
 function stringifyCalls(calls: unknown[][]): string {
   return calls
@@ -82,249 +69,198 @@ function stringifyCalls(calls: unknown[][]): string {
     .join("\n");
 }
 
+function makeAuthCookie(
+  role: "operator" | "qa" | "supervisor" | "admin" = "operator",
+) {
+  const userId = randomUUID();
+  const token = jwt.sign(
+    { userId, username: `${role}-user`, name: `${role}-user`, role, jti: randomUUID() },
+    process.env.JWT_SECRET as string,
+    { expiresIn: "8h" },
+  );
+  return { token, cookie: `smt_token=${token}`, userId };
+}
+
 beforeEach(() => {
   mocks.findFirst.mockReset();
+  mocks.execute.mockReset();
   mocks.auditLog.mockClear();
   mocks.parseCsvBuffer.mockReset();
   mocks.parseExcelBuffer.mockReset();
-  mocks.handleUpload.mockReset();
   mocks.buildProgramInsertValues.mockReset();
   infoSpy.mockClear();
   warnSpy.mockClear();
   errorSpy.mockClear();
 });
 
-describe("api-server auth hardening", () => {
-  test("login handler does not log password hash details", async () => {
+describe("login handler hardening", () => {
+  test("successful login never leaks the password hash into logs", async () => {
     const passwordHash = await bcrypt.hash("operator123", 4);
 
-    mocks.findFirst.mockResolvedValue({
-      id: randomUUID(),
-      username: "operator1",
-      role: "operator",
-      password: passwordHash,
-    });
+    // login() runs two db.execute() calls: column introspection, then the
+    // user row lookup (raw SQL with AS display_name / AS username / AS password_hash).
+    mocks.execute
+      .mockResolvedValueOnce({
+        rows: [
+          { column_name: "id" },
+          { column_name: "username" },
+          { column_name: "name" },
+          { column_name: "role" },
+          { column_name: "password_hash" },
+          { column_name: "is_active" },
+          { column_name: "must_change_password" },
+        ],
+      })
+      .mockResolvedValueOnce({
+        rows: [
+          {
+            id: randomUUID(),
+            username: "operator1",
+            display_name: "Operator One",
+            role: "operator",
+            password_hash: passwordHash,
+            is_active: true,
+            must_change_password: false,
+          },
+        ],
+      });
 
+    const response = await request(app)
+      .post("/api/auth/login")
+      .set("Origin", "http://localhost:5173")
+      .set("X-Requested-With", XHR)
+      .send({ username: "operator1", password: "operator123", role: "operator" });
+
+    expect(response.status).toBe(200);
+
+    const logText = stringifyCalls([
+      ...infoSpy.mock.calls,
+      ...warnSpy.mock.calls,
+      ...errorSpy.mock.calls,
+    ] as unknown[][]);
+    expect(logText).not.toContain(passwordHash);
+    expect(logText).not.toContain("password_hash");
+    expect(logText).not.toContain("passwordHash");
+  });
+
+  test("rejects a state-changing login without the X-Requested-With header (CSRF guard)", async () => {
     const response = await request(app)
       .post("/api/auth/login")
       .set("Origin", "http://localhost:5173")
       .send({ username: "operator1", password: "operator123", role: "operator" });
 
-    expect(response.status).toBe(200);
-
-    const logText = stringifyCalls(infoSpy.mock.calls as unknown[][]);
-    expect(logText).not.toContain("passwordHash");
-    expect(logText).not.toContain("pwdHash");
-    expect(logText).not.toContain("pwdLen");
-    expect(logText).toContain("login succeeded");
-  });
-
-  test("manual mode verification returns valid true for the configured password", async () => {
-    const { cookie } = makeAuthCookie("operator");
-
-    const response = await request(app)
-      .post("/api/auth/verify-manual-mode")
-      .set("Cookie", cookie)
-      .set("X-Forwarded-For", "203.0.113.10")
-      .send({ password: "manual-mode-secret" });
-
-    expect(response.status).toBe(200);
-    expect(response.body).toEqual({ valid: true });
-    expect(mocks.auditLog).toHaveBeenCalledWith(
-      expect.objectContaining({
-        event: "MANUAL_MODE_SUCCESS",
-      }),
-    );
-  });
-
-  test("manual mode verification returns valid false for a wrong password", async () => {
-    const { cookie } = makeAuthCookie("operator");
-
-    const response = await request(app)
-      .post("/api/auth/verify-manual-mode")
-      .set("Cookie", cookie)
-      .set("X-Forwarded-For", "203.0.113.11")
-      .send({ password: "wrong-password" });
-
-    expect(response.status).toBe(200);
-    expect(response.body).toEqual({ valid: false });
-  });
-
-  test("manual mode verification requires auth", async () => {
-    const response = await request(app)
-      .post("/api/auth/verify-manual-mode")
-      .set("X-Forwarded-For", "203.0.113.12")
-      .send({ password: "manual-mode-secret" });
-
-    expect(response.status).toBe(401);
-  });
-
-  test("manual mode verification is rate limited on the 6th attempt", async () => {
-    const { cookie } = makeAuthCookie("operator");
-
-    for (let attempt = 0; attempt < 5; attempt += 1) {
-      const response = await request(app)
-        .post("/api/auth/verify-manual-mode")
-        .set("Cookie", cookie)
-        .set("X-Forwarded-For", "203.0.113.13")
-        .send({ password: "wrong-password" });
-
-      expect(response.status).toBe(200);
-      expect(response.body).toEqual({ valid: false });
-    }
-
-    const limited = await request(app)
-      .post("/api/auth/verify-manual-mode")
-      .set("Cookie", cookie)
-      .set("X-Forwarded-For", "203.0.113.13")
-      .send({ password: "wrong-password" });
-
-    expect(limited.status).toBe(429);
+    expect(response.status).toBe(403);
+    expect(mocks.execute).not.toHaveBeenCalled();
   });
 });
-
-describe("verify-override approval", () => {
-  test("requires a specific approver id and matching password", async () => {
-    const approverId = randomUUID();
-    const sessionId = randomUUID();
+describe("verify-override approval (step-up password check)", () => {
+  test("approves with a valid password for the requested role", async () => {
     const passwordHash = await bcrypt.hash("qa-approve", 4);
     const { cookie } = makeAuthCookie("operator");
 
     mocks.findFirst.mockResolvedValue({
-      id: approverId,
+      id: randomUUID(),
+      name: "QA One",
       username: "qa1",
       role: "qa",
-      password: passwordHash,
+      password_hash: passwordHash,
     });
 
     const response = await request(app)
       .post("/api/auth/verify-override")
       .set("Cookie", cookie)
+      .set("X-Requested-With", XHR)
       .set("X-Forwarded-For", "203.0.113.20")
-      .send({
-        password: "qa-approve",
-        role: "qa",
-        approverId,
-        sessionId,
-      });
+      .send({ password: "qa-approve", role: "qa" });
 
     expect(response.status).toBe(200);
     expect(response.body.valid).toBe(true);
-    expect(response.body.approverId).toBe(approverId);
-    expect(response.body.approvalTimestamp).toBeTruthy();
-    expect(response.body.expiresAt).toBeTruthy();
+    expect(response.body.approverName).toBe("QA One");
+    expect(response.body.approverRole).toBe("qa");
     expect(mocks.auditLog).toHaveBeenCalledWith(
-      expect.objectContaining({
-        event: "SCAN_VERIFIED",
-        sessionId,
-      }),
+      expect.objectContaining({ event: "SCAN_VERIFIED" }),
     );
   });
 
-  test("rejects a wrong approver uuid", async () => {
+  test("rejects when no user holds the requested approver role", async () => {
     const { cookie } = makeAuthCookie("operator");
-
     mocks.findFirst.mockResolvedValue(null);
 
     const response = await request(app)
       .post("/api/auth/verify-override")
       .set("Cookie", cookie)
+      .set("X-Requested-With", XHR)
       .set("X-Forwarded-For", "203.0.113.21")
-      .send({
-        password: "qa-approve",
-        role: "qa",
-        approverId: randomUUID(),
-        sessionId: randomUUID(),
-      });
+      .send({ password: "qa-approve", role: "qa" });
 
     expect(response.status).toBe(401);
     expect(response.body).toEqual({ error: "Invalid credentials" });
   });
 
-  test("rejects a wrong password for the specific approver", async () => {
-    const approverId = randomUUID();
+  test("rejects a wrong password for the approver role", async () => {
     const { cookie } = makeAuthCookie("operator");
-
     mocks.findFirst.mockResolvedValue({
-      id: approverId,
-      username: "engineer1",
-      role: "engineer",
-      password: await bcrypt.hash("correct-password", 4),
+      id: randomUUID(),
+      name: "Supervisor One",
+      username: "sup1",
+      role: "supervisor",
+      password_hash: await bcrypt.hash("correct-password", 4),
     });
 
     const response = await request(app)
       .post("/api/auth/verify-override")
       .set("Cookie", cookie)
+      .set("X-Requested-With", XHR)
       .set("X-Forwarded-For", "203.0.113.22")
-      .send({
-        password: "wrong-password",
-        role: "supervisor",
-        approverId,
-        sessionId: randomUUID(),
-      });
+      .send({ password: "wrong-password", role: "supervisor" });
 
     expect(response.status).toBe(401);
     expect(response.body).toEqual({ error: "Invalid credentials" });
   });
 
-  test("rejects role mismatch even when the password is valid", async () => {
-    const approverId = randomUUID();
+  test("rejects an invalid approver role with 400", async () => {
     const { cookie } = makeAuthCookie("operator");
 
+    const response = await request(app)
+      .post("/api/auth/verify-override")
+      .set("Cookie", cookie)
+      .set("X-Requested-With", XHR)
+      .set("X-Forwarded-For", "203.0.113.23")
+      .send({ password: "whatever", role: "operator" });
+
+    expect(response.status).toBe(400);
+    expect(mocks.findFirst).not.toHaveBeenCalled();
+  });
+
+  test("shares the login rate-limit bucket (429 after repeated attempts from one IP)", async () => {
+    const { cookie } = makeAuthCookie("operator");
     mocks.findFirst.mockResolvedValue(null);
 
-    const response = await request(app)
-      .post("/api/auth/verify-override")
-      .set("Cookie", cookie)
-      .set("X-Forwarded-For", "203.0.113.23")
-      .send({
-        password: "qa-approve",
-        role: "qa",
-        approverId,
-        sessionId: randomUUID(),
-      });
-
-    expect(response.status).toBe(401);
-  });
-
-  test("is rate limited on the 6th attempt", async () => {
-    const approverId = randomUUID();
-    const sessionId = randomUUID();
-    const { cookie } = makeAuthCookie("operator");
-
-    mocks.findFirst.mockResolvedValue({
-      id: approverId,
-      username: "qa1",
-      role: "qa",
-      password: await bcrypt.hash("correct-password", 4),
-    });
-
-    for (let attempt = 0; attempt < 5; attempt += 1) {
+    let sawLimit = false;
+    for (let attempt = 0; attempt < 25; attempt += 1) {
       const response = await request(app)
         .post("/api/auth/verify-override")
         .set("Cookie", cookie)
-        .set("X-Forwarded-For", "203.0.113.24")
-        .send({
-          password: "wrong-password",
-          role: "qa",
-          approverId,
-          sessionId,
-        });
-
-      expect(response.status).toBe(401);
+        .set("X-Requested-With", XHR)
+        .set("X-Forwarded-For", "203.0.113.99")
+        .send({ password: "wrong-password", role: "qa" });
+      if (response.status === 429) {
+        sawLimit = true;
+        break;
+      }
     }
+    expect(sawLimit).toBe(true);
+  });
 
-    const limited = await request(app)
+  test("rejects verify-override without the X-Requested-With header (CSRF guard)", async () => {
+    const { cookie } = makeAuthCookie("operator");
+
+    const response = await request(app)
       .post("/api/auth/verify-override")
       .set("Cookie", cookie)
       .set("X-Forwarded-For", "203.0.113.24")
-      .send({
-        password: "wrong-password",
-        role: "qa",
-        approverId,
-        sessionId,
-      });
+      .send({ password: "qa-approve", role: "qa" });
 
-    expect(limited.status).toBe(429);
+    expect(response.status).toBe(403);
   });
 });

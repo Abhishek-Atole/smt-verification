@@ -32,6 +32,7 @@ export const sessionsTable = pgTable("sessions", {
   supervisorName: text("supervisor_name").notNull(),
   operatorName: text("operator_name").notNull(),
   qaName: text("qa_name"), // QA personnel name
+  engineerName: text("engineer_name"), // Engineer personnel name
   shiftName: text("shift_name").notNull(),
   shiftDate: text("shift_date").notNull(),
   logoUrl: text("logo_url"),

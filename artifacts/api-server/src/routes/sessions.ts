@@ -771,7 +771,7 @@ router.post("/sessions", requireRole("operator", "qa", "supervisor", "admin"), a
   try {
     const {
       bomId, companyName, customerName, panelName, supervisorName,
-      operatorName, qaName, shiftName, shiftDate, logoUrl, productionCount,
+      operatorName, qaName, engineerName, shiftName, shiftDate, logoUrl, productionCount,
       machineName, lineName,
     } = req.body;
 
@@ -807,7 +807,7 @@ router.post("/sessions", requireRole("operator", "qa", "supervisor", "admin"), a
       .insert(sessionsTable)
       .values({
         bomId: finalBomId, companyName, customerName, panelName, supervisorName,
-        operatorName, qaName, shiftName, shiftDate, logoUrl,
+        operatorName, qaName, engineerName: engineerName ?? null, shiftName, shiftDate, logoUrl,
         productionCount: productionCount ?? 0,
         machineName: machineName ?? null,
         lineName: lineName ?? null,
@@ -2369,6 +2369,7 @@ router.get("/sessions/:sessionId/report/pdf", requireRole("qa", "supervisor", "a
         { label: "Operator", value: String(reportSession.operatorName ?? baseSession?.operatorName ?? "—"), category: "people" },
         { label: "Supervisor", value: String(reportSession.supervisorName ?? baseSession?.supervisorName ?? "—"), category: "people" },
         { label: "QA Engineer", value: String(reportSession.qaName ?? baseSession?.qaName ?? "—"), category: "people" },
+        { label: "Engineer", value: String(baseSession?.engineerName ?? "—"), category: "people" },
         { label: "QA Method", value: String(reportSession.qaVerificationMethod ?? "—").replace(/_/g, " "), category: "people" },
         { label: "Machine", value: String(reportSession.machine ?? "—"), category: "equip" },
         { label: "Line", value: String(reportSession.line ?? "—"), category: "equip" },

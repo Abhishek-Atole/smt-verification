@@ -286,6 +286,7 @@ export default function SessionReport() {
           { label: "QA Engineer", value: dash(session.qaName) },
           { label: "End Time", value: formatTimeOnly(endTimeValue) },
           { label: "Supervisor", value: dash(session.supervisorName) },
+          { label: "Engineer", value: dash(session.engineerName) },
         ];
 
         const cols = 3;
@@ -536,6 +537,7 @@ export default function SessionReport() {
         ["SUPERVISOR", dash(session.supervisorName)],
         ["OPERATOR", dash(session.operatorName)],
         ["QA ENGINEER", dash(session.qaName)],
+        ["ENGINEER", dash(session.engineerName)],
         ["PRODUCTION MANAGER", "________________________"],
       ];
 
@@ -709,6 +711,7 @@ export default function SessionReport() {
             { label: "End", value: session.endTime ? formatTimeOnly(session.endTime) : (session.completedAt ? formatTimeOnly(session.completedAt) : "N/A") },
             { label: "Duration", value: formatDiffHHMMSS(session.startedAt || session.startTime, session.completedAt || session.endTime) },
             { label: "QA", value: session.qaName || "N/A" },
+            { label: "Engineer", value: session.engineerName || "N/A" },
           ].map(({ label, value }) => (
             <div key={label} className="min-w-0 rounded-sm border border-border bg-background px-3 py-2.5 shadow-sm">
               <div className="text-[10px] sm:text-xs font-bold text-muted-foreground uppercase tracking-wide truncate">
@@ -1090,6 +1093,7 @@ export default function SessionReport() {
             { title: "Supervisor", name: session.supervisorName },
             { title: "OPERATOR", name: session.operatorName },
             { title: "QA", name: session.qaName || "N/A" },
+            { title: "Engineer", name: session.engineerName || "N/A" },
           ].map(({ title, name }) => (
             <div key={title} className="flex flex-col items-center gap-2 min-w-0 rounded-sm border border-border bg-background px-4 py-5">
               <span className={`font-bold text-sm tracking-wide ${title === "OPERATOR" ? "text-foreground uppercase" : "text-muted-foreground"}`}>{title}</span>

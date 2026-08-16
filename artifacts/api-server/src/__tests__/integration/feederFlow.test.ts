@@ -2,7 +2,6 @@ import { afterAll, beforeAll, describe, expect, test } from "vitest";
 import request from "supertest";
 import jwt from "jsonwebtoken";
 import { eq } from "drizzle-orm";
-import { generateSessionId } from "../../lib/generateSessionId";
 
 const testDatabaseUrl = process.env.DATABASE_URL_TEST;
 
@@ -23,6 +22,7 @@ describe.runIf(runIntegration)("verification feeder flow integration", () => {
   let bomItemsTable: Awaited<typeof import("@workspace/db/schema")>["bomItemsTable"];
   let changeoverSessionsTable: Awaited<typeof import("@workspace/db/schema")>["changeoverSessionsTable"];
   let feederScansTable: Awaited<typeof import("@workspace/db/schema")>["feederScansTable"];
+  let generateSessionId: Awaited<typeof import("../../lib/generateSessionId")>["generateSessionId"];
 
   let operatorId = "";
   let otherOperatorId = "";
@@ -44,6 +44,9 @@ describe.runIf(runIntegration)("verification feeder flow integration", () => {
     bomItemsTable = schemaModule.bomItemsTable;
     changeoverSessionsTable = schemaModule.changeoverSessionsTable;
     feederScansTable = schemaModule.feederScansTable;
+
+    const genModule = await import("../../lib/generateSessionId");
+    generateSessionId = genModule.generateSessionId;
 
     const [operator] = await db
       .insert(usersTable)

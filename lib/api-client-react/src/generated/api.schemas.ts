@@ -152,6 +152,7 @@ export interface Session {
   panelName: string;
   supervisorName: string;
   operatorName: string;
+  engineerName?: string;
   shiftName: string;
   shiftDate: string;
   logoUrl?: string;
@@ -218,6 +219,7 @@ export interface SessionDetail {
   line?: string;
   machine?: string;
   qaName?: string;
+  engineerName?: string;
   logoUrl?: string;
   productionCount?: number;
   verificationMode?: SessionDetailVerificationMode;
@@ -260,6 +262,7 @@ export interface CreateSessionRequest {
   supervisorName: string;
   operatorName: string;
   qaName?: string;
+  engineerName?: string;
   shiftName: string;
   shiftDate: string;
   logoUrl?: string;

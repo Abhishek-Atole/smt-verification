@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, test, vi } from "vitest";
 import jwt from "jsonwebtoken";
 
-process.env.JWT_SECRET = "test-secret-for-auth-tests";
+process.env.JWT_SECRET = "test-secret-for-auth-tests-0123456789";
 
 const selectMock = vi.hoisted(() => vi.fn());
 const schemaMock = vi.hoisted(() => ({
@@ -45,7 +45,8 @@ function createRes() {
 }
 
 function signToken(payload: object, expiresIn: jwt.SignOptions["expiresIn"] = "1h") {
-  return jwt.sign(payload as jwt.JwtPayload, process.env.JWT_SECRET || "test-secret", { expiresIn });
+  // verifyAccessToken now requires a jti claim; inject one so valid-token cases pass.
+  return jwt.sign({ jti: "test-jti", ...payload } as jwt.JwtPayload, process.env.JWT_SECRET || "test-secret", { expiresIn });
 }
 
 beforeEach(() => {
@@ -65,7 +66,7 @@ describe("auth middleware", () => {
     attachActor(req, res, next);
 
     expect(next).toHaveBeenCalledOnce();
-    expect(req.actor).toMatchObject({ userId: 1, id: 1, username: "Operator A", name: "Operator A", role: "operator" });
+    expect(req.actor).toMatchObject({ userId: "uuid-1", id: "uuid-1", username: "Operator A", name: "Operator A", role: "operator" });
   });
 
   test("rejects request with no cookie → 401", () => {
@@ -133,7 +134,7 @@ describe("auth middleware", () => {
   test("sets req.actor with decoded payload on success", () => {
     const req = createReq({
       cookies: {
-        smt_token: signToken({ userId: 2, username: "QA", role: "qa" }),
+        smt_token: signToken({ userId: "uuid-2", username: "QA", role: "qa" }),
       },
     });
     const res = createRes();
@@ -141,13 +142,13 @@ describe("auth middleware", () => {
 
     attachActor(req, res, next);
 
-    expect(req.actor).toEqual({ userId: 2, id: 2, username: "QA", name: "QA", role: "qa" });
+    expect(req.actor).toEqual({ userId: "uuid-2", id: "uuid-2", username: "QA", name: "QA", role: "qa", mustChangePassword: false });
   });
 
   test("operator cannot access another operators session → 403", async () => {
     const req = createReq({
       cookies: {
-        smt_token: signToken({ userId: 3, username: "Operator B", role: "operator" }),
+        smt_token: signToken({ userId: "uuid-3", username: "Operator B", role: "operator" }),
       },
       body: { sessionId: 10 },
     });
@@ -181,9 +182,9 @@ describe("auth middleware", () => {
     expect(next).toHaveBeenCalledOnce();
   });
 
-  test("engineer role can access any session → 200", async () => {
+  test("supervisor role can access any session → 200", async () => {
     const req = createReq({
-      actor: { userId: 1, id: 1, username: "Engineer", name: "Engineer", role: "engineer" },
+      actor: { userId: 1, id: 1, username: "Supervisor", name: "Supervisor", role: "supervisor" },
       params: { sessionId: "10" },
     });
     const res = createRes();
