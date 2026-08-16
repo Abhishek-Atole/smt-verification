@@ -18,6 +18,16 @@ const bomRow = {
   mpn2: "CC0603KRX7R9BB472",
   make3: null,
   mpn3: null,
+  make4: null,
+  mpn4: null,
+  make5: null,
+  mpn5: null,
+  make6: null,
+  mpn6: null,
+  make7: null,
+  mpn7: null,
+  make8: null,
+  mpn8: null,
 };
 
 describe("verifyMPN - exact token matching", () => {

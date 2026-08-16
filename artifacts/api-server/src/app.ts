@@ -163,6 +163,8 @@ app.use("/api/auth/login", loginLimiter);
 // verify-override is a password check too — same bucket as login so it can't
 // be used as a side-channel to amortize bcrypt CPU cost past the login cap.
 app.use("/api/auth/verify-override", loginLimiter);
+// verify-password (step-up confirm for BOM writes) is also a bcrypt check — same bucket.
+app.use("/api/auth/verify-password", loginLimiter);
 app.use("/api/verification/scan", scanLimiter);
 app.use("/api/", apiLimiter);
 

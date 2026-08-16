@@ -3,7 +3,7 @@ import { useRoute, useLocation, useSearchParams, Link } from "wouter";
 import { useQuery } from "@tanstack/react-query";
 import {
   useGetSession, useScanFeeder, useUpdateSession, useGetBom,
-  useListSplices, useRecordSplice,
+  useListSplices,
   getGetBomQueryKey, getGetSessionQueryKey, getListSplicesQueryKey,
 } from "@workspace/api-client-react";
 import { useQueryClient } from "@tanstack/react-query";
@@ -45,7 +45,6 @@ import { buildCandidates, normalizeMpn } from "@/utils/mpnUtils";
 import { logger } from "@/lib/logger";
 
 type ScanStep = "feeder" | "spool" | "lot";
-type SpliceStep = "feeder" | "oldSpool" | "newSpool";
 type Mode = "scan" | "splice";
 
 interface LocalScanEntry {
@@ -276,7 +275,6 @@ export default function SessionActive() {
   });
 
   const scanFeeder = useScanFeeder();
-  const recordSplice = useRecordSplice();
   const updateSession = useUpdateSession();
 
   const [mode, setMode] = useState<Mode>("scan");
@@ -363,15 +361,7 @@ export default function SessionActive() {
     );
   };
 
-  const [useGuidedSplice, setUseGuidedSplice] = useState(true);
-
-  const [spliceStep, setSpliceStep] = useState<SpliceStep>("feeder");
-  const [splicePendingFeeder, setSplicePendingFeeder] = useState("");
-  const [splicePendingOldSpool, setSplicePendingOldSpool] = useState("");
-  const [spliceStartTime, setSpliceStartTime] = useState<number | null>(null);
-  const [spliceInput, setSpliceInput] = useState("");
   const [splicingPhaseActive, setSplicingPhaseActive] = useState(false);
-  const spliceAutoScanLockedRef = useRef(false);
 
   const [elapsed, setElapsed] = useState(0);
   const [showCompletionOverlay, setShowCompletionOverlay] = useState(false);
@@ -437,7 +427,6 @@ export default function SessionActive() {
   }, [verificationBomEntries, scannedFeeders, session?.bomItemCount, session?.status]);
   const clearSplicingRecords = useSplicingStore((state) => state.clearRecords);
   const hydrateSplicingRecords = useSplicingStore((state) => state.hydrateRecords);
-  const appendSpliceRecord = useSplicingStore((state) => state.appendRecord);
   const splicingRecords = useSplicingStore((state) => state.records);
   const clearLogs = useLogStore((state) => state.clearLogs);
   const addLog = useLogStore((state) => state.addLog);
@@ -859,24 +848,6 @@ export default function SessionActive() {
     enabled: session?.status === "active" && activeTab === "loading" && scanStep !== "lot",
   });
 
-  const { reset: resetSpliceAutoScan } = useAutoScan(spliceInput, {
-    onScan: (value) => {
-      if (
-        spliceAutoScanLockedRef.current ||
-        !isSpliceEligible ||
-        activeTab !== "splicing" ||
-        useGuidedSplice
-      ) {
-        return;
-      }
-
-      handleSpliceValue(value);
-    },
-    delayMs: 300,
-    minLength: 3,
-    enabled: isSpliceEligible && activeTab === "splicing" && !useGuidedSplice,
-  });
-
   const feederInputRef = inputRef;
   const mpnInputRef = inputRef;
   const lotCodeInputRef = inputRef;
@@ -965,16 +936,6 @@ export default function SessionActive() {
       scannedAt: new Date(),
       status: "verified",
       matchedAlternative,
-    });
-  };
-
-  const mirrorSpliceResult = (feederId: string, oldSpoolMPN: string, newSpoolMPN: string) => {
-    appendSpliceRecord({
-      feederId: feederId.trim().toUpperCase(),
-      oldSpoolMPN: oldSpoolMPN.trim().toUpperCase(),
-      newSpoolMPN: newSpoolMPN.trim().toUpperCase(),
-      splicedAt: new Date(),
-      verifiedAgainstBOM: true,
     });
   };
 
@@ -1182,134 +1143,6 @@ export default function SessionActive() {
     }
   };
 
-  function handleSpliceValue(rawValue: string) {
-    const val = rawValue.trim();
-    if (!val) return;
-
-    if (spliceStep === "feeder") {
-      const normalizedFeederNumber = val.trim().toUpperCase();
-      const bomItems = bomDetail?.items || [];
-
-      const feederExists = bomItems.some(
-        (item) => item.feederNumber.trim().toUpperCase() === normalizedFeederNumber
-      );
-      if (!feederExists) {
-        setLastScanResult({
-          status: "reject",
-          feeder: normalizedFeederNumber,
-          msg: `❌ ERROR: Feeder "${normalizedFeederNumber}" not found in BOM`,
-        });
-        setSpliceInput("");
-        showErrorAlert(
-          `Feeder "${normalizedFeederNumber}" does not exist in the loaded BOM.\n\nPlease check the feeder number and try again.`,
-          "high"
-        );
-        return;
-      }
-
-      const feederWasScanned = session?.scans.some(
-        (scan) => scan.feederNumber === normalizedFeederNumber && scan.status === "ok"
-      );
-      if (!feederWasScanned) {
-        setLastScanResult({
-          status: "reject",
-          feeder: normalizedFeederNumber,
-          msg: `⚠️ WARNING: Feeder "${normalizedFeederNumber}" has not been verified yet`,
-        });
-        setSpliceInput("");
-        showWarningAlert(
-          `Feeder "${normalizedFeederNumber}" has not been successfully verified yet.\n\nPlease verify the feeder in the LOADING section first before splicing.`,
-          "high"
-        );
-        return;
-      }
-
-      setSplicePendingFeeder(normalizedFeederNumber);
-      setSpliceStartTime(Date.now());
-      setSpliceInput("");
-      setSpliceStep("oldSpool");
-      return;
-    }
-
-    if (spliceStep === "oldSpool") {
-      if (!val.trim()) {
-        showErrorAlert("Old spool barcode cannot be empty.", "medium");
-        return;
-      }
-      setSplicePendingOldSpool(val.trim().toUpperCase());
-      setSpliceInput("");
-      setSpliceStep("newSpool");
-      return;
-    }
-
-    if (spliceStep === "newSpool") {
-      if (!val.trim()) {
-        showErrorAlert("New spool barcode cannot be empty.", "medium");
-        return;
-      }
-      if (val.trim().toUpperCase() !== splicePendingOldSpool) {
-        showErrorAlert(
-          "New spool barcode must be the same as old spool barcode for this feeder.",
-          "high"
-        );
-        return;
-      }
-
-      const durationSeconds = spliceStartTime ? Math.round((Date.now() - spliceStartTime) / 1000) : undefined;
-      spliceAutoScanLockedRef.current = true;
-      recordSplice.mutate({
-        sessionId,
-        data: {
-          feederNumber: splicePendingFeeder,
-          operatorId: user?.name || "unknown",
-          oldSpoolBarcode: splicePendingOldSpool,
-          newSpoolBarcode: val,
-          durationSeconds,
-        },
-      }, {
-        onSuccess: () => {
-          mirrorSpliceResult(splicePendingFeeder, splicePendingOldSpool, val);
-          setLastScanResult({
-            status: "splice",
-            feeder: splicePendingFeeder,
-            msg: `Splice complete on feeder ${splicePendingFeeder}` + (durationSeconds ? ` in ${durationSeconds}s` : ""),
-          });
-          setSpliceInput("");
-          setSplicePendingFeeder("");
-          setSplicePendingOldSpool("");
-          setSpliceStartTime(null);
-          setSpliceStep("feeder");
-          spliceAutoScanLockedRef.current = false;
-          queryClient.invalidateQueries({ queryKey: getListSplicesQueryKey(sessionId) });
-          flashBg("splice");
-        },
-        onError: (err: any) => {
-          setLastScanResult({ status: "reject", feeder: splicePendingFeeder, msg: err?.message || "Splice failed" });
-          setSpliceInput("");
-          setSplicePendingFeeder("");
-          setSplicePendingOldSpool("");
-          setSpliceStep("feeder");
-          spliceAutoScanLockedRef.current = false;
-          flashBg("reject");
-        },
-      });
-    }
-  }
-
-  const handleSpliceSubmit = (e: React.FormEvent) => {
-    e.preventDefault();
-    handleSpliceValue(spliceInput);
-  };
-
-  const cancelSplice = () => {
-    resetSpliceAutoScan();
-    setSpliceInput("");
-    setSplicePendingFeeder("");
-    setSplicePendingOldSpool("");
-    setSpliceStep("feeder");
-    setSpliceStartTime(null);
-  };
-
   const handleEndSession = () => {
     if (confirm("End this verification session?")) {
       updateSession.mutate(
@@ -1426,13 +1259,7 @@ export default function SessionActive() {
     scanningRef.current = false;
     
     // Clear splicing-related state
-    setSpliceStep("feeder");
-    setSplicePendingFeeder("");
-    setSplicePendingOldSpool("");
-    setSpliceStartTime(null);
-    setSpliceInput("");
     setSplicingPhaseActive(false);
-    resetSpliceAutoScan();
     
     // Clear UI state
     setLastScanResult(null);
@@ -1477,12 +1304,6 @@ export default function SessionActive() {
     .filter(([feederNum]) => requiredFeeders.has(feederNum))
     .map(([feederNum, group]) => ({ feederNum, ...group }))
     .sort((a, b) => a.feederNum.localeCompare(b.feederNum));
-
-  const spliceStepLabels: Record<SpliceStep, string> = {
-    feeder: "STEP 1 / 3 — Scan FEEDER NUMBER",
-    oldSpool: `STEP 2 / 3 — Scan OLD SPOOL barcode (Feeder: ${splicePendingFeeder})`,
-    newSpool: `STEP 3 / 3 — Scan NEW SPOOL barcode (Feeder: ${splicePendingFeeder})`,
-  };
 
   const getScanStepLabel = () => {
     if (needsAlternateSelection) {
@@ -1537,7 +1358,7 @@ export default function SessionActive() {
         }
       `}</style>
 
-      <div className="relative mx-auto max-w-screen-2xl space-y-4 px-4 py-4 md:px-6">
+      <div className="relative w-full space-y-4 px-4 py-4 md:px-6">
         {/* Decorative background blobs */}
         <div className="pointer-events-none fixed inset-0 overflow-hidden">
           <div className="absolute -left-24 top-[-6rem] h-72 w-72 rounded-full bg-amber-500/10 blur-3xl" />
@@ -1660,21 +1481,10 @@ export default function SessionActive() {
                 <span className="ml-2 text-xs font-medium">({totalRequiredFeeders - requiredFeedsVerifiedCount} remaining)</span>
               )}
             </Button>
-            <div className="flex items-center pl-2">
-              <Button
-                type="button"
-                variant={useGuidedSplice ? "default" : "outline"}
-                className="px-3 py-1 h-9 sm:h-10 text-xs sm:text-sm"
-                onClick={() => setUseGuidedSplice((v) => !v)}
-                title="Toggle guided splicing UI"
-              >
-                {useGuidedSplice ? "Guided" : "Legacy"}
-              </Button>
-            </div>
           </div>
         )}
 
-        <div className="flex gap-4 overflow-hidden max-w-[calc(100vw-1rem)]">
+        <div className="flex gap-4 overflow-hidden max-w-full">
           {/* Left column - Main content */}
           <div className="flex-1 min-w-0 space-y-6 overflow-y-auto">
 
@@ -1994,130 +1804,15 @@ export default function SessionActive() {
           )}
 
           {/* SPLICING SECTION - Shows when activeTab === "splicing" and all feeders verified */}
-          {isSpliceEligible && activeTab === "splicing" && useGuidedSplice && (
+          {isSpliceEligible && activeTab === "splicing" && (
             <SplicingPage />
-          )}
-
-          {isSpliceEligible && activeTab === "splicing" && !useGuidedSplice && (
-            <div className="flex flex-col gap-6">
-              {/* Splicing Header */}
-              <div className="bg-amber-50 dark:bg-amber-950/30 border-2 border-amber-400 dark:border-amber-700 p-3 sm:p-4 rounded-lg">
-                <h2 className="text-sm sm:text-base font-bold text-amber-900 dark:text-amber-100 flex items-center gap-2">
-                  <Scissors className="w-5 h-5" />
-                  SPOOL SPLICING SECTION
-                </h2>
-                <p className="text-xs sm:text-sm text-amber-700 dark:text-amber-200 mt-2">
-                  Replace old spools with new spools for each feeder. Complete all three steps for each feeder.
-                </p>
-              </div>
-
-              {/* SPLICE FORM - Primary Section */}
-              <div className="bg-card border-2 border-amber-400/50 p-2 sm:p-4 lg:p-8 rounded-xl shadow-[0_0_20px_rgba(217,119,6,0.1)]">
-                <form onSubmit={handleSpliceSubmit} className="flex flex-col items-center gap-2 sm:gap-3 lg:gap-6">
-                  <Label className="text-xs sm:text-sm lg:text-lg xl:text-xl tracking-widest text-amber-600 dark:text-amber-500 flex items-center gap-1 sm:gap-2 font-black uppercase text-center line-clamp-2">
-                    <Scissors className="w-3 h-3 sm:w-4 sm:h-4 lg:w-5 lg:h-5 xl:w-6 xl:h-6 flex-shrink-0" />
-                    {spliceStepLabels[spliceStep]}
-                  </Label>
-
-                  <div className="w-full flex gap-0.5 sm:gap-1 lg:gap-2 items-center justify-center min-h-12 sm:min-h-14 lg:min-h-16">
-                    {(spliceStep === "oldSpool" || spliceStep === "newSpool") && (
-                      <Button
-                        type="button"
-                        variant="ghost"
-                        size="icon"
-                        className="shrink-0 h-10 sm:h-12 lg:h-14 xl:h-16 w-10 sm:w-12 lg:w-14 xl:w-16"
-                        onClick={() => cancelSplice()}
-                      >
-                        <ArrowLeft className="w-3 h-3 sm:w-4 sm:h-4 lg:w-5 lg:h-5 xl:w-6 xl:h-6" />
-                      </Button>
-                    )}
-                    <Input
-                      ref={inputRef}
-                      value={spliceInput}
-                      onChange={(e) => setSpliceInput(e.target.value)}
-                      className="flex-1 text-center text-2xl sm:text-3xl lg:text-4xl xl:text-5xl h-14 sm:h-16 lg:h-20 xl:h-24 font-mono tracking-[0.15em] sm:tracking-[0.2em] bg-background border-2 border-border focus-visible:border-amber-500 rounded-lg shadow-inner text-xs sm:text-sm"
-                      placeholder={spliceStep === "feeder" ? "SCAN FEEDER..." : spliceStep === "oldSpool" ? "SCAN OLD SPOOL..." : "SCAN NEW SPOOL..."}
-                      autoComplete="off"
-                    />
-                  </div>
-
-                  {spliceStep !== "feeder" && (
-                    <div className="w-full space-y-1 sm:space-y-2">
-                      <div className="bg-slate-50 dark:bg-slate-900 border border-slate-300 dark:border-slate-700 p-1.5 sm:p-2 lg:p-3 rounded text-center">
-                        <p className="text-xs sm:text-sm text-muted-foreground line-clamp-2">
-                          {spliceStep === "oldSpool" ? (
-                            <>Feeder <strong className="text-foreground font-mono">{splicePendingFeeder}</strong> selected</>
-                          ) : (
-                            <>Old Spool: <strong className="text-foreground font-mono">{splicePendingOldSpool?.substring(0, 12)}...</strong></>
-                          )}
-                        </p>
-                      </div>
-
-                      {spliceStep === "oldSpool" && (
-                        <div className="bg-amber-50 dark:bg-amber-900/30 border border-amber-300 dark:border-amber-700 p-2 sm:p-3 rounded-lg">
-                          <p className="text-xs font-bold text-amber-900 dark:text-amber-100 mb-2">📝 STEP 2: OLD SPOOL BARCODE</p>
-                          <p className="text-xs text-amber-800 dark:text-amber-200">
-                            • Scan the current (old) spool barcode for this feeder
-                          </p>
-                          <p className="text-xs text-amber-700 dark:text-amber-300 mt-2 italic">
-                            ⓘ Must be different from the new spool barcode
-                          </p>
-                        </div>
-                      )}
-
-                      {spliceStep === "newSpool" && (
-                        <div className="bg-amber-50 dark:bg-amber-900/30 border border-amber-300 dark:border-amber-700 p-2 sm:p-3 rounded-lg">
-                          <p className="text-xs font-bold text-amber-900 dark:text-amber-100 mb-2">📝 STEP 3: NEW SPOOL BARCODE</p>
-                          <p className="text-xs text-amber-800 dark:text-amber-200">
-                            • Scan the replacement (new) spool barcode for this feeder
-                          </p>
-                          <p className="text-xs text-amber-700 dark:text-amber-300 mt-2 italic">
-                            ⓘ Must be different from the old spool barcode
-                          </p>
-                        </div>
-                      )}
-                    </div>
-                  )}
-                </form>
-              </div>
-
-              {/* Splice Feedback Area */}
-              <div className="h-20 sm:h-24 lg:h-32 xl:h-40 flex items-center justify-center shrink-0">
-                {lastScanResult ? (
-                  <div className={`w-full h-full flex flex-col items-center justify-center rounded-xl border-2 shadow-lg transition-all gap-1 sm:gap-2 p-2 sm:p-3 lg:p-4 ${
-                    lastScanResult.status === "splice" ? "bg-amber-50 dark:bg-amber-950/30 border-amber-400 text-amber-600 dark:text-amber-400" :
-                    "bg-red-50 dark:bg-red-950/30 border-red-500 text-red-700 dark:text-red-300"
-                  }`}>
-                    <div className="flex items-center gap-1 sm:gap-2 lg:gap-3">
-                      {lastScanResult.status === "splice" && <Scissors className="w-6 h-6 sm:w-8 sm:h-8 lg:w-10 lg:h-10" />}
-                      {lastScanResult.status === "reject" && <XCircle className="w-6 h-6 sm:w-8 sm:h-8 lg:w-10 lg:h-10" />}
-                      <div className="text-lg sm:text-2xl lg:text-3xl xl:text-4xl font-black tracking-widest uppercase">
-                        {lastScanResult.status === "splice" ? "SPLICED ✓" : "ERROR ✗"}
-                      </div>
-                    </div>
-                    <div className="text-xs sm:text-sm lg:text-base font-bold tracking-wide text-center px-2 line-clamp-2">
-                      {lastScanResult.msg}
-                    </div>
-                  </div>
-                ) : (
-                  <div className="w-full h-full flex items-center justify-center border-2 border-dashed border-border rounded-xl text-muted-foreground font-medium text-xs sm:text-sm lg:text-lg bg-card/50">
-                    Ready — scan to begin
-                  </div>
-                )}
-              </div>
-
-              {/* LogPanel - Last child */}
-              <div className="mt-4">
-                <LogPanel />
-              </div>
-            </div>
           )}
           </div>
           {/* End of left column */}
 
         {/* Right Panel: BOM Checklist - Hidden on mobile, shown on lg, hidden if free scan mode */}
         {session?.bomId !== 0 && (
-          <div className="w-80 flex flex-col bg-card shrink-0 shadow-[-4px_0_15px_-5px_rgba(0,0,0,0.1)] z-10 border-l border-border overflow-hidden">
+          <div className="w-80 hidden lg:flex flex-col bg-card shrink-0 shadow-[-4px_0_15px_-5px_rgba(0,0,0,0.1)] z-10 border-l border-border overflow-hidden">
             <div className="p-3 border-b border-border bg-secondary/30 flex justify-between items-center gap-2 shrink-0">
               <h2 className="font-bold tracking-wider uppercase text-xs truncate">BOM</h2>
               <div className="text-xs font-bold bg-background px-2 py-1 rounded-full border border-border shadow-sm shrink-0">

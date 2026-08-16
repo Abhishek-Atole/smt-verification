@@ -322,7 +322,7 @@ export default function Reports() {
 
   return (
     <div className="min-h-screen bg-gray-100 p-4">
-      <div className="max-w-7xl mx-auto space-y-6">
+      <div className="w-full space-y-6">
         {/* Header */}
         <div className="bg-white rounded-lg shadow-md p-6">
           <h1 className="text-3xl font-bold text-gray-900">📊 Analytics & Reporting</h1>
@@ -332,7 +332,7 @@ export default function Reports() {
         {/* Report Selector */}
         <div className="bg-white rounded-lg shadow-md p-6">
           <h2 className="text-xl font-semibold mb-4">Select Report Type</h2>
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-5 gap-4">
             {REPORT_TYPES.map((report) => (
               <button
                 key={report.id}

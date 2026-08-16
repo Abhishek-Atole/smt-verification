@@ -9,6 +9,7 @@ import { z } from "zod/v4";
 import { logger } from "../lib/logger";
 import { attachActor, requireRole, requireAuth, type AuthRequest } from "../middleware/auth";
 import { bomCache, invalidatePrefix } from "../lib/cache";
+import { auditLog } from "../lib/auditLogger";
 
 const router = Router();
 
@@ -17,6 +18,31 @@ router.use(attachActor);
 // PRD §2.7 / TRD §8 — drop every BOM cache key after any write.
 function invalidateBomCache(): void {
   invalidatePrefix(bomCache, "bom:");
+}
+
+// Revision lifecycle guard: item edits are only allowed on an 'active' BOM.
+// Sends the error response itself and returns false when the caller should stop.
+async function assertBomEditable(bomId: number, res: express.Response): Promise<boolean> {
+  const [bom] = await db.select({ status: bomsTable.status }).from(bomsTable).where(eq(bomsTable.id, bomId));
+  if (!bom) {
+    res.status(404).json({ error: "BOM not found" });
+    return false;
+  }
+  if ((bom.status ?? "active") !== "active") {
+    res.status(409).json({ error: "This BOM revision is locked or on hold. Release it before making changes." });
+    return false;
+  }
+  return true;
+}
+
+// Resolve the parent BOM id for an item, then apply the editable guard.
+async function assertItemEditable(itemId: number, res: express.Response): Promise<boolean> {
+  const [item] = await db.select({ bomId: bomItemsTable.bomId }).from(bomItemsTable).where(eq(bomItemsTable.id, itemId));
+  if (!item) {
+    res.status(404).json({ error: "Item not found" });
+    return false;
+  }
+  return assertBomEditable(item.bomId, res);
 }
 
 // ============================================================================
@@ -41,6 +67,11 @@ router.get("/boms/:id", requireRole("operator", "qa", "supervisor", "admin"), as
       return res.status(404).json({ error: "BOM not found" });
     }
 
+    // Operators cannot open locked/held revisions.
+    if ((req.actor?.role ?? "anon") === "operator" && ((bom as any).status ?? "active") !== "active") {
+      return res.status(403).json({ error: "This BOM revision is locked or on hold." });
+    }
+
     // Get item count
     const itemCountResult = await db
       .select({ count: count() })
@@ -53,7 +84,12 @@ router.get("/boms/:id", requireRole("operator", "qa", "supervisor", "admin"), as
       .select({
         makes: sql<string>`COUNT(DISTINCT make_1) FILTER (WHERE make_1 IS NOT NULL)
                            + COUNT(DISTINCT make_2) FILTER (WHERE make_2 IS NOT NULL)
-                           + COUNT(DISTINCT make_3) FILTER (WHERE make_3 IS NOT NULL)`,
+                           + COUNT(DISTINCT make_3) FILTER (WHERE make_3 IS NOT NULL)
+                           + COUNT(DISTINCT make_4) FILTER (WHERE make_4 IS NOT NULL)
+                           + COUNT(DISTINCT make_5) FILTER (WHERE make_5 IS NOT NULL)
+                           + COUNT(DISTINCT make_6) FILTER (WHERE make_6 IS NOT NULL)
+                           + COUNT(DISTINCT make_7) FILTER (WHERE make_7 IS NOT NULL)
+                           + COUNT(DISTINCT make_8) FILTER (WHERE make_8 IS NOT NULL)`,
       })
       .from(bomItemsTable)
       .where(and(eq(bomItemsTable.bomId, bomId), not(eq(bomItemsTable.isDeleted, true))))
@@ -309,6 +345,11 @@ router.post("/bom-items", requireRole("qa", "supervisor", "admin"), async (req: 
       make1, mpn1,
       make2, mpn2,
       make3, mpn3,
+      make4, mpn4,
+      make5, mpn5,
+      make6, mpn6,
+      make7, mpn7,
+      make8, mpn8,
       remarks,
       action,
     } = req.body;
@@ -316,6 +357,8 @@ router.post("/bom-items", requireRole("qa", "supervisor", "admin"), async (req: 
     if (!bomId || !feederNumber || !quantity) {
       return res.status(400).json({ error: "Missing required fields: bomId, feederNumber, quantity" });
     }
+
+    if (!(await assertBomEditable(Number(bomId), res))) return;
 
     // Auto-generate srNo if not provided
     let finalSrNo = srNo;
@@ -343,20 +386,32 @@ router.post("/bom-items", requireRole("qa", "supervisor", "admin"), async (req: 
         reference,
         description,
         package: pkg,
-        make_1: make1,
-        mpn_1: mpn1,
-        make_2: make2,
-        mpn_2: mpn2,
-        make_3: make3,
-        mpn_3: mpn3,
+        make1: make1,
+        mpn1: mpn1,
+        make2: make2,
+        mpn2: mpn2,
+        make3: make3,
+        mpn3: mpn3,
+        make4: make4,
+        mpn4: mpn4,
+        make5: make5,
+        mpn5: mpn5,
+        make6: make6,
+        mpn6: mpn6,
+        make7: make7,
+        mpn7: mpn7,
+        make8: make8,
+        mpn8: mpn8,
         remarks,
         action,
         // Defaults
         partNumber: feederNumber, // Legacy field
+        itemName: description || feederNumber, // Legacy field (item_name is NOT NULL in DB)
       })
       .returning();
 
     invalidateBomCache();
+    await auditLog({ event: "BOM_UPDATED", operatorId: req.actor?.id, detail: `BOM #${bomId}: item "${feederNumber}" added`, ip: req.ip });
     res.status(201).json(newItem[0]);
   } catch (error) {
     logger.error({ err: error }, "Error creating item");
@@ -370,6 +425,8 @@ router.patch("/bom-items/:id", requireRole("qa", "supervisor", "admin"), async (
     const { id } = req.params;
     const itemId = Number(id);
 
+    if (!(await assertItemEditable(itemId, res))) return;
+
     const {
       srNo,
       feederNumber,
@@ -381,6 +438,11 @@ router.patch("/bom-items/:id", requireRole("qa", "supervisor", "admin"), async (
       make1, mpn1,
       make2, mpn2,
       make3, mpn3,
+      make4, mpn4,
+      make5, mpn5,
+      make6, mpn6,
+      make7, mpn7,
+      make8, mpn8,
       remarks,
       action,
     } = req.body;
@@ -393,12 +455,22 @@ router.patch("/bom-items/:id", requireRole("qa", "supervisor", "admin"), async (
     if (reference !== undefined) updateData.reference = reference;
     if (description !== undefined) updateData.description = description;
     if (pkg !== undefined) updateData.package = pkg;
-    if (make1 !== undefined) updateData.make_1 = make1;
-    if (mpn1 !== undefined) updateData.mpn_1 = mpn1;
-    if (make2 !== undefined) updateData.make_2 = make2;
-    if (mpn2 !== undefined) updateData.mpn_2 = mpn2;
-    if (make3 !== undefined) updateData.make_3 = make3;
-    if (mpn3 !== undefined) updateData.mpn_3 = mpn3;
+    if (make1 !== undefined) updateData.make1 = make1;
+    if (mpn1 !== undefined) updateData.mpn1 = mpn1;
+    if (make2 !== undefined) updateData.make2 = make2;
+    if (mpn2 !== undefined) updateData.mpn2 = mpn2;
+    if (make3 !== undefined) updateData.make3 = make3;
+    if (mpn3 !== undefined) updateData.mpn3 = mpn3;
+    if (make4 !== undefined) updateData.make4 = make4;
+    if (mpn4 !== undefined) updateData.mpn4 = mpn4;
+    if (make5 !== undefined) updateData.make5 = make5;
+    if (mpn5 !== undefined) updateData.mpn5 = mpn5;
+    if (make6 !== undefined) updateData.make6 = make6;
+    if (mpn6 !== undefined) updateData.mpn6 = mpn6;
+    if (make7 !== undefined) updateData.make7 = make7;
+    if (mpn7 !== undefined) updateData.mpn7 = mpn7;
+    if (make8 !== undefined) updateData.make8 = make8;
+    if (mpn8 !== undefined) updateData.mpn8 = mpn8;
     if (remarks !== undefined) updateData.remarks = remarks;
     if (action !== undefined) updateData.action = action;
 
@@ -413,6 +485,7 @@ router.patch("/bom-items/:id", requireRole("qa", "supervisor", "admin"), async (
     }
 
     invalidateBomCache();
+    await auditLog({ event: "BOM_UPDATED", operatorId: req.actor?.id, detail: `BOM item #${itemId} edited`, ip: req.ip });
     res.json(updated[0]);
   } catch (error) {
     logger.error({ err: error }, "Error updating item");
@@ -425,6 +498,8 @@ router.delete("/bom-items/:id", requireRole("qa", "supervisor", "admin"), async 
   try {
     const { id } = req.params;
     const itemId = Number(id);
+
+    if (!(await assertItemEditable(itemId, res))) return;
 
     const updated = await db
       .update(bomItemsTable)
@@ -441,6 +516,7 @@ router.delete("/bom-items/:id", requireRole("qa", "supervisor", "admin"), async 
     }
 
     invalidateBomCache();
+    await auditLog({ event: "BOM_UPDATED", operatorId: req.actor?.id, detail: `BOM item #${itemId} moved to trash`, ip: req.ip });
     res.json({ success: true, deleted: updated[0] });
   } catch (error) {
     logger.error({ err: error }, "Error deleting item");
@@ -453,6 +529,8 @@ router.patch("/bom-items/:id/restore", requireRole("qa", "supervisor", "admin"),
   try {
     const { id } = req.params;
     const itemId = Number(id);
+
+    if (!(await assertItemEditable(itemId, res))) return;
 
     const updated = await db
       .update(bomItemsTable)
@@ -469,6 +547,7 @@ router.patch("/bom-items/:id/restore", requireRole("qa", "supervisor", "admin"),
     }
 
     invalidateBomCache();
+    await auditLog({ event: "BOM_RESTORED", operatorId: req.actor?.id, detail: `BOM item #${itemId} restored from trash`, ip: req.ip });
     res.json(updated[0]);
   } catch (error) {
     logger.error({ err: error }, "Error restoring item");
@@ -492,6 +571,7 @@ router.delete("/bom-items/:id/permanent", requireRole("qa", "supervisor", "admin
     }
 
     invalidateBomCache();
+    await auditLog({ event: "BOM_PERMANENTLY_DELETED", operatorId: req.actor?.id, detail: `BOM item #${itemId} permanently deleted`, ip: req.ip });
     res.json({ success: true, message: "Item permanently deleted" });
   } catch (error) {
     logger.error({ err: error }, "Error permanently deleting item");

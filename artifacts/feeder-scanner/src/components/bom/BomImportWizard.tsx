@@ -11,6 +11,7 @@ import {
 } from "@/components/ui/select";
 import Papa from "papaparse";
 import { Upload, Download, Check, AlertCircle } from "lucide-react";
+import { PasswordConfirmModal } from "@/components/PasswordConfirmModal";
 
 function readCell(row: Record<string, unknown>, aliases: string[]): string {
   const normalizedAliases = aliases.map((alias) => alias.toLowerCase().replace(/[^a-z0-9]/g, ""));
@@ -33,10 +34,6 @@ function getMissingRequiredFields(row: Record<string, unknown>) {
     missingFields.push("Feeder Number");
   }
 
-  if (!readCell(row, ["MPN 1", "Part No 1", "Spool Part No. / MPN 1"])) {
-    missingFields.push("MPN 1");
-  }
-
   return missingFields;
 }
 
@@ -54,6 +51,7 @@ export function BomImportWizard({ onSuccess }: { onSuccess: (bomId?: number) => 
   const [fileName, setFileName] = useState("");
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [isImporting, setIsImporting] = useState(false);
+  const [confirmOpen, setConfirmOpen] = useState(false);
   const previewRows = csvData;
   const validationIssues = csvData
     .map((row, index) => ({
@@ -106,6 +104,16 @@ export function BomImportWizard({ onSuccess }: { onSuccess: (bomId?: number) => 
       "MPN 2",
       "Make 3",
       "MPN 3",
+      "Make 4",
+      "MPN 4",
+      "Make 5",
+      "MPN 5",
+      "Make 6",
+      "MPN 6",
+      "Make 7",
+      "MPN 7",
+      "Make 8",
+      "MPN 8",
       "Remarks",
     ];
     const sampleRows = [
@@ -122,6 +130,14 @@ export function BomImportWizard({ onSuccess }: { onSuccess: (bomId?: number) => 
         "R0402100K",
         "Yageo",
         "RC0402FR-0710KL",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
         "",
         "",
         "Standard value",
@@ -141,6 +157,14 @@ export function BomImportWizard({ onSuccess }: { onSuccess: (bomId?: number) => 
         "ATTINY85-20PU",
         "",
         "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
         "Primary source",
       ],
     ];
@@ -153,6 +177,15 @@ export function BomImportWizard({ onSuccess }: { onSuccess: (bomId?: number) => 
     link.download = "BOM_Import_Template.csv";
     link.click();
     URL.revokeObjectURL(url);
+  };
+
+  // Validate up front, then require password confirmation before importing.
+  const requestImport = () => {
+    if (!bomData.name.trim() || !bomData.version.trim() || csvData.length === 0) {
+      toast({ title: "Error", description: "Please complete all fields and upload a CSV file", variant: "destructive" });
+      return;
+    }
+    setConfirmOpen(true);
   };
 
   const handleImport = async () => {
@@ -195,6 +228,16 @@ export function BomImportWizard({ onSuccess }: { onSuccess: (bomId?: number) => 
         mpn2: readCell(row, ["MPN 2", "Part No 2", "Spool Part No. / MPN 2"]),
         make3: readCell(row, ["Make 3", "Supplier 3", "Make/Supplier 3"]),
         mpn3: readCell(row, ["MPN 3", "Part No 3", "Spool Part No. / MPN 3"]),
+        make4: readCell(row, ["Make 4", "Supplier 4", "Make/Supplier 4"]),
+        mpn4: readCell(row, ["MPN 4", "Part No 4", "Spool Part No. / MPN 4"]),
+        make5: readCell(row, ["Make 5", "Supplier 5", "Make/Supplier 5"]),
+        mpn5: readCell(row, ["MPN 5", "Part No 5", "Spool Part No. / MPN 5"]),
+        make6: readCell(row, ["Make 6", "Supplier 6", "Make/Supplier 6"]),
+        mpn6: readCell(row, ["MPN 6", "Part No 6", "Spool Part No. / MPN 6"]),
+        make7: readCell(row, ["Make 7", "Supplier 7", "Make/Supplier 7"]),
+        mpn7: readCell(row, ["MPN 7", "Part No 7", "Spool Part No. / MPN 7"]),
+        make8: readCell(row, ["Make 8", "Supplier 8", "Make/Supplier 8"]),
+        mpn8: readCell(row, ["MPN 8", "Part No 8", "Spool Part No. / MPN 8"]),
         remarks: readCell(row, ["Remarks", "Remark", "Comments"]),
       }));
 
@@ -328,7 +371,7 @@ export function BomImportWizard({ onSuccess }: { onSuccess: (bomId?: number) => 
               <div>
                 <div className="font-semibold text-blue-900">CSV Format Guide</div>
                 <div className="text-sm text-blue-800">
-                  Required columns: Feeder Number, Description, Package, MPN 1
+                  Required column: Feeder Number. All other columns (including MPN 1) are optional.
                 </div>
               </div>
             </div>
@@ -492,7 +535,7 @@ export function BomImportWizard({ onSuccess }: { onSuccess: (bomId?: number) => 
                         <div>
                           <div className="font-semibold text-amber-900">Validation Warnings</div>
                           <div className="text-sm text-amber-800">
-                            Some rows have missing Feeder Number or MPN 1 — review before importing
+                            Some rows are missing a Feeder Number — review before importing
                           </div>
                         </div>
                       </div>
@@ -522,7 +565,7 @@ export function BomImportWizard({ onSuccess }: { onSuccess: (bomId?: number) => 
                     <Check className="w-5 h-5 text-green-600 flex-shrink-0 mt-0.5" />
                     <div>
                       <div className="font-semibold text-green-900">Validation check passed</div>
-                      <div className="text-sm text-green-800">All rows contain Feeder Number and MPN 1.</div>
+                      <div className="text-sm text-green-800">All rows contain a Feeder Number.</div>
                     </div>
                   </div>
                 )}
@@ -536,7 +579,7 @@ export function BomImportWizard({ onSuccess }: { onSuccess: (bomId?: number) => 
             </Button>
             <Button
               className="bg-white text-navy border-navy border-2 hover:bg-gray-50 font-semibold shadow-md hover:shadow-lg transition-all duration-200 px-5 py-2.5"
-              onClick={handleImport}
+              onClick={requestImport}
               disabled={isImporting}
             >
               {isImporting ? "Importing..." : "✓ Import BOM"}
@@ -544,6 +587,20 @@ export function BomImportWizard({ onSuccess }: { onSuccess: (bomId?: number) => 
           </div>
         </div>
       )}
+
+      <PasswordConfirmModal
+        open={confirmOpen}
+        onOpenChange={setConfirmOpen}
+        title="Import BOM?"
+        description={
+          <>
+            Create <span className="font-semibold">{bomData.name || "this BOM"}</span> and import {csvData.length}{" "}
+            component{csvData.length === 1 ? "" : "s"}. Enter your password to confirm.
+          </>
+        }
+        confirmLabel="Import BOM"
+        onConfirmed={handleImport}
+      />
     </div>
   );
 }

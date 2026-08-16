@@ -61,9 +61,19 @@ async function getEnrichedScansForSession(sessionId: string, limit?: number) {
     mpn1: string | null;
     mpn2: string | null;
     mpn3: string | null;
+    mpn4: string | null;
+    mpn5: string | null;
+    mpn6: string | null;
+    mpn7: string | null;
+    mpn8: string | null;
     make1: string | null;
     make2: string | null;
     make3: string | null;
+    make4: string | null;
+    make5: string | null;
+    make6: string | null;
+    make7: string | null;
+    make8: string | null;
     description: string | null;
     packageDescription: string | null;
   }>();
@@ -77,9 +87,19 @@ async function getEnrichedScansForSession(sessionId: string, limit?: number) {
         mpn1: bomItemsTable.mpn1,
         mpn2: bomItemsTable.mpn2,
         mpn3: bomItemsTable.mpn3,
+        mpn4: bomItemsTable.mpn4,
+        mpn5: bomItemsTable.mpn5,
+        mpn6: bomItemsTable.mpn6,
+        mpn7: bomItemsTable.mpn7,
+        mpn8: bomItemsTable.mpn8,
         make1: bomItemsTable.make1,
         make2: bomItemsTable.make2,
         make3: bomItemsTable.make3,
+        make4: bomItemsTable.make4,
+        make5: bomItemsTable.make5,
+        make6: bomItemsTable.make6,
+        make7: bomItemsTable.make7,
+        make8: bomItemsTable.make8,
         description: bomItemsTable.itemName,
         packageDescription: bomItemsTable.packageDescription,
       })
@@ -98,9 +118,19 @@ async function getEnrichedScansForSession(sessionId: string, limit?: number) {
           mpn1: item.mpn1,
           mpn2: item.mpn2,
           mpn3: item.mpn3,
+          mpn4: item.mpn4,
+          mpn5: item.mpn5,
+          mpn6: item.mpn6,
+          mpn7: item.mpn7,
+          mpn8: item.mpn8,
           make1: item.make1,
           make2: item.make2,
           make3: item.make3,
+          make4: item.make4,
+          make5: item.make5,
+          make6: item.make6,
+          make7: item.make7,
+          make8: item.make8,
           description: item.description,
           packageDescription: item.packageDescription,
         });
@@ -118,9 +148,19 @@ async function getEnrichedScansForSession(sessionId: string, limit?: number) {
         mpn1: bom?.mpn1 ?? null,
         mpn2: bom?.mpn2 ?? null,
         mpn3: bom?.mpn3 ?? null,
+        mpn4: bom?.mpn4 ?? null,
+        mpn5: bom?.mpn5 ?? null,
+        mpn6: bom?.mpn6 ?? null,
+        mpn7: bom?.mpn7 ?? null,
+        mpn8: bom?.mpn8 ?? null,
         make1: bom?.make1 ?? null,
         make2: bom?.make2 ?? null,
         make3: bom?.make3 ?? null,
+        make4: bom?.make4 ?? null,
+        make5: bom?.make5 ?? null,
+        make6: bom?.make6 ?? null,
+        make7: bom?.make7 ?? null,
+        make8: bom?.make8 ?? null,
         description: bom?.description ?? null,
         packageDescription: bom?.packageDescription ?? null,
       },
@@ -695,9 +735,19 @@ router.post("/verification/check-feeder", attachActor, async (req: AuthRequest, 
         mpn1: bomItem.mpn1,
         mpn2: bomItem.mpn2,
         mpn3: bomItem.mpn3,
+        mpn4: bomItem.mpn4,
+        mpn5: bomItem.mpn5,
+        mpn6: bomItem.mpn6,
+        mpn7: bomItem.mpn7,
+        mpn8: bomItem.mpn8,
         make1: bomItem.make1,
         make2: bomItem.make2,
         make3: bomItem.make3,
+        make4: bomItem.make4,
+        make5: bomItem.make5,
+        make6: bomItem.make6,
+        make7: bomItem.make7,
+        make8: bomItem.make8,
         description: bomItem.itemName,
         packageDescription: bomItem.packageDescription,
       },
@@ -750,6 +800,11 @@ router.post("/verification/validate-mpn", attachActor, async (req: AuthRequest, 
     const mpn1 = bomItem.mpn1?.trim().toUpperCase() ?? "";
     const mpn2 = bomItem.mpn2?.trim().toUpperCase() ?? "";
     const mpn3 = bomItem.mpn3?.trim().toUpperCase() ?? "";
+    const mpn4 = bomItem.mpn4?.trim().toUpperCase() ?? "";
+    const mpn5 = bomItem.mpn5?.trim().toUpperCase() ?? "";
+    const mpn6 = bomItem.mpn6?.trim().toUpperCase() ?? "";
+    const mpn7 = bomItem.mpn7?.trim().toUpperCase() ?? "";
+    const mpn8 = bomItem.mpn8?.trim().toUpperCase() ?? "";
 
     // Also check internal part number tokens
     const internalTokens = (bomItem.internalPartNumber || "")
@@ -773,6 +828,26 @@ router.post("/verification/validate-mpn", attachActor, async (req: AuthRequest, 
       matchedField = "mpn3";
       matchedMake = bomItem.make3;
       isAlternate = true;
+    } else if (mpn4 && scanned === mpn4) {
+      matchedField = "mpn4";
+      matchedMake = bomItem.make4;
+      isAlternate = true;
+    } else if (mpn5 && scanned === mpn5) {
+      matchedField = "mpn5";
+      matchedMake = bomItem.make5;
+      isAlternate = true;
+    } else if (mpn6 && scanned === mpn6) {
+      matchedField = "mpn6";
+      matchedMake = bomItem.make6;
+      isAlternate = true;
+    } else if (mpn7 && scanned === mpn7) {
+      matchedField = "mpn7";
+      matchedMake = bomItem.make7;
+      isAlternate = true;
+    } else if (mpn8 && scanned === mpn8) {
+      matchedField = "mpn8";
+      matchedMake = bomItem.make8;
+      isAlternate = true;
     } else if (internalTokens.includes(scanned)) {
       matchedField = "internalPartNumber";
       matchedMake = null;
@@ -783,12 +858,12 @@ router.post("/verification/validate-mpn", attachActor, async (req: AuthRequest, 
         valid: false,
         error: "MPN_MISMATCH",
         scanned: scannedValue,
-        expected: [mpn1, mpn2, mpn3].filter(Boolean),
+        expected: [mpn1, mpn2, mpn3, mpn4, mpn5, mpn6, mpn7, mpn8].filter(Boolean),
       });
     }
 
     // MATCH FOUND
-    const alternateCount = [mpn1, mpn2, mpn3].filter(Boolean).length;
+    const alternateCount = [mpn1, mpn2, mpn3, mpn4, mpn5, mpn6, mpn7, mpn8].filter(Boolean).length;
 
     res.json({
       valid: true,
@@ -1370,9 +1445,19 @@ router.get(
               mpn1: bomItemsTable.mpn1,
               mpn2: bomItemsTable.mpn2,
               mpn3: bomItemsTable.mpn3,
+              mpn4: bomItemsTable.mpn4,
+              mpn5: bomItemsTable.mpn5,
+              mpn6: bomItemsTable.mpn6,
+              mpn7: bomItemsTable.mpn7,
+              mpn8: bomItemsTable.mpn8,
               make1: bomItemsTable.make1,
               make2: bomItemsTable.make2,
               make3: bomItemsTable.make3,
+              make4: bomItemsTable.make4,
+              make5: bomItemsTable.make5,
+              make6: bomItemsTable.make6,
+              make7: bomItemsTable.make7,
+              make8: bomItemsTable.make8,
               description: bomItemsTable.itemName,
               internalPartNumber: bomItemsTable.internalPartNumber,
             })
@@ -1787,9 +1872,19 @@ router.post(
           mpn1: bomItemsTable.mpn1,
           mpn2: bomItemsTable.mpn2,
           mpn3: bomItemsTable.mpn3,
+          mpn4: bomItemsTable.mpn4,
+          mpn5: bomItemsTable.mpn5,
+          mpn6: bomItemsTable.mpn6,
+          mpn7: bomItemsTable.mpn7,
+          mpn8: bomItemsTable.mpn8,
           make1: bomItemsTable.make1,
           make2: bomItemsTable.make2,
           make3: bomItemsTable.make3,
+          make4: bomItemsTable.make4,
+          make5: bomItemsTable.make5,
+          make6: bomItemsTable.make6,
+          make7: bomItemsTable.make7,
+          make8: bomItemsTable.make8,
           internalPartNumber: bomItemsTable.internalPartNumber,
           componentId: bomItemsTable.componentId,
         })
@@ -1811,6 +1906,11 @@ router.post(
       const mpn1 = bomItem.mpn1?.trim().toUpperCase() ?? "";
       const mpn2 = bomItem.mpn2?.trim().toUpperCase() ?? "";
       const mpn3 = bomItem.mpn3?.trim().toUpperCase() ?? "";
+      const mpn4 = bomItem.mpn4?.trim().toUpperCase() ?? "";
+      const mpn5 = bomItem.mpn5?.trim().toUpperCase() ?? "";
+      const mpn6 = bomItem.mpn6?.trim().toUpperCase() ?? "";
+      const mpn7 = bomItem.mpn7?.trim().toUpperCase() ?? "";
+      const mpn8 = bomItem.mpn8?.trim().toUpperCase() ?? "";
 
       let qaResult: "pass" | "fail" | "alternate_accepted";
       let matchedField: string | null = null;
@@ -1824,6 +1924,21 @@ router.post(
       } else if (mpn3 && scanned === mpn3) {
         qaResult = "alternate_accepted";
         matchedField = "mpn3";
+      } else if (mpn4 && scanned === mpn4) {
+        qaResult = "alternate_accepted";
+        matchedField = "mpn4";
+      } else if (mpn5 && scanned === mpn5) {
+        qaResult = "alternate_accepted";
+        matchedField = "mpn5";
+      } else if (mpn6 && scanned === mpn6) {
+        qaResult = "alternate_accepted";
+        matchedField = "mpn6";
+      } else if (mpn7 && scanned === mpn7) {
+        qaResult = "alternate_accepted";
+        matchedField = "mpn7";
+      } else if (mpn8 && scanned === mpn8) {
+        qaResult = "alternate_accepted";
+        matchedField = "mpn8";
       } else if (bomItem.componentId) {
         // Check component_alternates table for approved substitutes
         const [{ count: altCount }] = await db
@@ -2155,6 +2270,11 @@ router.get(
               mpn1: bomItemsTable.mpn1,
               mpn2: bomItemsTable.mpn2,
               mpn3: bomItemsTable.mpn3,
+              mpn4: bomItemsTable.mpn4,
+              mpn5: bomItemsTable.mpn5,
+              mpn6: bomItemsTable.mpn6,
+              mpn7: bomItemsTable.mpn7,
+              mpn8: bomItemsTable.mpn8,
             })
             .from(bomItemsTable)
             .where(

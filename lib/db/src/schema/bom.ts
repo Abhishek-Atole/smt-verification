@@ -6,6 +6,9 @@ export const bomsTable = pgTable("boms", {
   id: serial("id").primaryKey(),
   name: text("name").notNull(),
   description: text("description"),
+  version: text("version"),
+  product: text("product"),
+  customer: text("customer"),
   createdAt: timestamp("created_at").defaultNow().notNull(),
   createdBy: text("created_by"),
   deletedAt: timestamp("deleted_at"),
@@ -15,6 +18,8 @@ export const bomsTable = pgTable("boms", {
   parentBomId: integer("parent_bom_id"),
   revisionNotes: text("revision_notes"),
   isLatest: boolean("is_latest").default(true),
+  // Revision lifecycle: 'active' (usable) | 'locked' | 'hold'. Anything != active is blocked.
+  status: text("status").default("active"),
 });
 
 export const bomItemsTable = pgTable(
@@ -38,6 +43,17 @@ export const bomItemsTable = pgTable(
     mpn2: text("mpn_2"),
     make3: text("make_3"),
     mpn3: text("mpn_3"),
+    // Additional alternate manufacturers (make4/mpn4 … make8/mpn8)
+    make4: text("make_4"),
+    mpn4: text("mpn_4"),
+    make5: text("make_5"),
+    mpn5: text("mpn_5"),
+    make6: text("make_6"),
+    mpn6: text("mpn_6"),
+    make7: text("make_7"),
+    mpn7: text("mpn_7"),
+    make8: text("make_8"),
+    mpn8: text("mpn_8"),
     remarks: text("remarks"),
     action: text("action"),
     // Legacy

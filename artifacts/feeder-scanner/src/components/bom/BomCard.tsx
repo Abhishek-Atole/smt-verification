@@ -31,9 +31,12 @@ import {
   Layers3,
   Package,
   ChevronRight,
+  Lock,
+  Unlock,
+  PauseCircle,
 } from "lucide-react";
 
-export function BomCard({ bom, onDelete }: { bom: any; onDelete: (bom: any) => void }) {
+export function BomCard({ bom, onDelete, onSetStatus }: { bom: any; onDelete: (bom: any) => void; onSetStatus?: (bom: any, status: "active" | "locked" | "hold") => void }) {
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
   const { toast } = useToast();
   const [, setLocation] = useLocation();
@@ -41,8 +44,8 @@ export function BomCard({ bom, onDelete }: { bom: any; onDelete: (bom: any) => v
   const status = typeof bom.status === "string" ? bom.status.toUpperCase() : "ACTIVE";
   const statusBadgeColor = {
     ACTIVE: "bg-green-100 text-green-800",
-    DRAFT: "bg-amber-100 text-amber-800",
-    ARCHIVED: "bg-gray-100 text-gray-800",
+    LOCKED: "bg-red-100 text-red-800",
+    HOLD: "bg-amber-100 text-amber-800",
   }[status] || "bg-blue-100 text-blue-800";
 
   const statItems = [
@@ -71,12 +74,12 @@ export function BomCard({ bom, onDelete }: { bom: any; onDelete: (bom: any) => v
 
   return (
     <>
-      <div className="group relative overflow-hidden rounded-3xl border border-border/70 bg-card/95 p-6 shadow-sm ring-1 ring-black/5 backdrop-blur-sm transition-all duration-300 hover:-translate-y-1 hover:shadow-2xl">
+      <div className="group relative flex h-full flex-col overflow-hidden rounded-3xl border border-border/70 bg-card/95 p-6 shadow-sm ring-1 ring-black/5 backdrop-blur-sm transition-all duration-300 hover:-translate-y-1 hover:shadow-2xl">
         <div className="absolute inset-x-0 top-0 h-1 bg-gradient-to-r from-sky-500 via-amber-400 to-emerald-400" />
         <div className="absolute -right-12 -top-12 h-32 w-32 rounded-full bg-sky-500/10 blur-2xl transition-transform duration-500 group-hover:scale-125" />
         <div className="absolute -bottom-12 -left-12 h-32 w-32 rounded-full bg-amber-400/10 blur-2xl transition-transform duration-500 group-hover:scale-125" />
 
-        <div className="relative">
+        <div className="relative flex flex-1 flex-col">
           <div className="mb-5 flex items-start justify-between gap-3">
             <div className="flex flex-wrap items-center gap-2">
               <span className={`text-xs font-semibold px-2.5 py-1 rounded-full ${statusBadgeColor}`}>
@@ -114,6 +117,25 @@ export function BomCard({ bom, onDelete }: { bom: any; onDelete: (bom: any) => v
                   <Archive className="w-4 h-4 mr-2" /> Archive
                 </DropdownMenuItem>
                 <DropdownMenuSeparator />
+                {onSetStatus && (
+                  <>
+                    {status === "ACTIVE" ? (
+                      <>
+                        <DropdownMenuItem onClick={() => onSetStatus(bom, "locked")}>
+                          <Lock className="w-4 h-4 mr-2" /> Lock revision
+                        </DropdownMenuItem>
+                        <DropdownMenuItem onClick={() => onSetStatus(bom, "hold")}>
+                          <PauseCircle className="w-4 h-4 mr-2" /> Put on hold
+                        </DropdownMenuItem>
+                      </>
+                    ) : (
+                      <DropdownMenuItem onClick={() => onSetStatus(bom, "active")}>
+                        <Unlock className="w-4 h-4 mr-2" /> Release revision
+                      </DropdownMenuItem>
+                    )}
+                    <DropdownMenuSeparator />
+                  </>
+                )}
                 <DropdownMenuItem onClick={() => setShowDeleteConfirm(true)} className="text-red-600 focus:text-red-600">
                   <Trash2 className="w-4 h-4 mr-2" /> Delete
                 </DropdownMenuItem>
@@ -122,7 +144,7 @@ export function BomCard({ bom, onDelete }: { bom: any; onDelete: (bom: any) => v
           </div>
 
           <div className="space-y-2">
-            <h3 className="text-xl font-bold tracking-tight text-navy transition-colors group-hover:text-sky-700">
+            <h3 className="break-words text-xl font-bold tracking-tight text-navy transition-colors group-hover:text-sky-700">
               {bom.name}
             </h3>
             {bom.description ? (
@@ -134,9 +156,9 @@ export function BomCard({ bom, onDelete }: { bom: any; onDelete: (bom: any) => v
 
           <div className="mt-5 grid grid-cols-1 gap-2 sm:grid-cols-2">
             {metadata.map((item) => (
-              <div key={item.label} className="rounded-2xl border border-border/70 bg-background/80 px-3 py-2.5 shadow-sm">
+              <div key={item.label} className="min-w-0 rounded-2xl border border-border/70 bg-background/80 px-3 py-2.5 shadow-sm">
                 <div className="text-[10px] font-semibold uppercase tracking-[0.2em] text-muted-foreground">{item.label}</div>
-                <div className="mt-1 text-sm font-medium text-foreground">{item.value}</div>
+                <div className="mt-1 truncate text-sm font-medium text-foreground" title={item.value}>{item.value}</div>
               </div>
             ))}
           </div>
@@ -156,7 +178,7 @@ export function BomCard({ bom, onDelete }: { bom: any; onDelete: (bom: any) => v
             })}
           </div>
 
-          <div className="mt-5 grid grid-cols-1 gap-2 sm:grid-cols-2">
+          <div className="mt-auto grid grid-cols-1 gap-2 pt-5 sm:grid-cols-2">
             <Button
               variant="outline"
               className="w-full min-w-0 cursor-pointer border-2 border-navy bg-white font-semibold text-navy shadow-sm transition-all hover:border-sky-600 hover:bg-sky-50"

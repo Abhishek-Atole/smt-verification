@@ -13,4 +13,5 @@ export * from "./programs";
 export * from "./program_versions";
 export * from "./program_issues";
 export * from "./issue_comments";
+export * from "./notifications";
 

@@ -129,8 +129,8 @@ export default function SessionNew() {
     );
   }
 
-  // Defensive check: ensure boms is an array
-  const bomsArray = Array.isArray(boms) ? boms : [];
+  // Defensive check: ensure boms is an array. Locked/held revisions cannot start a session.
+  const bomsArray = (Array.isArray(boms) ? boms : []).filter((bom: any) => (bom.status ?? "active") === "active");
   const normalizedBomSearch = bomSearch.trim().toLowerCase();
   const showBomSearchResults = normalizedBomSearch.length >= 1;
   const filteredBoms = showBomSearchResults
@@ -143,7 +143,7 @@ export default function SessionNew() {
   const selectedBom = bomsArray.find((bom) => bom.id.toString() === bomId);
 
   return (
-    <div className="w-full space-y-4 sm:space-y-6 lg:space-y-8 px-4 sm:px-6 lg:px-8 py-4 sm:py-6 lg:py-8 max-w-4xl mx-auto">
+    <div className="w-full space-y-4 sm:space-y-6 lg:space-y-8 px-4 sm:px-6 lg:px-8 py-4 sm:py-6 lg:py-8">
       {/* Header - Responsive */}
       <div className="border-b border-border pb-3 sm:pb-4 lg:pb-4 flex items-center gap-2 sm:gap-3 lg:gap-4">
         <AppLogo className="h-10 sm:h-12 lg:h-14" />
@@ -153,7 +153,7 @@ export default function SessionNew() {
         </div>
       </div>
 
-      <form onSubmit={handleSubmit} className="bg-card p-4 sm:p-6 lg:p-8 border border-border rounded-sm space-y-6 sm:space-y-8 lg:space-y-8 font-mono">
+      <form onSubmit={handleSubmit} className="mx-auto max-w-5xl bg-card p-4 sm:p-6 lg:p-8 border border-border rounded-sm space-y-6 sm:space-y-8 lg:space-y-8 font-mono">
         {/* Form Grid - Responsive */}
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 sm:gap-8 lg:gap-8">
           {/* Left Column: Job Details */}

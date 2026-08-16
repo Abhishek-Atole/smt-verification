@@ -131,7 +131,7 @@ export default function VerificationPage() {
 
   return (
     <div className="min-h-screen bg-background p-4 md:p-6 app-noise">
-      <div className="mx-auto max-w-7xl space-y-4">
+      <div className="w-full space-y-4">
         <div className="flex items-center justify-between rounded-xl border border-border/60 bg-card px-4 py-3">
           <div className="flex items-center gap-3 min-w-0">
             <AppLogo className="h-10 w-10 shrink-0" />

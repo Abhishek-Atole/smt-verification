@@ -23,18 +23,28 @@ type BomRowForMPN = {
   mpn1?: string | null;
   mpn2?: string | null;
   mpn3?: string | null;
+  mpn4?: string | null;
+  mpn5?: string | null;
+  mpn6?: string | null;
+  mpn7?: string | null;
+  mpn8?: string | null;
   make1?: string | null;
   make2?: string | null;
   make3?: string | null;
+  make4?: string | null;
+  make5?: string | null;
+  make6?: string | null;
+  make7?: string | null;
+  make8?: string | null;
 };
 
 type MatchResult = {
-  matchedField: "internalPartNumber" | "mpn1" | "mpn2" | "mpn3";
+  matchedField: "internalPartNumber" | "mpn1" | "mpn2" | "mpn3" | "mpn4" | "mpn5" | "mpn6" | "mpn7" | "mpn8";
   matchedMake: string | null;
 } | null;
 
 type SpliceMatch = {
-  matchedField: "mpn1" | "mpn2" | "mpn3" | "internalPartNumber";
+  matchedField: "mpn1" | "mpn2" | "mpn3" | "mpn4" | "mpn5" | "mpn6" | "mpn7" | "mpn8" | "internalPartNumber";
   matchedAs: string;
   matchedMake: string;
   status: "verified" | "alternate";
@@ -95,6 +105,26 @@ function verifyMPN(scanned: string, bomRow: BomRowForMPN): MatchResult {
     return { matchedField: "mpn3", matchedMake: bomRow.make3 ?? null };
   }
 
+  if (normalizeExact(bomRow.mpn4) === s) {
+    return { matchedField: "mpn4", matchedMake: bomRow.make4 ?? null };
+  }
+
+  if (normalizeExact(bomRow.mpn5) === s) {
+    return { matchedField: "mpn5", matchedMake: bomRow.make5 ?? null };
+  }
+
+  if (normalizeExact(bomRow.mpn6) === s) {
+    return { matchedField: "mpn6", matchedMake: bomRow.make6 ?? null };
+  }
+
+  if (normalizeExact(bomRow.mpn7) === s) {
+    return { matchedField: "mpn7", matchedMake: bomRow.make7 ?? null };
+  }
+
+  if (normalizeExact(bomRow.mpn8) === s) {
+    return { matchedField: "mpn8", matchedMake: bomRow.make8 ?? null };
+  }
+
   return null;
 }
 
@@ -131,6 +161,56 @@ function verifySpliceMpn(scanned: string, bomRow: BomRowForMPN): SpliceMatch | n
     };
   }
 
+  const mpn4 = normalizeExact(bomRow.mpn4);
+  if (mpn4 && mpn4 === s) {
+    return {
+      matchedField: "mpn4",
+      matchedAs: `MPN 4${bomRow.make4 ? ` (${bomRow.make4})` : ""}`,
+      matchedMake: bomRow.make4 ?? "",
+      status: "alternate",
+    };
+  }
+
+  const mpn5 = normalizeExact(bomRow.mpn5);
+  if (mpn5 && mpn5 === s) {
+    return {
+      matchedField: "mpn5",
+      matchedAs: `MPN 5${bomRow.make5 ? ` (${bomRow.make5})` : ""}`,
+      matchedMake: bomRow.make5 ?? "",
+      status: "alternate",
+    };
+  }
+
+  const mpn6 = normalizeExact(bomRow.mpn6);
+  if (mpn6 && mpn6 === s) {
+    return {
+      matchedField: "mpn6",
+      matchedAs: `MPN 6${bomRow.make6 ? ` (${bomRow.make6})` : ""}`,
+      matchedMake: bomRow.make6 ?? "",
+      status: "alternate",
+    };
+  }
+
+  const mpn7 = normalizeExact(bomRow.mpn7);
+  if (mpn7 && mpn7 === s) {
+    return {
+      matchedField: "mpn7",
+      matchedAs: `MPN 7${bomRow.make7 ? ` (${bomRow.make7})` : ""}`,
+      matchedMake: bomRow.make7 ?? "",
+      status: "alternate",
+    };
+  }
+
+  const mpn8 = normalizeExact(bomRow.mpn8);
+  if (mpn8 && mpn8 === s) {
+    return {
+      matchedField: "mpn8",
+      matchedAs: `MPN 8${bomRow.make8 ? ` (${bomRow.make8})` : ""}`,
+      matchedMake: bomRow.make8 ?? "",
+      status: "alternate",
+    };
+  }
+
   const tokens = tokenizeInternalPartNumber(bomRow.internalPartNumber);
   if (tokens.includes(s)) {
     return {
@@ -163,6 +243,11 @@ function buildExpectedMpnValues(bomRow: BomRowForMPN): string[] {
     normalizeExact(bomRow.mpn1),
     normalizeExact(bomRow.mpn2),
     normalizeExact(bomRow.mpn3),
+    normalizeExact(bomRow.mpn4),
+    normalizeExact(bomRow.mpn5),
+    normalizeExact(bomRow.mpn6),
+    normalizeExact(bomRow.mpn7),
+    normalizeExact(bomRow.mpn8),
   ].filter(Boolean);
 
   return Array.from(new Set(values));
@@ -220,7 +305,7 @@ function buildSpliceResponse(
     ...splice,
     bomItem,
     expectedMpns: bomItem
-      ? [bomItem.mpn1, bomItem.mpn2, bomItem.mpn3].map((value: string | null | undefined) => normalizeExact(value)).filter(Boolean)
+      ? [bomItem.mpn1, bomItem.mpn2, bomItem.mpn3, bomItem.mpn4, bomItem.mpn5, bomItem.mpn6, bomItem.mpn7, bomItem.mpn8].map((value: string | null | undefined) => normalizeExact(value)).filter(Boolean)
       : [],
     scannedValue,
     matchedAs,
@@ -236,6 +321,11 @@ function formatMatchedAs(matchedField: string | null | undefined, matchedMake: s
   if (field === "mpn1") return `MPN 1${matchedMake ? ` (${matchedMake})` : ""}`;
   if (field === "mpn2") return `MPN 2${matchedMake ? ` (${matchedMake})` : ""}`;
   if (field === "mpn3") return `MPN 3${matchedMake ? ` (${matchedMake})` : ""}`;
+  if (field === "mpn4") return `MPN 4${matchedMake ? ` (${matchedMake})` : ""}`;
+  if (field === "mpn5") return `MPN 5${matchedMake ? ` (${matchedMake})` : ""}`;
+  if (field === "mpn6") return `MPN 6${matchedMake ? ` (${matchedMake})` : ""}`;
+  if (field === "mpn7") return `MPN 7${matchedMake ? ` (${matchedMake})` : ""}`;
+  if (field === "mpn8") return `MPN 8${matchedMake ? ` (${matchedMake})` : ""}`;
   if (field === "internalpartnumber") return "Internal P/N";
   return "—";
 }
@@ -312,6 +402,16 @@ async function buildSessionReportPayload(sessionId: number): Promise<SessionRepo
         bi.mpn_2 AS mpn2,
         bi.make_3 AS make3,
         bi.mpn_3 AS mpn3,
+        bi.make_4 AS make4,
+        bi.mpn_4 AS mpn4,
+        bi.make_5 AS make5,
+        bi.mpn_5 AS mpn5,
+        bi.make_6 AS make6,
+        bi.mpn_6 AS mpn6,
+        bi.make_7 AS make7,
+        bi.mpn_7 AS mpn7,
+        bi.make_8 AS make8,
+        bi.mpn_8 AS mpn8,
         bi.quantity
       FROM changeover_sessions cs
       LEFT JOIN boms bh ON cs.bom_id = bh.id
@@ -445,7 +545,7 @@ async function buildSessionReportPayload(sessionId: number): Promise<SessionRepo
     const scannedVal = feederScan?.spoolBarcode ?? feederScan?.internalIdScanned ?? feederScan?.scannedMpn ?? null;
     
     // Match the scanned value against BOM MPNs to determine matched field and make
-    let matchedField: "internalPartNumber" | "mpn1" | "mpn2" | "mpn3" | null = null;
+    let matchedField: "internalPartNumber" | "mpn1" | "mpn2" | "mpn3" | "mpn4" | "mpn5" | "mpn6" | "mpn7" | "mpn8" | null = null;
     let matchedMake: string | null = null;
     
     if (scannedVal && feederScan?.status === "ok") {
@@ -479,6 +579,36 @@ async function buildSessionReportPayload(sessionId: number): Promise<SessionRepo
       if (!matchedField && item.mpn3 && String(item.mpn3).trim().toUpperCase() === normalizedScanned) {
         matchedField = "mpn3";
         matchedMake = item.make3 ?? null;
+      }
+
+      // Check MPN4 (alternate)
+      if (!matchedField && item.mpn4 && String(item.mpn4).trim().toUpperCase() === normalizedScanned) {
+        matchedField = "mpn4";
+        matchedMake = item.make4 ?? null;
+      }
+
+      // Check MPN5 (alternate)
+      if (!matchedField && item.mpn5 && String(item.mpn5).trim().toUpperCase() === normalizedScanned) {
+        matchedField = "mpn5";
+        matchedMake = item.make5 ?? null;
+      }
+
+      // Check MPN6 (alternate)
+      if (!matchedField && item.mpn6 && String(item.mpn6).trim().toUpperCase() === normalizedScanned) {
+        matchedField = "mpn6";
+        matchedMake = item.make6 ?? null;
+      }
+
+      // Check MPN7 (alternate)
+      if (!matchedField && item.mpn7 && String(item.mpn7).trim().toUpperCase() === normalizedScanned) {
+        matchedField = "mpn7";
+        matchedMake = item.make7 ?? null;
+      }
+
+      // Check MPN8 (alternate)
+      if (!matchedField && item.mpn8 && String(item.mpn8).trim().toUpperCase() === normalizedScanned) {
+        matchedField = "mpn8";
+        matchedMake = item.make8 ?? null;
       }
     }
     
@@ -519,6 +649,16 @@ async function buildSessionReportPayload(sessionId: number): Promise<SessionRepo
       mpn2: item.mpn2,
       make3: item.make3,
       mpn3: item.mpn3,
+      make4: item.make4,
+      mpn4: item.mpn4,
+      make5: item.make5,
+      mpn5: item.mpn5,
+      make6: item.make6,
+      mpn6: item.mpn6,
+      make7: item.make7,
+      mpn7: item.mpn7,
+      make8: item.make8,
+      mpn8: item.mpn8,
     };
   });
 
@@ -643,6 +783,22 @@ router.post("/sessions", requireRole("operator", "qa", "supervisor", "admin"), a
 
     // Convert bomId = 0 (free scan mode) to null for database storage
     const finalBomId = bomId === 0 ? null : bomId;
+
+    // Revision lifecycle: a locked/held BOM cannot start a new verification session.
+    if (finalBomId !== null) {
+      const [bom] = await db
+        .select({ status: bomsTable.status })
+        .from(bomsTable)
+        .where(eq(bomsTable.id, finalBomId));
+      if (!bom) {
+        res.status(404).json({ error: "BOM not found" });
+        return;
+      }
+      if ((bom.status ?? "active") !== "active") {
+        res.status(409).json({ error: "This BOM revision is locked or on hold and cannot be used for a new session." });
+        return;
+      }
+    }
 
     // Use server timestamp for session creation
     const timestamps = TimestampService.createSessionTimestamps();
@@ -829,6 +985,16 @@ router.get("/sessions/:sessionId/scans", requireRole("operator", "qa", "supervis
         make2: bomItemsTable.make2,
         mpn3: bomItemsTable.mpn3,
         make3: bomItemsTable.make3,
+        mpn4: bomItemsTable.mpn4,
+        make4: bomItemsTable.make4,
+        mpn5: bomItemsTable.mpn5,
+        make5: bomItemsTable.make5,
+        mpn6: bomItemsTable.mpn6,
+        make6: bomItemsTable.make6,
+        mpn7: bomItemsTable.mpn7,
+        make7: bomItemsTable.make7,
+        mpn8: bomItemsTable.mpn8,
+        make8: bomItemsTable.make8,
       })
       .from(scanRecordsTable)
       .leftJoin(
@@ -862,10 +1028,10 @@ router.get("/sessions/:sessionId/scans", requireRole("operator", "qa", "supervis
           componentDesc: row.componentDesc ?? null,
           packageSize: row.packageSize ?? null,
           internalPartNumber: row.internalPartNumber ?? null,
-          expectedMpns: [row.internalPartNumber, row.mpn1, row.mpn2, row.mpn3].filter(
+          expectedMpns: [row.internalPartNumber, row.mpn1, row.mpn2, row.mpn3, row.mpn4, row.mpn5, row.mpn6, row.mpn7, row.mpn8].filter(
             (value): value is string => Boolean(value && value.trim()),
           ),
-          makes: [row.make1, row.make2, row.make3].filter(
+          makes: [row.make1, row.make2, row.make3, row.make4, row.make5, row.make6, row.make7, row.make8].filter(
             (value): value is string => Boolean(value && value.trim()),
           ),
         },
@@ -1595,9 +1761,19 @@ router.post("/sessions/:sessionId/splices", requireRole("operator", "qa", "super
       mpn1: bomItem.mpn1,
       mpn2: bomItem.mpn2,
       mpn3: bomItem.mpn3,
+      mpn4: bomItem.mpn4,
+      mpn5: bomItem.mpn5,
+      mpn6: bomItem.mpn6,
+      mpn7: bomItem.mpn7,
+      mpn8: bomItem.mpn8,
       make1: bomItem.make1,
       make2: bomItem.make2,
       make3: bomItem.make3,
+      make4: bomItem.make4,
+      make5: bomItem.make5,
+      make6: bomItem.make6,
+      make7: bomItem.make7,
+      make8: bomItem.make8,
     };
 
     // === STEP 3: Old spool - check it matches the BOM (allocated to feeder) ===
@@ -1618,10 +1794,10 @@ router.post("/sessions/:sessionId/splices", requireRole("operator", "qa", "super
 
     if (!newMatch) {
       return res.status(400).json({
-        error: `New spool is not allocated to feeder ${normalizedFeeder}. Expected: ${[bomItem.mpn1, bomItem.mpn2, bomItem.mpn3].filter(Boolean).join(" / ") || bomItem.internalPartNumber || "No part configured"}`,
+        error: `New spool is not allocated to feeder ${normalizedFeeder}. Expected: ${[bomItem.mpn1, bomItem.mpn2, bomItem.mpn3, bomItem.mpn4, bomItem.mpn5, bomItem.mpn6, bomItem.mpn7, bomItem.mpn8].filter(Boolean).join(" / ") || bomItem.internalPartNumber || "No part configured"}`,
         code: "WRONG_FEEDER_ALLOCATION",
         status: "failed",
-        expectedMpns: [bomItem.mpn1, bomItem.mpn2, bomItem.mpn3].filter(Boolean),
+        expectedMpns: [bomItem.mpn1, bomItem.mpn2, bomItem.mpn3, bomItem.mpn4, bomItem.mpn5, bomItem.mpn6, bomItem.mpn7, bomItem.mpn8].filter(Boolean),
         expectedInternalPartNumber: bomItem.internalPartNumber ?? null,
         expectedFeeder: normalizedFeeder,
       });
@@ -1896,17 +2072,27 @@ router.get("/sessions/:sessionId/report/pdf", requireRole("qa", "supervisor", "a
           ? `MPN 2 (${row.make2 ?? ""})`
           : matchedField === "mpn3"
             ? `MPN 3 (${row.make3 ?? ""})`
-            : matchedField === "internalpartnumber"
-              ? "Internal P/N"
-              : "—";
+            : matchedField === "mpn4"
+              ? `MPN 4 (${row.make4 ?? ""})`
+              : matchedField === "mpn5"
+                ? `MPN 5 (${row.make5 ?? ""})`
+                : matchedField === "mpn6"
+                  ? `MPN 6 (${row.make6 ?? ""})`
+                  : matchedField === "mpn7"
+                    ? `MPN 7 (${row.make7 ?? ""})`
+                    : matchedField === "mpn8"
+                      ? `MPN 8 (${row.make8 ?? ""})`
+                      : matchedField === "internalpartnumber"
+                        ? "Internal P/N"
+                        : "—";
 
-      const expectedParts = [row.mpn1, row.mpn2, row.mpn3]
+      const expectedParts = [row.mpn1, row.mpn2, row.mpn3, row.mpn4, row.mpn5, row.mpn6, row.mpn7, row.mpn8]
         .filter((val: any) => val && String(val).trim())
         .map((val: any) => String(val).trim());
       const expectedMpns = expectedParts.length > 0 ? expectedParts.join("\n") : "—";
 
       const scannedValue = safeText(row.scannedValue);
-      const isAlternate = matchedField === "mpn2" || matchedField === "mpn3";
+      const isAlternate = matchedField === "mpn2" || matchedField === "mpn3" || matchedField === "mpn4" || matchedField === "mpn5" || matchedField === "mpn6" || matchedField === "mpn7" || matchedField === "mpn8";
       const isFailed = status === "failed";
 
       const scannedText = isFailed

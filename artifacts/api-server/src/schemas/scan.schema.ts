@@ -53,7 +53,7 @@ export const SaveScanSchema = z.object({
   remarks: z.string().optional().nullable(),
   quantity: z.number().int().nonnegative().optional(),
   matchedField: z
-    .enum(["internalPartNumber", "mpn1", "mpn2", "mpn3", "alternate"])
+    .enum(["internalPartNumber", "mpn1", "mpn2", "mpn3", "mpn4", "mpn5", "mpn6", "mpn7", "mpn8", "alternate"])
     .optional(),
   matchedMake: z.string().optional().nullable(),
 });

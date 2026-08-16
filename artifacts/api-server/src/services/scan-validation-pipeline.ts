@@ -44,9 +44,19 @@ interface BomItem {
   mpn1: string | null;
   mpn2: string | null;
   mpn3: string | null;
+  mpn4: string | null;
+  mpn5: string | null;
+  mpn6: string | null;
+  mpn7: string | null;
+  mpn8: string | null;
   make1: string | null;
   make2: string | null;
   make3: string | null;
+  make4: string | null;
+  make5: string | null;
+  make6: string | null;
+  make7: string | null;
+  make8: string | null;
 }
 
 interface Session {
@@ -156,9 +166,19 @@ export class ScanValidationPipeline {
         mpn1: bomItemsTable.mpn1,
         mpn2: bomItemsTable.mpn2,
         mpn3: bomItemsTable.mpn3,
+        mpn4: bomItemsTable.mpn4,
+        mpn5: bomItemsTable.mpn5,
+        mpn6: bomItemsTable.mpn6,
+        mpn7: bomItemsTable.mpn7,
+        mpn8: bomItemsTable.mpn8,
         make1: bomItemsTable.make1,
         make2: bomItemsTable.make2,
         make3: bomItemsTable.make3,
+        make4: bomItemsTable.make4,
+        make5: bomItemsTable.make5,
+        make6: bomItemsTable.make6,
+        make7: bomItemsTable.make7,
+        make8: bomItemsTable.make8,
       })
       .from(bomItemsTable)
       .where(
@@ -221,6 +241,66 @@ export class ScanValidationPipeline {
   }
 
   /**
+   * Match against MPN4 (exact normalized)
+   */
+  private static matchMpn4(
+    bomItem: BomItem,
+    normalizedScanned: string
+  ): boolean {
+    if (!bomItem.mpn4) return false;
+    const normalized = this.normalizeExact(bomItem.mpn4);
+    return normalized === normalizedScanned;
+  }
+
+  /**
+   * Match against MPN5 (exact normalized)
+   */
+  private static matchMpn5(
+    bomItem: BomItem,
+    normalizedScanned: string
+  ): boolean {
+    if (!bomItem.mpn5) return false;
+    const normalized = this.normalizeExact(bomItem.mpn5);
+    return normalized === normalizedScanned;
+  }
+
+  /**
+   * Match against MPN6 (exact normalized)
+   */
+  private static matchMpn6(
+    bomItem: BomItem,
+    normalizedScanned: string
+  ): boolean {
+    if (!bomItem.mpn6) return false;
+    const normalized = this.normalizeExact(bomItem.mpn6);
+    return normalized === normalizedScanned;
+  }
+
+  /**
+   * Match against MPN7 (exact normalized)
+   */
+  private static matchMpn7(
+    bomItem: BomItem,
+    normalizedScanned: string
+  ): boolean {
+    if (!bomItem.mpn7) return false;
+    const normalized = this.normalizeExact(bomItem.mpn7);
+    return normalized === normalizedScanned;
+  }
+
+  /**
+   * Match against MPN8 (exact normalized)
+   */
+  private static matchMpn8(
+    bomItem: BomItem,
+    normalizedScanned: string
+  ): boolean {
+    if (!bomItem.mpn8) return false;
+    const normalized = this.normalizeExact(bomItem.mpn8);
+    return normalized === normalizedScanned;
+  }
+
+  /**
    * Build expected values list for failed scans
    */
   private static buildExpectedValues(bomItem: BomItem): {
@@ -237,6 +317,21 @@ export class ScanValidationPipeline {
     }
     if (bomItem.mpn3 && bomItem.make3) {
       values.push({ mpn: bomItem.mpn3, make: bomItem.make3 });
+    }
+    if (bomItem.mpn4 && bomItem.make4) {
+      values.push({ mpn: bomItem.mpn4, make: bomItem.make4 });
+    }
+    if (bomItem.mpn5 && bomItem.make5) {
+      values.push({ mpn: bomItem.mpn5, make: bomItem.make5 });
+    }
+    if (bomItem.mpn6 && bomItem.make6) {
+      values.push({ mpn: bomItem.mpn6, make: bomItem.make6 });
+    }
+    if (bomItem.mpn7 && bomItem.make7) {
+      values.push({ mpn: bomItem.mpn7, make: bomItem.make7 });
+    }
+    if (bomItem.mpn8 && bomItem.make8) {
+      values.push({ mpn: bomItem.mpn8, make: bomItem.make8 });
     }
 
     return values;
@@ -396,6 +491,81 @@ export class ScanValidationPipeline {
           alternateUsed: true,
           expectedValues: this.buildExpectedValues(bomItem),
           message: `✓ Component matched alternate MPN-3 (${bomItem.mpn3})`,
+        };
+      }
+
+      // Match against MPN4 (exact normalized)
+      if (this.matchMpn4(bomItem, normalizedScanned)) {
+        return {
+          status: "alternate_pass",
+          feederNumber,
+          scannedValue,
+          matchedItemId: bomItem.id,
+          matchedField: "mpn4",
+          matchedMake: bomItem.make4 || null,
+          alternateUsed: true,
+          expectedValues: this.buildExpectedValues(bomItem),
+          message: `✓ Component matched alternate MPN-4 (${bomItem.mpn4})`,
+        };
+      }
+
+      // Match against MPN5 (exact normalized)
+      if (this.matchMpn5(bomItem, normalizedScanned)) {
+        return {
+          status: "alternate_pass",
+          feederNumber,
+          scannedValue,
+          matchedItemId: bomItem.id,
+          matchedField: "mpn5",
+          matchedMake: bomItem.make5 || null,
+          alternateUsed: true,
+          expectedValues: this.buildExpectedValues(bomItem),
+          message: `✓ Component matched alternate MPN-5 (${bomItem.mpn5})`,
+        };
+      }
+
+      // Match against MPN6 (exact normalized)
+      if (this.matchMpn6(bomItem, normalizedScanned)) {
+        return {
+          status: "alternate_pass",
+          feederNumber,
+          scannedValue,
+          matchedItemId: bomItem.id,
+          matchedField: "mpn6",
+          matchedMake: bomItem.make6 || null,
+          alternateUsed: true,
+          expectedValues: this.buildExpectedValues(bomItem),
+          message: `✓ Component matched alternate MPN-6 (${bomItem.mpn6})`,
+        };
+      }
+
+      // Match against MPN7 (exact normalized)
+      if (this.matchMpn7(bomItem, normalizedScanned)) {
+        return {
+          status: "alternate_pass",
+          feederNumber,
+          scannedValue,
+          matchedItemId: bomItem.id,
+          matchedField: "mpn7",
+          matchedMake: bomItem.make7 || null,
+          alternateUsed: true,
+          expectedValues: this.buildExpectedValues(bomItem),
+          message: `✓ Component matched alternate MPN-7 (${bomItem.mpn7})`,
+        };
+      }
+
+      // Match against MPN8 (exact normalized)
+      if (this.matchMpn8(bomItem, normalizedScanned)) {
+        return {
+          status: "alternate_pass",
+          feederNumber,
+          scannedValue,
+          matchedItemId: bomItem.id,
+          matchedField: "mpn8",
+          matchedMake: bomItem.make8 || null,
+          alternateUsed: true,
+          expectedValues: this.buildExpectedValues(bomItem),
+          message: `✓ Component matched alternate MPN-8 (${bomItem.mpn8})`,
         };
       }
 

@@ -26,6 +26,7 @@ import { AuthProvider, useAuth } from "@/context/auth-context";
 import { SessionProvider } from "@/context/session-context";
 import { ThemeProvider } from "@/components/theme-provider";
 import { NotificationProvider } from "@/components/NotificationSystem";
+import { NotificationFeedListener } from "@/components/NotificationFeedListener";
 import { ErrorBoundary } from "@/components/ErrorBoundary";
 import { appConfig } from "@/lib/appConfig";
 import { AdminGate } from "@/admin/AdminGate";
@@ -135,6 +136,7 @@ function Router() {
       <Route>
         {loading ? null : user ? (
           <AppShell>
+            <NotificationFeedListener />
             <Layout>
               <Switch>
                 <Route path="/">

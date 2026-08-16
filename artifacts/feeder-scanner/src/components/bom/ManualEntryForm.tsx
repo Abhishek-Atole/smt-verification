@@ -18,6 +18,7 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { X, Plus } from "lucide-react";
+import { PasswordConfirmModal } from "@/components/PasswordConfirmModal";
 
 export function ManualEntryForm({ onSuccess }: { onSuccess: () => void }) {
   const { toast } = useToast();
@@ -44,9 +45,21 @@ export function ManualEntryForm({ onSuccess }: { onSuccess: () => void }) {
     mpn2: "",
     make3: "",
     mpn3: "",
+    make4: "",
+    mpn4: "",
+    make5: "",
+    mpn5: "",
+    make6: "",
+    mpn6: "",
+    make7: "",
+    mpn7: "",
+    make8: "",
+    mpn8: "",
     remarks: "",
   });
   const [isSaving, setIsSaving] = useState(false);
+  const [confirmOpen, setConfirmOpen] = useState(false);
+  const [pendingDraft, setPendingDraft] = useState(false);
 
   const packageOptions = ["0201", "0402", "0603", "0805", "1206", "SO-8", "SOT-23", "Other"];
 
@@ -79,6 +92,16 @@ export function ManualEntryForm({ onSuccess }: { onSuccess: () => void }) {
       mpn2: "",
       make3: "",
       mpn3: "",
+      make4: "",
+      mpn4: "",
+      make5: "",
+      mpn5: "",
+      make6: "",
+      mpn6: "",
+      make7: "",
+      mpn7: "",
+      make8: "",
+      mpn8: "",
       remarks: "",
     });
     toast({ title: "Success", description: "Component added" });
@@ -87,6 +110,20 @@ export function ManualEntryForm({ onSuccess }: { onSuccess: () => void }) {
   const removeItem = (id: number) => {
     setItems(prev => prev.filter(item => item.id !== id));
     toast({ title: "Success", description: "Component removed" });
+  };
+
+  // Validate up front, then require password confirmation before creating.
+  const requestSave = (asDraft: boolean) => {
+    if (!bomForm.name.trim()) {
+      toast({ title: "Error", description: "BOM Name is required", variant: "destructive" });
+      return;
+    }
+    if (items.length === 0) {
+      toast({ title: "Error", description: "Add at least one component before saving", variant: "destructive" });
+      return;
+    }
+    setPendingDraft(asDraft);
+    setConfirmOpen(true);
   };
 
   const handleSave = async (asDraft: boolean) => {
@@ -133,6 +170,16 @@ export function ManualEntryForm({ onSuccess }: { onSuccess: () => void }) {
         mpn2: item.mpn2,
         make3: item.make3,
         mpn3: item.mpn3,
+        make4: item.make4,
+        mpn4: item.mpn4,
+        make5: item.make5,
+        mpn5: item.mpn5,
+        make6: item.make6,
+        mpn6: item.mpn6,
+        make7: item.make7,
+        mpn7: item.mpn7,
+        make8: item.make8,
+        mpn8: item.mpn8,
         remarks: item.remarks,
       }));
 
@@ -317,6 +364,86 @@ export function ManualEntryForm({ onSuccess }: { onSuccess: () => void }) {
             />
           </div>
           <div>
+            <label className="block text-xs font-semibold text-gray-700 mb-1">Make 4</label>
+            <Input
+              placeholder="Make"
+              value={newItem.make4}
+              onChange={(e) => handleNewItemChange("make4", e.target.value)}
+            />
+          </div>
+          <div>
+            <label className="block text-xs font-semibold text-gray-700 mb-1">MPN 4</label>
+            <Input
+              placeholder="MPN"
+              value={newItem.mpn4}
+              onChange={(e) => handleNewItemChange("mpn4", e.target.value)}
+            />
+          </div>
+          <div>
+            <label className="block text-xs font-semibold text-gray-700 mb-1">Make 5</label>
+            <Input
+              placeholder="Make"
+              value={newItem.make5}
+              onChange={(e) => handleNewItemChange("make5", e.target.value)}
+            />
+          </div>
+          <div>
+            <label className="block text-xs font-semibold text-gray-700 mb-1">MPN 5</label>
+            <Input
+              placeholder="MPN"
+              value={newItem.mpn5}
+              onChange={(e) => handleNewItemChange("mpn5", e.target.value)}
+            />
+          </div>
+          <div>
+            <label className="block text-xs font-semibold text-gray-700 mb-1">Make 6</label>
+            <Input
+              placeholder="Make"
+              value={newItem.make6}
+              onChange={(e) => handleNewItemChange("make6", e.target.value)}
+            />
+          </div>
+          <div>
+            <label className="block text-xs font-semibold text-gray-700 mb-1">MPN 6</label>
+            <Input
+              placeholder="MPN"
+              value={newItem.mpn6}
+              onChange={(e) => handleNewItemChange("mpn6", e.target.value)}
+            />
+          </div>
+          <div>
+            <label className="block text-xs font-semibold text-gray-700 mb-1">Make 7</label>
+            <Input
+              placeholder="Make"
+              value={newItem.make7}
+              onChange={(e) => handleNewItemChange("make7", e.target.value)}
+            />
+          </div>
+          <div>
+            <label className="block text-xs font-semibold text-gray-700 mb-1">MPN 7</label>
+            <Input
+              placeholder="MPN"
+              value={newItem.mpn7}
+              onChange={(e) => handleNewItemChange("mpn7", e.target.value)}
+            />
+          </div>
+          <div>
+            <label className="block text-xs font-semibold text-gray-700 mb-1">Make 8</label>
+            <Input
+              placeholder="Make"
+              value={newItem.make8}
+              onChange={(e) => handleNewItemChange("make8", e.target.value)}
+            />
+          </div>
+          <div>
+            <label className="block text-xs font-semibold text-gray-700 mb-1">MPN 8</label>
+            <Input
+              placeholder="MPN"
+              value={newItem.mpn8}
+              onChange={(e) => handleNewItemChange("mpn8", e.target.value)}
+            />
+          </div>
+          <div>
             <label className="block text-xs font-semibold text-gray-700 mb-1">Remarks</label>
             <Input
               placeholder="Notes"
@@ -382,7 +509,7 @@ export function ManualEntryForm({ onSuccess }: { onSuccess: () => void }) {
         <Button variant="outline" className="font-semibold px-5 py-2.5">Cancel</Button>
         <Button
           variant="outline"
-          onClick={() => handleSave(true)}
+          onClick={() => requestSave(true)}
           disabled={isSaving}
           className="font-semibold px-5 py-2.5 border-2 hover:bg-gray-50"
         >
@@ -390,12 +517,26 @@ export function ManualEntryForm({ onSuccess }: { onSuccess: () => void }) {
         </Button>
         <Button
           className="bg-white text-navy border-navy border-2 hover:bg-gray-50 font-semibold shadow-md hover:shadow-lg transition-all duration-200 px-5 py-2.5"
-          onClick={() => handleSave(false)}
+          onClick={() => requestSave(false)}
           disabled={isSaving}
         >
           {isSaving ? "Saving..." : "✓ Save & Activate"}
         </Button>
       </div>
+
+      <PasswordConfirmModal
+        open={confirmOpen}
+        onOpenChange={setConfirmOpen}
+        title="Create BOM?"
+        description={
+          <>
+            Create <span className="font-semibold">{bomForm.name || "this BOM"}</span> with {items.length}{" "}
+            component{items.length === 1 ? "" : "s"}. Enter your password to confirm.
+          </>
+        }
+        confirmLabel="Create BOM"
+        onConfirmed={() => handleSave(pendingDraft)}
+      />
     </div>
   );
 }

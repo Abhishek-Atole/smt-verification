@@ -13,19 +13,11 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import {
-  AlertDialog,
-  AlertDialogAction,
-  AlertDialogCancel,
-  AlertDialogContent,
-  AlertDialogDescription,
-  AlertDialogHeader,
-  AlertDialogTitle,
-} from "@/components/ui/alert-dialog";
-import { Trash2, Upload, Plus, MoreVertical, Eye, Edit2, Copy, Archive, Search, History, BadgeCheck, Loader } from "lucide-react";
+import { Upload, Plus, Search, History, BadgeCheck } from "lucide-react";
 import { BomCard } from "@/components/bom/BomCard";
 import { BomImportWizard } from "@/components/bom/BomImportWizard";
 import { ManualEntryForm } from "@/components/bom/ManualEntryForm";
+import { PasswordConfirmModal } from "@/components/PasswordConfirmModal";
 import { logger } from "../lib/logger";
 
 export default function BomManager() {
@@ -38,16 +30,15 @@ export default function BomManager() {
 
   const [activeTab, setActiveTab] = useState("list");
   const [searchTerm, setSearchTerm] = useState("");
-  const [filterStatus, setFilterStatus] = useState("all");
   const [sortOrder, setSortOrder] = useState("newest");
   const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false);
   const [selectedBomForDelete, setSelectedBomForDelete] = useState<any>(null);
-  const [isSoftDeleting, setIsSoftDeleting] = useState(false);
-  const [softDeleteError, setSoftDeleteError] = useState<string | null>(null);
   const [hardDeleteConfirmOpen, setHardDeleteConfirmOpen] = useState(false);
   const [selectedBomForHardDelete, setSelectedBomForHardDelete] = useState<any>(null);
-  const [isDeleting, setIsDeleting] = useState(false);
-  const [deleteError, setDeleteError] = useState<string | null>(null);
+  const [restoreConfirmOpen, setRestoreConfirmOpen] = useState(false);
+  const [selectedBomForRestore, setSelectedBomForRestore] = useState<any>(null);
+  const [statusConfirmOpen, setStatusConfirmOpen] = useState(false);
+  const [pendingStatus, setPendingStatus] = useState<{ bom: any; status: "active" | "locked" | "hold" } | null>(null);
   const [trashedBoms, setTrashedBoms] = useState<any[]>([]);
   const [trashedLoading, setTrashedLoading] = useState(false);
 
@@ -79,12 +70,10 @@ export default function BomManager() {
 
   const filteredBoms = activeBoms
     .filter(bom => {
-      const matchesSearch = searchTerm === "" || 
+      const matchesSearch = searchTerm === "" ||
         bom.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
         (bom.description && bom.description.toLowerCase().includes(searchTerm.toLowerCase()));
-      const matchesStatus = filterStatus === "all" || 
-        (bom.status?.toUpperCase() === filterStatus.toUpperCase());
-      return matchesSearch && matchesStatus;
+      return matchesSearch;
     })
     .sort((a, b) => {
       if (sortOrder === "newest") return new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime();
@@ -100,8 +89,6 @@ export default function BomManager() {
 
   const confirmDelete = useCallback(async () => {
     if (!selectedBomForDelete) return;
-    setIsSoftDeleting(true);
-    setSoftDeleteError(null);
     try {
       const response = await fetch(`/api/bom/${selectedBomForDelete.id}/delete`, {
         method: "PATCH",
@@ -110,31 +97,59 @@ export default function BomManager() {
         throw new Error("Failed to delete BOM");
       }
       toast({ title: "Success", description: `BOM "${selectedBomForDelete.name}" moved to Trash` });
-      setDeleteConfirmOpen(false);
       setSelectedBomForDelete(null);
       refetch();
       fetchTrashedBoms();
     } catch (error) {
       const errorMsg = error instanceof Error ? error.message : "Failed to delete BOM";
-      setSoftDeleteError(errorMsg);
       toast({ title: "Error", description: errorMsg, variant: "destructive" });
-    } finally {
-      setIsSoftDeleting(false);
     }
   }, [selectedBomForDelete, refetch, fetchTrashedBoms, toast]);
 
   const handleRestoreBom = useCallback(async (bom: any) => {
+    setSelectedBomForRestore(bom);
+    setRestoreConfirmOpen(true);
+  }, []);
+
+  const handleSetStatus = useCallback((bom: any, status: "active" | "locked" | "hold") => {
+    setPendingStatus({ bom, status });
+    setStatusConfirmOpen(true);
+  }, []);
+
+  const confirmSetStatus = useCallback(async () => {
+    if (!pendingStatus) return;
+    const { bom, status } = pendingStatus;
     try {
-      await fetch(`/api/bom/${bom.id}/restore`, {
+      const response = await fetch(`/api/bom/${bom.id}/status`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ status }),
+      });
+      if (!response.ok) throw new Error("Failed to update BOM status");
+      const verb = status === "active" ? "released" : status === "locked" ? "locked" : "put on hold";
+      toast({ title: "Success", description: `BOM "${bom.name}" ${verb}` });
+      setPendingStatus(null);
+      refetch();
+    } catch (error) {
+      const errorMsg = error instanceof Error ? error.message : "Failed to update BOM status";
+      toast({ title: "Error", description: errorMsg, variant: "destructive" });
+    }
+  }, [pendingStatus, refetch, toast]);
+
+  const confirmRestore = useCallback(async () => {
+    if (!selectedBomForRestore) return;
+    try {
+      await fetch(`/api/bom/${selectedBomForRestore.id}/restore`, {
         method: "PATCH",
       });
-      toast({ title: "Success", description: `BOM "${bom.name}" restored` });
+      toast({ title: "Success", description: `BOM "${selectedBomForRestore.name}" restored` });
+      setSelectedBomForRestore(null);
       refetch();
       fetchTrashedBoms();
     } catch (error) {
       toast({ title: "Error", description: "Failed to restore BOM", variant: "destructive" });
     }
-  }, [refetch, fetchTrashedBoms, toast]);
+  }, [selectedBomForRestore, refetch, fetchTrashedBoms, toast]);
 
   const handleHardDeleteBom = useCallback(async (bom: any) => {
     setSelectedBomForHardDelete(bom);
@@ -143,8 +158,6 @@ export default function BomManager() {
 
   const confirmHardDelete = useCallback(async () => {
     if (!selectedBomForHardDelete) return;
-    setIsDeleting(true);
-    setDeleteError(null);
     try {
       const response = await fetch(`/api/bom/${selectedBomForHardDelete.id}/permanent`, {
         method: "DELETE",
@@ -153,22 +166,18 @@ export default function BomManager() {
         throw new Error("Failed to permanently delete BOM");
       }
       toast({ title: "Success", description: `BOM "${selectedBomForHardDelete.name}" permanently deleted` });
-      setHardDeleteConfirmOpen(false);
       setSelectedBomForHardDelete(null);
       refetch();
       fetchTrashedBoms();
     } catch (error) {
       const errorMsg = error instanceof Error ? error.message : "Failed to permanently delete BOM";
-      setDeleteError(errorMsg);
       toast({ title: "Error", description: errorMsg, variant: "destructive" });
-    } finally {
-      setIsDeleting(false);
     }
   }, [selectedBomForHardDelete, refetch, fetchTrashedBoms, toast]);
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-blue-50 to-indigo-50 p-4 sm:p-6">
-      <div className="max-w-7xl mx-auto">
+      <div className="w-full">
         {/* Header */}
         <div className="mb-8">
           <h1 className="text-4xl font-bold text-navy mb-2">Bill of Materials</h1>
@@ -235,16 +244,6 @@ export default function BomManager() {
                   className="pl-10"
                 />
               </div>
-              <Select value={filterStatus} onValueChange={setFilterStatus}>
-                <SelectTrigger className="w-[150px]">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="all">All BOMs</SelectItem>
-                  <SelectItem value="active">Active</SelectItem>
-                  <SelectItem value="draft">Draft</SelectItem>
-                </SelectContent>
-              </Select>
               <Select value={sortOrder} onValueChange={setSortOrder}>
                 <SelectTrigger className="w-[150px]">
                   <SelectValue />
@@ -271,12 +270,13 @@ export default function BomManager() {
                 </p>
               </div>
             ) : (
-              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6 items-stretch">
                 {filteredBoms.map(bom => (
                   <BomCard
                     key={bom.id}
                     bom={bom}
                     onDelete={handleDeleteBom}
+                    onSetStatus={handleSetStatus}
                   />
                 ))}
               </div>
@@ -321,9 +321,9 @@ export default function BomManager() {
                 <p className="text-gray-500">Trash is empty — no deleted BOMs</p>
               </div>
             ) : (
-              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6 items-stretch">
                 {trashed.map(bom => (
-                  <div key={bom.id} className="bg-white rounded-2xl p-6 border border-gray-200 opacity-75 shadow-sm transition-shadow hover:shadow-md">
+                  <div key={bom.id} className="flex h-full flex-col bg-white rounded-2xl p-6 border border-gray-200 opacity-75 shadow-sm transition-shadow hover:shadow-md">
                     <div className="flex justify-between items-start mb-4 gap-3">
                       <span className="text-xs font-semibold px-2 py-1 bg-gray-300 text-gray-700 rounded-full">
                         DELETED
@@ -341,14 +341,14 @@ export default function BomManager() {
                         )}
                       </div>
                     </div>
-                    <h3 className="font-bold text-lg text-gray-800 mb-1">{bom.name}</h3>
+                    <h3 className="font-bold text-lg text-gray-800 mb-1 break-words">{bom.name}</h3>
                     <p className="text-sm text-red-600 font-semibold mb-3">
                       Deleted on: {new Date(bom.deletedAt).toLocaleDateString()}
                     </p>
                     <p className="text-xs text-gray-600 mb-4">
                       Expires in: ~28 days
                     </p>
-                    <div className="flex gap-2">
+                    <div className="mt-auto flex gap-2">
                       <Button
                         size="sm"
                         variant="outline"
@@ -374,63 +374,79 @@ export default function BomManager() {
         </Tabs>
       </div>
 
-      {/* Delete Confirmation Modal */}
-      <AlertDialog open={deleteConfirmOpen} onOpenChange={setDeleteConfirmOpen}>
-        <AlertDialogContent>
-          <AlertDialogHeader>
-            <AlertDialogTitle>Delete BOM?</AlertDialogTitle>
-            <AlertDialogDescription>
-              Are you sure you want to delete <span className="font-semibold">{selectedBomForDelete?.name}</span>?
-              {"\n"}This BOM will be moved to Trash and can be restored within 30 days.
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          {softDeleteError && (
-            <div className="mt-2 p-3 bg-red-50 border border-red-200 rounded-md">
-              <p className="text-sm text-red-700">{softDeleteError}</p>
-            </div>
-          )}
-          <div className="flex gap-3 justify-end">
-            <AlertDialogCancel disabled={isSoftDeleting}>Cancel</AlertDialogCancel>
-            <AlertDialogAction
-              onClick={confirmDelete}
-              disabled={isSoftDeleting}
-              className="bg-red-600 hover:bg-red-700 disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2"
-            >
-              {isSoftDeleting && <Loader className="w-4 h-4 animate-spin" />}
-              {isSoftDeleting ? "Moving..." : "Move to Trash"}
-            </AlertDialogAction>
-          </div>
-        </AlertDialogContent>
-      </AlertDialog>
+      {/* Delete: password step-up required */}
+      <PasswordConfirmModal
+        open={deleteConfirmOpen}
+        onOpenChange={setDeleteConfirmOpen}
+        title="Delete BOM?"
+        description={
+          <>
+            Move <span className="font-semibold">{selectedBomForDelete?.name}</span> to Trash?
+            It can be restored within 30 days. Enter your password to confirm.
+          </>
+        }
+        confirmLabel="Move to Trash"
+        destructive
+        onConfirmed={confirmDelete}
+      />
 
-      {/* Hard Delete Confirmation Modal */}
-      <AlertDialog open={hardDeleteConfirmOpen} onOpenChange={setHardDeleteConfirmOpen}>
-        <AlertDialogContent>
-          <AlertDialogHeader>
-            <AlertDialogTitle>Delete Permanently?</AlertDialogTitle>
-            <AlertDialogDescription>
-              This will permanently delete <span className="font-semibold">{selectedBomForHardDelete?.name}</span> and all its component data.
-              {"\n"}This cannot be undone.
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          {deleteError && (
-            <div className="mt-2 p-3 bg-red-50 border border-red-200 rounded-md">
-              <p className="text-sm text-red-700">{deleteError}</p>
-            </div>
-          )}
-          <div className="flex gap-3 justify-end">
-            <AlertDialogCancel disabled={isDeleting}>Cancel</AlertDialogCancel>
-            <AlertDialogAction
-              onClick={confirmHardDelete}
-              disabled={isDeleting}
-              className="bg-red-600 hover:bg-red-700 disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2"
-            >
-              {isDeleting && <Loader className="w-4 h-4 animate-spin" />}
-              {isDeleting ? "Deleting..." : "Delete Forever"}
-            </AlertDialogAction>
-          </div>
-        </AlertDialogContent>
-      </AlertDialog>
+      {/* Restore: password step-up required */}
+      <PasswordConfirmModal
+        open={restoreConfirmOpen}
+        onOpenChange={setRestoreConfirmOpen}
+        title="Restore BOM?"
+        description={
+          <>
+            Restore <span className="font-semibold">{selectedBomForRestore?.name}</span> from Trash?
+            Enter your password to confirm.
+          </>
+        }
+        confirmLabel="Restore"
+        onConfirmed={confirmRestore}
+      />
+
+      {/* Lock / release / hold: password step-up required */}
+      <PasswordConfirmModal
+        open={statusConfirmOpen}
+        onOpenChange={setStatusConfirmOpen}
+        title={
+          pendingStatus?.status === "active"
+            ? "Release revision?"
+            : pendingStatus?.status === "hold"
+              ? "Put revision on hold?"
+              : "Lock revision?"
+        }
+        description={
+          <>
+            {pendingStatus?.status === "active" ? (
+              <>Release <span className="font-semibold">{pendingStatus?.bom?.name}</span> so it can be used and edited again.</>
+            ) : pendingStatus?.status === "hold" ? (
+              <>Put <span className="font-semibold">{pendingStatus?.bom?.name}</span> on hold — it can't be used for new sessions or edited until released.</>
+            ) : (
+              <>Lock <span className="font-semibold">{pendingStatus?.bom?.name}</span> — it can't be used for new sessions or edited until released.</>
+            )}
+            {" "}Enter your password to confirm.
+          </>
+        }
+        confirmLabel={pendingStatus?.status === "active" ? "Release" : pendingStatus?.status === "hold" ? "Put on Hold" : "Lock"}
+        onConfirmed={confirmSetStatus}
+      />
+
+      {/* Permanent delete: password step-up required */}
+      <PasswordConfirmModal
+        open={hardDeleteConfirmOpen}
+        onOpenChange={setHardDeleteConfirmOpen}
+        title="Delete Permanently?"
+        description={
+          <>
+            Permanently delete <span className="font-semibold">{selectedBomForHardDelete?.name}</span> and all its
+            component data. This cannot be undone. Enter your password to confirm.
+          </>
+        }
+        confirmLabel="Delete Forever"
+        destructive
+        onConfirmed={confirmHardDelete}
+      />
     </div>
   );
 }

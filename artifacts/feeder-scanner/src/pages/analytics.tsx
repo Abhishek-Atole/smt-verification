@@ -30,7 +30,7 @@ export default function Analytics() {
   }
 
   return (
-    <div className="p-6 max-w-7xl mx-auto space-y-8 animate-in fade-in slide-in-from-bottom-4 duration-500">
+    <div className="p-6 w-full space-y-8 animate-in fade-in slide-in-from-bottom-4 duration-500">
       <div className="flex justify-between items-center">
         <div className="flex items-center gap-4">
           <AppLogo className="h-14" />

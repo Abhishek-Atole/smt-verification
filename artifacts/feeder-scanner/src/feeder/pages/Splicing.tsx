@@ -847,7 +847,7 @@ export default function SplicingPage() {
       </div>
 
       {/* ── Single scrollable column ─────────────────────────────────────────── */}
-      <div className="relative mx-auto w-full max-w-screen-2xl space-y-6 px-4 py-6 md:px-6">
+      <div className="relative w-full space-y-6 px-4 py-6 md:px-6">
 
         {/* ═══════════════════════════════════════════════════════════════════════
             SECTION 1 — PAGE HEADER (title + session pills)
@@ -1187,7 +1187,7 @@ export default function SplicingPage() {
               </CardTitle>
             </CardHeader>
             <CardContent className="p-4">
-              <div className="mb-2 hidden sm:block">
+              <div className="mb-2 hidden sm:block overflow-x-auto">
                 <div className="grid min-w-[700px] grid-cols-7 gap-2 rounded-xl border border-border/70 bg-muted/35 px-3 py-2 text-[11px] font-bold uppercase tracking-[0.22em] text-muted-foreground">
                   <div>Time</div>
                   <div>Feeder</div>

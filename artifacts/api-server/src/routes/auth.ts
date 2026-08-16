@@ -472,4 +472,27 @@ router.post("/auth/verify-override", attachActor, requireAuth, async (req: AuthR
   }
 });
 
+router.post("/auth/verify-password", attachActor, requireAuth, async (req: AuthRequest, res: Response) => {
+  // Step-up confirm for sensitive actions (e.g. BOM add/delete). Verifies the
+  // CURRENT actor's own password — mirrors verify-override but for oneself.
+  const userId = req.actor!.id;
+  const body = req.body as { password?: unknown } | null;
+  const password = typeof body?.password === "string" ? body.password : "";
+  if (!password || password.length > PASSWORD_MAX_LENGTH) {
+    res.status(400).json({ error: "auth_invalid_payload", message: "Password is required" });
+    return;
+  }
+  const [user] = await db.select({ password_hash: usersTable.password_hash }).from(usersTable).where(eq(usersTable.id, userId));
+  if (!user) {
+    res.status(404).json({ error: "user_not_found" });
+    return;
+  }
+  const matches = await bcrypt.compare(password, user.password_hash ?? "");
+  if (!matches) {
+    res.status(401).json({ error: "auth_invalid_credentials", message: "Password is incorrect" });
+    return;
+  }
+  res.status(200).json({ valid: true });
+});
+
 export default router;

@@ -171,7 +171,7 @@ export default function TrashBin() {
 
       {/* Statistics */}
       {stats && (
-        <div className="grid grid-cols-4 gap-4">
+        <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
           <div className="bg-blue-50 p-4 rounded-lg border border-blue-200">
             <div className="text-sm font-medium text-blue-800">Total Items</div>
             <div className="text-2xl font-bold text-blue-900">
