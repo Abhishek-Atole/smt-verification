@@ -401,8 +401,8 @@ jobs:
 
       - name: Migrate + seed test DB
         run: |
-          cd lib/db && npx drizzle-kit push
-          cd artifacts/api-server && npx tsx scripts/seed-users.ts
+          (cd lib/db && npx drizzle-kit push)
+          (cd artifacts/api-server && npx tsx scripts/seed-users.ts)
 
       - name: Integration tests — auth & roles
         run: |
@@ -673,8 +673,8 @@ jobs:
 
       - name: Migrate + seed test DB
         run: |
-          cd lib/db && npx drizzle-kit push
-          cd artifacts/api-server && npx tsx scripts/seed-users.ts
+          (cd lib/db && npx drizzle-kit push)
+          (cd artifacts/api-server && npx tsx scripts/seed-users.ts)
 
       - name: Start API server in background
         run: |
