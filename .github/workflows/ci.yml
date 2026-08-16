@@ -33,7 +33,7 @@ jobs:
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       - run: pnpm --filter @workspace/api-server run build
-      - run: PORT=3000 pnpm --filter @workspace/feeder-scanner run build
+      - run: PORT=3000 pnpm --filter infizent-technology-suite run build
 
   test:
     name: Unit Tests
@@ -48,7 +48,7 @@ jobs:
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       - run: pnpm --filter @workspace/api-server run test
-      - run: PORT=3000 pnpm --filter @workspace/feeder-scanner run test
+      - run: PORT=3000 pnpm --filter infizent-technology-suite run test
 
   type-check:
     name: TypeScript Type Check
@@ -62,5 +62,6 @@ jobs:
           node-version: "20"
           cache: pnpm
       - run: pnpm install --frozen-lockfile
-      - run: pnpm --filter @workspace/feeder-scanner exec tsc --noEmit
+      - run: pnpm run typecheck:libs
+      - run: pnpm --filter infizent-technology-suite exec tsc --noEmit
       - run: pnpm --filter @workspace/api-server exec tsc --noEmit

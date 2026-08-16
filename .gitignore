@@ -172,6 +172,7 @@ dump-*.sql
 .env.*.local
 # Catch every other .env variant (.env.dev, .env.staging, …) but keep the tracked template.
 .env.*
+!.env.example
 feeder-verification/.env
 feeder-verification/.env.local
 feeder-verification/.env.production

@@ -20,7 +20,8 @@
     "dist:all": "npm run copy:api-server && npm run build:electron:prod && electron-builder --win --linux",
     "serve": "vite preview --config vite.config.ts --host 0.0.0.0",
     "typecheck": "tsc -b --force ../../lib/api-client-react && tsc -p tsconfig.json --noEmit",
-    "test": "PORT=3000 vitest run"
+    "test": "PORT=3000 vitest run",
+    "test:unit": "PORT=3000 vitest run"
   },
   "devDependencies": {
     "@radix-ui/react-alert-dialog": "^1.1.7",

@@ -9,6 +9,8 @@
     "start": "node --enable-source-maps ./dist/index.mjs",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run",
+    "test:unit": "vitest run",
+    "test:coverage": "vitest run --coverage --coverage.reporter=text",
     "test:integration": "vitest run src/__tests__/integration",
     "seed:users": "tsx scripts/seed-users.ts"
   },
@@ -54,7 +56,8 @@
     "supertest": "^7.2.2",
     "thread-stream": "3.1.0",
     "tsx": "catalog:",
-    "vitest": "^4.1.5"
+    "vitest": "^4.1.5",
+    "@vitest/coverage-v8": "^4.1.5"
   },
   "pnpm": {
     "overrides": {

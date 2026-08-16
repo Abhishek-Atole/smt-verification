@@ -11,13 +11,19 @@
 #
 name: "CodeQL Advanced"
 
+# DISABLED: Code scanning requires GitHub Advanced Security, which is not
+# enabled on this private repository, so CodeQL analysis always fails on
+# upload. Reduced to manual-only (workflow_dispatch) so it no longer fails
+# push/PR checks. Re-enable the push/pull_request/schedule triggers below
+# once GHAS / code scanning is turned on in repo settings.
 on:
-  push:
-    branches: [ "main" ]
-  pull_request:
-    branches: [ "main" ]
-  schedule:
-    - cron: '22 7 * * 5'
+  workflow_dispatch:
+  # push:
+  #   branches: [ "main" ]
+  # pull_request:
+  #   branches: [ "main" ]
+  # schedule:
+  #   - cron: '22 7 * * 5'
 
 jobs:
   analyze:

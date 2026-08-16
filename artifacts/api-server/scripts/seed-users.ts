@@ -77,7 +77,7 @@ async function seedUsers() {
         `UPDATE users
          SET password_hash = $1,
              name = $2,
-             role = $3::"UserRole",
+             role = $3,
              employee_id = $4,
              is_active = true,
              must_change_password = true,
@@ -93,7 +93,7 @@ async function seedUsers() {
     const uid = randomUUID();
     await pool.query(
       `INSERT INTO users (id, employee_id, name, role, password_hash, is_active, must_change_password, user_type, created_at)
-       VALUES ($1, $2, $3, $4::"UserRole", $5, true, true, $6, now())`,
+       VALUES ($1, $2, $3, $4, $5, true, true, $6, now())`,
       [uid, user.username, user.displayName, user.role, hashedPassword, user.role],
     );
 

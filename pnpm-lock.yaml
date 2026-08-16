@@ -207,6 +207,9 @@ importers:
       '@types/supertest':
         specifier: ^7.2.0
         version: 7.2.0
+      '@vitest/coverage-v8':
+        specifier: ^4.1.5
+        version: 4.1.7(vitest@4.1.5)
       esbuild:
         specifier: ^0.28.1
         version: 0.28.1
@@ -227,7 +230,7 @@ importers:
         version: 4.21.0
       vitest:
         specifier: ^4.1.5
-        version: 4.1.5(@types/node@25.6.0)(jiti@2.6.1)(jsdom@29.0.2(@noble/hashes@2.2.0))(lightningcss@1.32.0)(tsx@4.21.0)(yaml@2.8.3)
+        version: 4.1.5(@types/node@25.6.0)(@vitest/coverage-v8@4.1.7)(jiti@2.6.1)(jsdom@29.0.2(@noble/hashes@2.2.0))(lightningcss@1.32.0)(tsx@4.21.0)(yaml@2.8.3)
 
   artifacts/feeder-scanner:
     dependencies:
@@ -384,7 +387,7 @@ importers:
         version: 7.3.6(@types/node@25.6.0)(jiti@2.6.1)(lightningcss@1.32.0)(tsx@4.21.0)(yaml@2.8.3)
       vitest:
         specifier: ^4.1.5
-        version: 4.1.5(@types/node@25.6.0)(jiti@2.6.1)(jsdom@29.0.2(@noble/hashes@2.2.0))(lightningcss@1.32.0)(tsx@4.21.0)(yaml@2.8.3)
+        version: 4.1.5(@types/node@25.6.0)(@vitest/coverage-v8@4.1.7)(jiti@2.6.1)(jsdom@29.0.2(@noble/hashes@2.2.0))(lightningcss@1.32.0)(tsx@4.21.0)(yaml@2.8.3)
       wouter:
         specifier: ^3.3.5
         version: 3.9.0(react@19.1.0)
@@ -702,6 +705,9 @@ importers:
       drizzle-kit:
         specifier: ^0.31.9
         version: 0.31.10
+      tsx:
+        specifier: 'catalog:'
+        version: 4.21.0
 
   scripts:
     dependencies:
@@ -9745,7 +9751,7 @@ snapshots:
       obug: 2.1.1
       std-env: 4.1.0
       tinyrainbow: 3.1.0
-      vitest: 4.1.5(@types/node@20.19.39)(@vitest/coverage-v8@4.1.7)(jiti@2.6.1)(jsdom@29.0.2(@noble/hashes@2.2.0))(lightningcss@1.32.0)(tsx@4.21.0)(yaml@2.8.3)
+      vitest: 4.1.5(@types/node@25.6.0)(@vitest/coverage-v8@4.1.7)(jiti@2.6.1)(jsdom@29.0.2(@noble/hashes@2.2.0))(lightningcss@1.32.0)(tsx@4.21.0)(yaml@2.8.3)
 
   '@vitest/expect@4.1.5':
     dependencies:
@@ -12181,13 +12187,13 @@ snapshots:
 
   magicast@0.5.3:
     dependencies:
-      '@babel/parser': 7.29.7
-      '@babel/types': 7.29.0
+      '@babel/parser': 7.29.8
+      '@babel/types': 7.29.8
       source-map-js: 1.2.1
 
   make-dir@4.0.0:
     dependencies:
-      semver: 7.7.4
+      semver: 7.8.5
 
   markdown-it@14.3.0:
     dependencies:
@@ -13174,8 +13180,7 @@ snapshots:
 
   semver@7.7.4: {}
 
-  semver@7.8.5:
-    optional: true
+  semver@7.8.5: {}
 
   send@1.2.1:
     dependencies:
@@ -13915,7 +13920,7 @@ snapshots:
       - tsx
       - yaml
 
-  vitest@4.1.5(@types/node@25.6.0)(jiti@2.6.1)(jsdom@29.0.2(@noble/hashes@2.2.0))(lightningcss@1.32.0)(tsx@4.21.0)(yaml@2.8.3):
+  vitest@4.1.5(@types/node@25.6.0)(@vitest/coverage-v8@4.1.7)(jiti@2.6.1)(jsdom@29.0.2(@noble/hashes@2.2.0))(lightningcss@1.32.0)(tsx@4.21.0)(yaml@2.8.3):
     dependencies:
       '@vitest/expect': 4.1.5
       '@vitest/mocker': 4.1.5(vite@7.3.6(@types/node@25.6.0)(jiti@2.6.1)(lightningcss@1.32.0)(tsx@4.21.0)(yaml@2.8.3))
@@ -13939,6 +13944,7 @@ snapshots:
       why-is-node-running: 2.3.0
     optionalDependencies:
       '@types/node': 25.6.0
+      '@vitest/coverage-v8': 4.1.7(vitest@4.1.5)
       jsdom: 29.0.2(@noble/hashes@2.2.0)
     transitivePeerDependencies:
       - jiti
