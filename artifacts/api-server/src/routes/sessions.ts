@@ -7,7 +7,9 @@ import { z } from "zod";
 import { attachActor, requireRole, requireAuth, type AuthRequest } from "../middleware/auth";
 import { scanLimiter } from "../middleware/rateLimiters";
 import { auditLog } from "../lib/auditLogger";
+import { pushNotification } from "../lib/notify";
 import { isUniqueViolation } from "../lib/dbErrors";
+import { formatSmtSessionId } from "../lib/session-id";
 import { TimestampService } from "../services/timestamp-service";
 import PDFDocument from "pdfkit";
 import fs from "node:fs";
@@ -1118,18 +1120,94 @@ router.patch("/sessions/:sessionId/mode", requireRole("operator", "qa", "supervi
   }
 });
 
+// Operator explicitly submits a completed loading verification for QA quality
+// confirmation. Idempotent: moves an active session to pending_qa (or leaves an
+// already-pending one unchanged) and fires a cross-dashboard notification so QA
+// sees it on their queue. QA then confirms from their own dashboard.
+router.post("/sessions/:sessionId/submit-qa", requireRole("operator", "qa", "supervisor", "admin"), async (req: AuthRequest, res) => {
+  try {
+    const sessionId = Number(req.params.sessionId);
+    if (!Number.isFinite(sessionId)) {
+      res.status(400).json({ error: "Invalid sessionId" });
+      return;
+    }
+
+    const [session] = await db.select().from(sessionsTable).where(eq(sessionsTable.id, sessionId));
+    if (!session) {
+      res.status(404).json({ error: "Session not found" });
+      return;
+    }
+
+    if (session.status !== "active" && session.status !== "pending_qa") {
+      res.status(409).json({ error: "Session is not awaiting QA submission", status: session.status });
+      return;
+    }
+
+    if (session.status === "active") {
+      await db.update(sessionsTable).set({ status: "pending_qa" }).where(eq(sessionsTable.id, sessionId));
+    }
+
+    await pushNotification({
+      type: "warning",
+      message: `Session #${sessionId} — loading complete, awaiting QA quality confirmation`,
+      detail: [session.panelName, session.operatorName].filter(Boolean).join(" · ") || undefined,
+      entityId: String(sessionId),
+      createdBy: req.actor?.name,
+    });
+
+    res.json({ sessionId, status: "pending_qa" });
+  } catch (err) {
+    req.log.error(err);
+    res.status(500).json({ error: "Failed to submit for QA" });
+  }
+});
+
+// Operator submits the completed splicing (spool replacements) for QA 200%
+// reverification. Mirrors submit-qa but for the splicing phase: the session has
+// already passed loading QA (status qa_confirmed) and now must be QA-verified
+// again before the changeover can be closed. Moves qa_confirmed → splicing_pending_qa
+// and notifies QA. Idempotent if already splicing_pending_qa.
+router.post("/sessions/:sessionId/submit-splicing-qa", requireRole("operator", "qa", "supervisor", "admin"), async (req: AuthRequest, res) => {
+  try {
+    const sessionId = Number(req.params.sessionId);
+    if (!Number.isFinite(sessionId)) {
+      res.status(400).json({ error: "Invalid sessionId" });
+      return;
+    }
+
+    const [session] = await db.select().from(sessionsTable).where(eq(sessionsTable.id, sessionId));
+    if (!session) {
+      res.status(404).json({ error: "Session not found" });
+      return;
+    }
+
+    if (session.status !== "qa_confirmed" && session.status !== "splicing_pending_qa") {
+      res.status(409).json({ error: "Session is not ready for splicing QA submission", status: session.status });
+      return;
+    }
+
+    if (session.status === "qa_confirmed") {
+      await db.update(sessionsTable).set({ status: "splicing_pending_qa" }).where(eq(sessionsTable.id, sessionId));
+    }
+
+    await pushNotification({
+      type: "warning",
+      message: `Session #${sessionId} — splicing complete, awaiting QA 200% verification`,
+      detail: [session.panelName, session.operatorName].filter(Boolean).join(" · ") || undefined,
+      entityId: String(sessionId),
+      createdBy: req.actor?.name,
+    });
+
+    res.json({ sessionId, status: "splicing_pending_qa" });
+  } catch (err) {
+    req.log.error(err);
+    res.status(500).json({ error: "Failed to submit splicing for QA" });
+  }
+});
+
 // Utility function for case normalization
 function normalizeInput(input?: string | null): string | undefined {
   return input ? input.trim().toUpperCase() : undefined;
-}
-
-function formatSmtSessionId(sourceDate: Date | string | null | undefined, sequence: number): string {
-  const date = sourceDate ? new Date(sourceDate) : new Date();
-  const y = date.getFullYear();
-  const m = String(date.getMonth() + 1).padStart(2, "0");
-  const d = String(date.getDate()).padStart(2, "0");
-  const seq = String(sequence).padStart(6, "0");
-  return `SMT_${y}${m}${d}_${seq}`;
 }
 
 // TRD §5.4 — validate the scan body at route entry. Mirrors the real client

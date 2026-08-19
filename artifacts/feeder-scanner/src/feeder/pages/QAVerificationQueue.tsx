@@ -47,6 +47,7 @@ function StatusBadge({ status, discrepancyFound }: { status: string; discrepancy
   const map: Record<string, { label: string; className: string }> = {
     pending_qa: { label: "Pending QA", className: "bg-amber-100 text-amber-800 dark:bg-amber-900/30 dark:text-amber-300" },
     qa_in_review: { label: "QA In Review", className: "bg-purple-100 text-purple-800 dark:bg-purple-900/30 dark:text-purple-300" },
+    splicing_pending_qa: { label: "Splicing QA (200%)", className: "bg-orange-100 text-orange-800 dark:bg-orange-900/30 dark:text-orange-300" },
     qa_confirmed: { label: discrepancyFound ? "QA Confirmed (Disc.)" : "QA Confirmed", className: "bg-green-100 text-green-800 dark:bg-green-900/30 dark:text-green-300" },
     incomplete: { label: "Incomplete", className: "bg-yellow-100 text-yellow-800 dark:bg-yellow-900/30 dark:text-yellow-300" },
   };
@@ -98,7 +99,7 @@ export default function QAVerificationQueue() {
   });
 
   const pendingSessions = filtered.filter(
-    (s) => s.status === "pending_qa" || s.status === "qa_in_review",
+    (s) => s.status === "pending_qa" || s.status === "qa_in_review" || s.status === "splicing_pending_qa",
   );
   const completedSessions = filtered.filter((s) => s.status === "qa_confirmed");
 

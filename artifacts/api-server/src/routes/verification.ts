@@ -17,7 +17,9 @@ import { and, desc, eq, inArray, isNull, sql, or, gt, lt, lte } from "drizzle-or
 import { usersTable } from "@workspace/db/schema";
 import { getSessionProgress, verifyFeederScan } from "../services/verificationService";
 import ScanValidationPipeline from "../services/scan-validation-pipeline";
+import { pushNotification } from "../lib/notify";
 import { generateSessionId } from "../lib/generateSessionId";
+import { formatSmtSessionId } from "../lib/session-id";
 import { parsePagination, paginate } from "../lib/pagination";
 import { isUniqueViolation } from "../lib/dbErrors";
 import {
@@ -336,7 +338,7 @@ router.get("/verification/sessions/active", requireAuth, async (req: AuthRequest
       changeoverConditions.push(eq(changeoverSessionsTable.operatorId, actor.id));
     }
 
-    const changeoverSessions = await changeoverQuery
+    const changeoverPromise = changeoverQuery
       .where(and(...changeoverConditions))
       .orderBy(desc(changeoverSessionsTable.startedAt))
       .limit(100);
@@ -348,7 +350,7 @@ router.get("/verification/sessions/active", requireAuth, async (req: AuthRequest
       startedAt: Date | null; bomName: string | null;
     }[] = [];
 
-    const legacy = await db
+    const legacyPromise = db
       .select({
         id: sessionsTable.id,
         bomId: sessionsTable.bomId,
@@ -365,6 +367,9 @@ router.get("/verification/sessions/active", requireAuth, async (req: AuthRequest
         isNull(sessionsTable.deletedAt),
       ))
       .orderBy(desc(sessionsTable.startTime));
+
+    // Both queries are independent — resolve them concurrently.
+    const [changeoverSessions, legacy] = await Promise.all([changeoverPromise, legacyPromise]);
 
     legacySessions = legacy.map((s) => ({
       id: String(s.id),
@@ -1053,6 +1058,9 @@ router.get(
     try {
       const pg = parsePagination(req);
       const qaStatuses = ["pending_qa", "qa_in_review", "qa_confirmed"] as const;
+      // Legacy sessions add splicing_pending_qa: the splicing-phase 200% review,
+      // which re-enters the queue after loading QA (qa_confirmed) is done.
+      const legacyQaStatuses = ["pending_qa", "qa_in_review", "qa_confirmed", "splicing_pending_qa"] as const;
 
       // Count totals for pagination metadata
       const [{ totalCo }] = await db
@@ -1064,7 +1072,7 @@ router.get(
         .select({ totalLegacy: sql<number>`count(*)::int` })
         .from(sessionsTable)
         .where(and(
-          inArray(sessionsTable.status, ["pending_qa", "qa_in_review", "qa_confirmed"]),
+          inArray(sessionsTable.status, [...legacyQaStatuses]),
           isNull(sessionsTable.deletedAt),
         ));
 
@@ -1121,7 +1129,7 @@ router.get(
         .leftJoin(bomsTable, eq(sessionsTable.bomId, bomsTable.id))
         .where(
           and(
-            inArray(sessionsTable.status, ["pending_qa", "qa_in_review", "qa_confirmed"]),
+            inArray(sessionsTable.status, [...legacyQaStatuses]),
             isNull(sessionsTable.deletedAt),
           ),
         )
@@ -1141,6 +1149,10 @@ router.get(
       const legacyTotalMap = new Map<number, number>();
       const spliceTotalMap = new Map<string, number>();
       const spliceUnverifiedMap = new Map<string, number>();
+      // Legacy splices are keyed by the derived changeover_id (SMT_YYYYMMDD_seq),
+      // not the numeric session id — so track counts per numeric id separately.
+      const legacySpliceTotalMap = new Map<number, number>();
+      const legacySpliceUnverifiedMap = new Map<number, number>();
 
       if (changeoverIds.length > 0) {
         // Bulk-fetch total scan counts for ALL changeover sessions in one query
@@ -1224,11 +1236,57 @@ router.get(
         for (const row of legacyCountRows) {
           legacyTotalMap.set(row.sessionId, row.count);
         }
+
+        // Legacy splice counts: derive each session's changeover_id, query
+        // splice_records by that string, then fold back onto the numeric id.
+        const changeoverIdToLegacyId = new Map<string, number>();
+        for (const s of legacySessions) {
+          if (!/^\d+$/.test(String(s.id))) continue;
+          const numId = Number(s.id);
+          changeoverIdToLegacyId.set(formatSmtSessionId(s.startedAt, numId), numId);
+        }
+        const legacyChangeoverIds = [...changeoverIdToLegacyId.keys()];
+        if (legacyChangeoverIds.length > 0) {
+          const legacySpliceTotalRows = await db
+            .select({
+              changeoverId: spliceRecordsTable.changeoverId,
+              count: sql<number>`count(*)::int`,
+            })
+            .from(spliceRecordsTable)
+            .where(inArray(spliceRecordsTable.changeoverId, legacyChangeoverIds))
+            .groupBy(spliceRecordsTable.changeoverId);
+          for (const row of legacySpliceTotalRows) {
+            const numId = changeoverIdToLegacyId.get(row.changeoverId);
+            if (numId !== undefined) legacySpliceTotalMap.set(numId, row.count);
+          }
+
+          const legacySpliceUnverifiedRows = await db
+            .select({
+              changeoverId: spliceRecordsTable.changeoverId,
+              count: sql<number>`count(*)::int`,
+            })
+            .from(spliceRecordsTable)
+            .where(
+              and(
+                inArray(spliceRecordsTable.changeoverId, legacyChangeoverIds),
+                or(
+                  isNull(spliceRecordsTable.qaResult),
+                  eq(spliceRecordsTable.qaResult, "pending"),
+                ),
+              ),
+            )
+            .groupBy(spliceRecordsTable.changeoverId);
+          for (const row of legacySpliceUnverifiedRows) {
+            const numId = changeoverIdToLegacyId.get(row.changeoverId);
+            if (numId !== undefined) legacySpliceUnverifiedMap.set(numId, row.count);
+          }
+        }
       }
 
       // Status sort rank
       const statusRank: Record<string, number> = {
         pending_qa: 0,
+        splicing_pending_qa: 0,
         qa_in_review: 1,
         qa_confirmed: 2,
         incomplete: 3,
@@ -1242,13 +1300,15 @@ router.get(
         let pendingQa = 0;
         if (isLegacy) {
           totalScans = legacyTotalMap.get(Number(sid)) ?? 0;
-          pendingQa = s.status === "qa_confirmed" ? 0 : totalScans;
+          // Loading feeders are already QA-confirmed once past qa_confirmed /
+          // splicing_pending_qa — the outstanding work there is splice review.
+          pendingQa = (s.status === "qa_confirmed" || s.status === "splicing_pending_qa") ? 0 : totalScans;
         } else {
           totalScans = totalScanMap.get(sid) ?? 0;
           pendingQa = pendingQaMap.get(sid) ?? 0;
         }
-        const spliceCount = isLegacy ? 0 : spliceTotalMap.get(sid) ?? 0;
-        const unverifiedSplices = isLegacy ? 0 : spliceUnverifiedMap.get(sid) ?? 0;
+        const spliceCount = isLegacy ? legacySpliceTotalMap.get(Number(sid)) ?? 0 : spliceTotalMap.get(sid) ?? 0;
+        const unverifiedSplices = isLegacy ? legacySpliceUnverifiedMap.get(Number(sid)) ?? 0 : spliceUnverifiedMap.get(sid) ?? 0;
         return {
           ...s,
           totalScans,
@@ -1355,7 +1415,38 @@ router.get(
           .orderBy(scanRecordsTable.feederNumber);
 
         scans = rawScans;
-        splices = [];
+
+        // Legacy splices are keyed by the derived changeover id (same
+        // derivation the sessions router uses when writing them), so QA can
+        // reverify them for the 200% splicing checkpoint.
+        const legacyChangeoverId = formatSmtSessionId(legacySession.startedAt, numericId);
+        splices = await db
+          .select({
+            id: spliceRecordsTable.id,
+            changeoverId: spliceRecordsTable.changeoverId,
+            feederNumber: spliceRecordsTable.feederNumber,
+            lineItemId: spliceRecordsTable.lineItemId,
+            oldSpoolMpn: spliceRecordsTable.oldSpoolMpn,
+            oldSpoolLot: spliceRecordsTable.oldSpoolLot,
+            newSpoolMpn: spliceRecordsTable.newSpoolMpn,
+            newSpoolLot: spliceRecordsTable.newSpoolLot,
+            splicedBy: spliceRecordsTable.splicedBy,
+            splicedAt: spliceRecordsTable.splicedAt,
+            oldSpoolLotCode: spliceRecordsTable.oldSpoolLotCode,
+            newSpoolLotCode: spliceRecordsTable.newSpoolLotCode,
+            oldSpoolMatchedField: spliceRecordsTable.oldSpoolMatchedField,
+            newSpoolMatchedField: spliceRecordsTable.newSpoolMatchedField,
+            allocationVerified: spliceRecordsTable.allocationVerified,
+            oldSpoolPayload: spliceRecordsTable.oldSpoolPayload,
+            newSpoolPayload: spliceRecordsTable.newSpoolPayload,
+            validationWarnings: spliceRecordsTable.validationWarnings,
+            durationSeconds: spliceRecordsTable.durationSeconds,
+            qaVerifiedById: spliceRecordsTable.qaVerifiedById,
+            qaVerifiedAt: spliceRecordsTable.qaVerifiedAt,
+            qaResult: spliceRecordsTable.qaResult,
+          })
+          .from(spliceRecordsTable)
+          .where(eq(spliceRecordsTable.changeoverId, legacyChangeoverId));
       } else {
         const [coSession] = await db
           .select({
@@ -1710,6 +1801,13 @@ router.post(
           });
         });
 
+        await pushNotification({
+          type: "success",
+          message: `Session #${sessionId} — QA verified, proceed to splicing`,
+          entityId: sessionId,
+          createdBy: actor.name,
+        });
+
         res.json({ success: true, message: "All feeders manually confirmed" });
         return;
       }
@@ -1794,6 +1892,13 @@ router.post(
           newValue: JSON.stringify({ sessionId, verifiedBy: actor.id, feederCount: updatedCount }),
           description: `QA manual confirmation by ${actor.name} on session ${sessionId} — ${updatedCount} feeder(s) confirmed`,
         });
+      });
+
+      await pushNotification({
+        type: "success",
+        message: `Session ${sessionId} — QA verified, proceed to splicing`,
+        entityId: sessionId,
+        createdBy: actor.name,
       });
 
       res.json({ success: true, message: "All feeders manually confirmed" });
@@ -2056,12 +2161,51 @@ router.post(
           .select({
             id: sessionsTable.id,
             status: sessionsTable.status,
+            startedAt: sessionsTable.startTime,
           })
           .from(sessionsTable)
           .where(and(eq(sessionsTable.id, numericId), isNull(sessionsTable.deletedAt)));
 
         if (!session) {
           res.status(404).json({ error: "Session not found" });
+          return;
+        }
+
+        // Splicing 200% checkpoint: when the operator has submitted splicing for
+        // QA, "Complete QA Review" closes the changeover instead of re-confirming
+        // loading. Every splice must be approved/rejected first.
+        if (String(session.status) === "splicing_pending_qa") {
+          const changeoverId = formatSmtSessionId(session.startedAt, numericId);
+          const unverifiedSplices = await countUnverifiedSplices(changeoverId);
+          if (unverifiedSplices > 0) {
+            rejectUnverifiedSplices(res, unverifiedSplices);
+            return;
+          }
+
+          await db.transaction(async (tx) => {
+            await tx
+              .update(sessionsTable)
+              .set({ status: "completed", qaName: actor.name })
+              .where(eq(sessionsTable.id, numericId));
+
+            await tx.insert(auditLogsTable).values({
+              entityType: "session",
+              entityId: sessionId,
+              action: "splicing_qa_complete",
+              changedBy: actor.id,
+              newValue: JSON.stringify({ sessionId, qaVerifiedBy: actor.id }),
+              description: `Splicing QA verified by ${actor.name}; changeover ${sessionId} closed`,
+            });
+          });
+
+          await pushNotification({
+            type: "success",
+            message: `Session #${sessionId} — splicing QA verified, changeover closed`,
+            entityId: sessionId,
+            createdBy: actor.name,
+          });
+
+          res.json({ success: true, status: "completed", discrepancyFound: false });
           return;
         }
 

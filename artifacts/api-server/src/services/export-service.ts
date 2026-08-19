@@ -253,8 +253,8 @@ export class ExportService {
         reportId,
         userId,
         format,
-        ipAddress: hashedIpAddress,
-        userAgent: hashedUserAgent,
+        ipAddressHash: hashedIpAddress,
+        userAgentHash: hashedUserAgent,
       });
     } catch (error) {
       logger.error({ err: error }, "Failed to record export");

@@ -10,9 +10,12 @@ router.use(attachActor);
 
 router.get("/analytics/overview", requireRole("qa", "supervisor", "admin"), async (req: AuthRequest, res) => {
   try {
-    const sessions = await db.select().from(sessionsTable);
-    const scans = await db.select().from(scanRecordsTable);
-    const boms = await db.select().from(bomsTable);
+    // Independent reads — run concurrently instead of three serial round-trips.
+    const [sessions, scans, boms] = await Promise.all([
+      db.select().from(sessionsTable),
+      db.select().from(scanRecordsTable),
+      db.select().from(bomsTable),
+    ]);
 
     const totalSessions = sessions.length;
     const activeSessions = sessions.filter((s) => s.status === "active").length;
@@ -119,12 +122,14 @@ router.get("/analytics/trends", requireRole("qa", "supervisor", "admin"), async 
     const thirtyDaysAgo = new Date();
     thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
 
-    const sessions = await db
-      .select()
-      .from(sessionsTable)
-      .where(gte(sessionsTable.startTime, thirtyDaysAgo));
-
-    const scans = await db.select().from(scanRecordsTable);
+    // Independent reads — run concurrently instead of two serial round-trips.
+    const [sessions, scans] = await Promise.all([
+      db
+        .select()
+        .from(sessionsTable)
+        .where(gte(sessionsTable.startTime, thirtyDaysAgo)),
+      db.select().from(scanRecordsTable),
+    ]);
 
     // Group sessions by date
     const dateMap = new Map<

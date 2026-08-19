@@ -2,6 +2,7 @@ import {
   pgTable,
   serial,
   text,
+  varchar,
   timestamp,
   integer,
   jsonb,
@@ -48,8 +49,12 @@ export const reportExportsTable = pgTable(
     userId: text("user_id").notNull(), // User who downloaded/exported
     format: text("format").notNull(), // pdf, xlsx, csv
     downloadedAt: timestamp("downloaded_at").defaultNow().notNull(),
-    ipAddress: text("ip_address"), // For audit trail
-    userAgent: text("user_agent"), // Browser/client info
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+    // PII hashed at rest (bcrypt, 60 chars) — column names/types must match the
+    // migrated table, else `select()` emits SQL for non-existent columns → 500.
+    ipAddressHash: varchar("ip_address_hash", { length: 64 }), // hashed IP for audit trail
+    userAgentHash: varchar("user_agent_hash", { length: 64 }), // hashed client info
+    purgeAfter: timestamp("purge_after", { withTimezone: true }), // retention cutoff (DB default now()+90d)
   },
   (table) => [
     index("idx_report_exports_report_id").on(table.reportId),

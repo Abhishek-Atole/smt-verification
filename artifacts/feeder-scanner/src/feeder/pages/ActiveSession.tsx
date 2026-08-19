@@ -197,7 +197,17 @@ export default function SessionActive() {
   );
 
   const { data: session, isLoading: sessionLoading } = useGetSession(sessionId, {
-    query: { enabled: isValidSessionId, queryKey: getGetSessionQueryKey(sessionId) },
+    query: {
+      enabled: isValidSessionId,
+      queryKey: getGetSessionQueryKey(sessionId),
+      // Poll while the session is awaiting QA so the operator's screen reacts
+      // the moment QA confirms — for loading (status → qa_confirmed, auto-redirect
+      // to splicing) and for splicing (status → completed, auto-redirect to report).
+      refetchInterval: (query) => {
+        const s = String((query.state.data as { status?: string } | undefined)?.status ?? "");
+        return s === "pending_qa" || s === "qa_in_review" || s === "splicing_pending_qa" ? 5000 : false;
+      },
+    },
   });
   const bomId = session?.bomId;
   const { data: bomDetail, isLoading: bomLoading } = useGetBom(bomId!, {
@@ -342,9 +352,12 @@ export default function SessionActive() {
   const tabFromUrl = searchParams.get("tab");
   const activeTab: "loading" | "splicing" = tabFromUrl === "splicing" ? "splicing" : "loading";
 
-  // A session is splice-eligible after operator start OR after QA confirmation.
-  const isSpliceEligible =
-    String(session?.status) === "active" || String(session?.status) === "qa_confirmed";
+  // Splicing is unlocked only after QA has verified the changeover. Until then
+  // the operator completes loading and hands off for QA quality confirmation.
+  const isSpliceEligible = String(session?.status) === "qa_confirmed";
+  // Once the operator submits splicing for QA the session enters the 200%
+  // splicing checkpoint — splicing stays visible (read-only) while QA reviews.
+  const isSplicingPendingQa = String(session?.status) === "splicing_pending_qa";
 
   const setActiveTab = (tab: "loading" | "splicing") => {
     setSearchParams(
@@ -365,6 +378,11 @@ export default function SessionActive() {
 
   const [elapsed, setElapsed] = useState(0);
   const [showCompletionOverlay, setShowCompletionOverlay] = useState(false);
+  const [submittingQa, setSubmittingQa] = useState(false);
+  const [qaNotified, setQaNotified] = useState(false);
+  const qaConfirmedRedirectedRef = useRef(false);
+  const [submittingSplicingQa, setSubmittingSplicingQa] = useState(false);
+  const splicingCompletedRedirectedRef = useRef(false);
   const [showResetDialog, setShowResetDialog] = useState(false);
   const [lastScanResult, setLastScanResult] = useState<{
     status: "ok" | "reject" | "splice";
@@ -1183,8 +1201,9 @@ export default function SessionActive() {
   const allRequiredFeedersVerified = verificationProgress.isComplete;
 
   useEffect(() => {
+    const s = String(session?.status);
     if (
-      session?.status === "active" &&
+      (s === "active" || s === "pending_qa") &&
       allRequiredFeedersVerified &&
       !wasAllRequiredVerifiedRef.current
     ) {
@@ -1193,6 +1212,71 @@ export default function SessionActive() {
 
     wasAllRequiredVerifiedRef.current = allRequiredFeedersVerified;
   }, [allRequiredFeedersVerified, session?.status]);
+
+  // Operator confirms the completed loading and hands off to QA: sets pending_qa
+  // and fires a cross-dashboard notification so QA sees it on their queue.
+  const handleSubmitForQa = async () => {
+    setSubmittingQa(true);
+    try {
+      const res = await fetch(`/api/sessions/${sessionId}/submit-qa`, {
+        method: "POST",
+        credentials: "include",
+      });
+      if (!res.ok) {
+        throw new Error("submit failed");
+      }
+      await queryClient.invalidateQueries({ queryKey: getGetSessionQueryKey(sessionId) });
+      setQaNotified(true);
+      showSuccessAlert("Loading confirmed — QA has been notified");
+    } catch {
+      showErrorAlert("Failed to notify QA. Please try again.", "high");
+    } finally {
+      setSubmittingQa(false);
+    }
+  };
+
+  // Operator finishes splicing and submits it for the QA 200% verification.
+  // The changeover cannot be closed until QA reviews every splice — QA closes it.
+  const handleSubmitSplicingQa = async () => {
+    if (!confirm("Submit splicing for QA 200% verification? QA must approve every splice before the changeover can close.")) return;
+    setSubmittingSplicingQa(true);
+    try {
+      const res = await fetch(`/api/sessions/${sessionId}/submit-splicing-qa`, {
+        method: "POST",
+        credentials: "include",
+      });
+      if (!res.ok) {
+        throw new Error("submit failed");
+      }
+      await queryClient.invalidateQueries({ queryKey: getGetSessionQueryKey(sessionId) });
+      showSuccessAlert("Splicing submitted — awaiting QA 200% verification");
+    } catch {
+      showErrorAlert("Failed to submit splicing for QA. Please try again.", "high");
+    } finally {
+      setSubmittingSplicingQa(false);
+    }
+  };
+
+  // Once QA confirms (status → qa_confirmed), auto-redirect the operator straight
+  // into splicing. Runs once per confirmation via the ref guard.
+  useEffect(() => {
+    if (String(session?.status) === "qa_confirmed" && !qaConfirmedRedirectedRef.current) {
+      qaConfirmedRedirectedRef.current = true;
+      setShowCompletionOverlay(false);
+      setActiveTab("splicing");
+      showSuccessAlert("QA verified the changeover — proceeding to splicing");
+    }
+  }, [session?.status]);
+
+  // When QA verifies splicing and closes the changeover (status → completed from
+  // the splicing checkpoint), auto-redirect the operator to the report.
+  useEffect(() => {
+    if (String(session?.status) === "completed" && !splicingCompletedRedirectedRef.current) {
+      splicingCompletedRedirectedRef.current = true;
+      showSuccessAlert("QA verified the splicing — changeover closed");
+      setLocation(`/session/${sessionId}/report`);
+    }
+  }, [session?.status]);
 
   if (sessionLoading || (session?.bomId && bomLoading) || !session) {
     return <div className="flex-1 flex items-center justify-center"><Loader2 className="w-8 h-8 animate-spin" /></div>;
@@ -1448,7 +1532,7 @@ export default function SessionActive() {
         </header>
 
         {/* Tab Navigation */}
-        {isSpliceEligible && (
+        {(isSpliceEligible || isSplicingPendingQa) && (
           <div className="bg-card border-b border-border flex gap-1 p-2 sm:p-3 shrink-0 shadow-sm">
             <Button
               type="button"
@@ -1804,8 +1888,40 @@ export default function SessionActive() {
           )}
 
           {/* SPLICING SECTION - Shows when activeTab === "splicing" and all feeders verified */}
-          {isSpliceEligible && activeTab === "splicing" && (
-            <SplicingPage />
+          {(isSpliceEligible || isSplicingPendingQa) && activeTab === "splicing" && (
+            <div className="flex flex-col">
+              <SplicingPage />
+
+              {/* 200% QA checkpoint: operator submits splicing for QA, then QA
+                  reviews every splice and closes the changeover. */}
+              {isSpliceEligible && splicingRecords.length > 0 && (
+                <div className="border-t border-border bg-card p-4 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+                  <div className="text-sm text-muted-foreground">
+                    <span className="font-bold text-foreground">{splicingRecords.length}</span> splice(s) recorded.
+                    Submit for the QA 200% verification to close the changeover.
+                  </div>
+                  <Button
+                    variant="destructive"
+                    className="font-bold tracking-widest"
+                    disabled={submittingSplicingQa}
+                    onClick={handleSubmitSplicingQa}
+                  >
+                    {submittingSplicingQa && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+                    SUBMIT SPLICING FOR QA
+                  </Button>
+                </div>
+              )}
+
+              {isSplicingPendingQa && (
+                <div className="border-t border-border bg-amber-50 dark:bg-amber-900/20 p-4 flex items-center gap-3">
+                  <Loader2 className="w-5 h-5 animate-spin text-amber-600 dark:text-amber-400 shrink-0" />
+                  <div className="text-sm text-amber-800 dark:text-amber-300">
+                    <div className="font-bold">Splicing submitted — awaiting QA 200% verification.</div>
+                    <div className="text-xs mt-0.5">QA must approve every splice before the changeover closes. This screen will advance to the report automatically.</div>
+                  </div>
+                </div>
+              )}
+            </div>
           )}
           </div>
           {/* End of left column */}
@@ -1971,7 +2087,7 @@ export default function SessionActive() {
         }}
       />
 
-      {showCompletionOverlay && session.status === "active" && (
+      {showCompletionOverlay && (String(session.status) === "active" || String(session.status) === "pending_qa") && (
         <div className="fixed inset-0 z-[10000] bg-black/70 backdrop-blur-sm flex items-center justify-center p-4">
           <div className="w-full max-w-2xl rounded-xl border border-amber-400/50 bg-card p-8 sm:p-10 shadow-2xl text-center">
             <div className="mx-auto mb-4 flex h-16 w-16 items-center justify-center rounded-full bg-amber-100 dark:bg-amber-900/40">
@@ -1983,27 +2099,39 @@ export default function SessionActive() {
             <p className="mt-3 text-sm sm:text-base text-muted-foreground">
               {requiredFeedsVerifiedCount} / {totalRequiredFeeders} feeders verified.
             </p>
-            <div className="mx-auto mt-6 max-w-md rounded-lg border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900 dark:border-amber-800 dark:bg-amber-950/30 dark:text-amber-200">
-              <div className="font-bold text-base">QA / Supervisor Verification Required</div>
-              <p className="mt-2 leading-relaxed">
-                All feeders have been scanned. Please notify a <strong>QA</strong> or <strong>Supervisor</strong> to review and verify the changeover before proceeding to splicing or closing the session.
-              </p>
-            </div>
+            {qaNotified ? (
+              <div className="mx-auto mt-6 max-w-md rounded-lg border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900 dark:border-amber-800 dark:bg-amber-950/30 dark:text-amber-200">
+                <div className="flex items-center justify-center gap-2 font-bold text-base">
+                  <Loader2 className="h-4 w-4 animate-spin" /> Awaiting QA Confirmation
+                </div>
+                <p className="mt-2 leading-relaxed">
+                  QA has been notified. Once they verify the changeover from their dashboard, you'll be moved to <strong>splicing</strong> automatically.
+                </p>
+              </div>
+            ) : (
+              <div className="mx-auto mt-6 max-w-md rounded-lg border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900 dark:border-amber-800 dark:bg-amber-950/30 dark:text-amber-200">
+                <div className="font-bold text-base">Confirm Loading Quality</div>
+                <p className="mt-2 leading-relaxed">
+                  All feeders have been scanned. Confirm the loading to send it for <strong>QA</strong> quality verification — QA will be notified and you'll continue to splicing once they verify.
+                </p>
+              </div>
+            )}
             <div className="mt-6 flex flex-col sm:flex-row gap-2 sm:gap-3 justify-center">
-              <Button
-                className="font-semibold"
-                onClick={() => {
-                  setActiveTab("splicing");
-                  setShowCompletionOverlay(false);
-                }}
-              >
-                Go To Splicing
-              </Button>
+              {!qaNotified && (
+                <Button
+                  className="font-semibold"
+                  disabled={submittingQa}
+                  onClick={handleSubmitForQa}
+                >
+                  {submittingQa && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+                  Confirm Loading &amp; Notify QA
+                </Button>
+              )}
               <Button
                 variant="outline"
                 onClick={() => setShowCompletionOverlay(false)}
               >
-                Dismiss
+                Close
               </Button>
             </div>
           </div>

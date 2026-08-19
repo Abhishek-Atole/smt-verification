@@ -303,6 +303,11 @@ export default function QAVerificationDetail() {
               <h1 className="text-xl sm:text-2xl font-mono font-bold tracking-tight text-foreground">
                 QA REVIEW: {session.id}
               </h1>
+              {session.status === "splicing_pending_qa" && (
+                <Badge className="mt-1 font-mono text-[10px] bg-orange-100 text-orange-800 dark:bg-orange-900/30 dark:text-orange-300 border-0">
+                  SPLICING QA (200%) — approve every splice, then Complete QA Review to close the changeover
+                </Badge>
+              )}
               <p className="text-xs text-muted-foreground font-mono mt-0.5">
                 {session.bomName ?? `BOM #${session.bomId}`} &mdash; Operator: {session.operatorName ?? session.operatorId.slice(0, 8)}
                 &nbsp;&middot;&nbsp;Started {format(new Date(session.startedAt), "MMM d, HH:mm")}
@@ -493,7 +498,7 @@ export default function QAVerificationDetail() {
         )}
 
         {/* Bottom actions for completed review */}
-        {session.status === "qa_confirmed" && (
+        {(session.status === "qa_confirmed" || session.status === "completed") && (
           <div className="flex gap-3 mt-2">
             <Button variant="outline" onClick={() => setLocation("/feeder/qa-queue")} className="font-mono text-xs rounded-sm">
               Back to Queue
