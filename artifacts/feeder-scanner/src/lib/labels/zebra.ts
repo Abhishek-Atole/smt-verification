@@ -3,10 +3,13 @@
 // best-effort: if the service isn't installed/running, detectZebra() resolves to
 // null and the UI simply hides the "Send to Zebra" option.
 //
-// BrowserPrint listens on http://localhost:9100 (and https on 9101). We use the
-// plain HTTP endpoint, which the service enables for local web apps.
-
-const BASE = "http://localhost:9100";
+// BrowserPrint listens on http://localhost:9100 (and https on 9101). A page served
+// over HTTPS cannot call the plain-HTTP endpoint (mixed content is blocked), so we
+// pick the matching scheme/port from the current page protocol.
+const BASE =
+  typeof window !== "undefined" && window.location.protocol === "https:"
+    ? "https://localhost:9101"
+    : "http://localhost:9100";
 
 export interface ZebraDevice {
   uid: string;

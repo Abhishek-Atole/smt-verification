@@ -63,11 +63,36 @@ export async function buildLabelSheetPdf(labels: LabelItem[]): Promise<jsPDF> {
   return doc;
 }
 
-// Open the PDF in a new tab and trigger the print dialog (universal path).
+// Print the PDF via a hidden iframe. window.open() after an awaited build loses
+// the user-activation gesture and gets popup-blocked; a same-document iframe does
+// not. The blob URL is revoked once the print dialog has been dispatched.
 export function printPdf(doc: jsPDF): void {
   doc.autoPrint();
   const url = doc.output("bloburl") as unknown as string;
-  window.open(url, "_blank");
+
+  const iframe = document.createElement("iframe");
+  iframe.style.position = "fixed";
+  iframe.style.right = "0";
+  iframe.style.bottom = "0";
+  iframe.style.width = "0";
+  iframe.style.height = "0";
+  iframe.style.border = "0";
+  iframe.src = url;
+  iframe.onload = () => {
+    try {
+      iframe.contentWindow?.focus();
+      iframe.contentWindow?.print();
+    } catch {
+      // If in-frame print is blocked, fall back to opening the blob directly.
+      window.open(url, "_blank");
+    }
+    // Give the print dialog time to grab the document before cleanup.
+    window.setTimeout(() => {
+      URL.revokeObjectURL(url);
+      iframe.remove();
+    }, 60_000);
+  };
+  document.body.appendChild(iframe);
 }
 
 export function savePdf(doc: jsPDF, filename: string): void {

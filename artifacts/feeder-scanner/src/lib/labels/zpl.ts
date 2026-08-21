@@ -6,9 +6,15 @@
 const PW = 400; // print width in dots (~50mm @ 203dpi)
 const LL = 200; // label length in dots (~25mm @ 203dpi)
 
-// Escape the handful of characters that are control prefixes in ZPL field data.
+// Hex-escape the characters that are control prefixes in ZPL field data. The
+// escaped fields are emitted with ^FH (default indicator "_"), so "_5E" is decoded
+// back to "^" by the printer. The indicator "_" itself must therefore be escaped
+// too, or literal underscores in the data would be misread as hex sequences.
 function zplEscape(text: string): string {
-  return text.replace(/[\^~]/g, (c) => (c === "^" ? "_5E" : "_7E"));
+  return text.replace(/[\^~_]/g, (c) => {
+    const hex = c.charCodeAt(0).toString(16).toUpperCase().padStart(2, "0");
+    return `_${hex}`;
+  });
 }
 
 // Code128 label with a human-readable caption printed below the bars.
@@ -23,9 +29,9 @@ export function code128Label(text: string, caption?: string): string {
     // Code128, ^BY sets module width; ^FO x,y positions; height 80 dots.
     "^BY2,2,80",
     "^FO40,30^BCN,80,N,N,N",
-    `^FD${data}^FS`,
+    `^FH^FD${data}^FS`,
     // Caption text under the barcode.
-    `^FO40,120^A0N,28,28^FD${cap}^FS`,
+    `^FO40,120^A0N,28,28^FH^FD${cap}^FS`,
     "^XZ",
   ].join("\n");
 }
@@ -41,8 +47,8 @@ export function qrLabel(text: string, caption?: string): string {
     "^CI28",
     // QR: ^BQN,2,<magnification>. ^FDLA, selects auto data mode.
     "^FO30,40^BQN,2,6",
-    `^FDLA,${data}^FS`,
-    `^FO200,80^A0N,28,28^FD${cap}^FS`,
+    `^FH^FDLA,${data}^FS`,
+    `^FO200,80^A0N,28,28^FH^FD${cap}^FS`,
     "^XZ",
   ].join("\n");
 }

@@ -14,6 +14,7 @@ import PerformancePage from "./pages/Performance";
 import SecurityCenter from "./pages/SecurityCenter";
 import IntegrityCheckPage from "./pages/IntegrityCheck";
 import NotificationsPage from "./pages/Notifications";
+import PrintLabels from "./pages/PrintLabels";
 import LicensePage from "./pages/License";
 
 export function AdminGate() {
@@ -82,6 +83,8 @@ function AdminRouter() {
       return <IntegrityCheckPage />;
     case "notifications":
       return <NotificationsPage />;
+    case "labels":
+      return <PrintLabels />;
     case "license":
       return <LicensePage />;
     default:

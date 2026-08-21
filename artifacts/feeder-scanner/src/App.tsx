@@ -47,7 +47,6 @@ import ManageApprovers from "@/feeder/pages/ManageApprovers";
 import QAInhouseRejection from "@/feeder/pages/QAInhouseRejection";
 import BypassTracking from "@/feeder/pages/BypassTracking";
 import AdminMonitoring from "@/feeder/pages/AdminMonitoring";
-import LabelPrinting from "@/pages/label-printing";
 const queryClient = new QueryClient({
   defaultOptions: {
     queries: {
@@ -238,13 +237,6 @@ function Router() {
                 <Route path="/feeder/monitoring">
                   {() => (
                     <ProtectedRoute component={AdminMonitoring} allowedRoles={["admin"]} />
-                  )}
-                </Route>
-
-                {/* Admin-only label/sticker printing (accept barcode, machine QR, feeder numbers). */}
-                <Route path="/feeder/labels">
-                  {() => (
-                    <ProtectedRoute component={LabelPrinting} allowedRoles={["admin"]} />
                   )}
                 </Route>
 
