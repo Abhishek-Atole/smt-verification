@@ -29,6 +29,10 @@ export const sessionsTable = pgTable("sessions", {
   companyName: text("company_name").notNull(),
   customerName: text("customer_name"),
   panelName: text("panel_name").notNull(),
+  // Free Scan Mode has no BOM to derive a product/panel name from, so the
+  // supervisor types the PCB name manually. Nullable; populated only for
+  // free-scan sessions (mirrored into panel_name too for existing reports).
+  pcbName: text("pcb_name"),
   supervisorName: text("supervisor_name").notNull(),
   operatorName: text("operator_name").notNull(),
   qaName: text("qa_name"), // QA personnel name

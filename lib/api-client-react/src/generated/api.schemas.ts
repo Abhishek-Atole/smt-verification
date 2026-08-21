@@ -264,6 +264,8 @@ export interface CreateSessionRequest {
   companyName: string;
   customerName?: string;
   panelName: string;
+  /** Free Scan Mode only: manually-entered PCB name (no BOM to derive it from). */
+  pcbName?: string;
   supervisorName: string;
   operatorName: string;
   qaName?: string;

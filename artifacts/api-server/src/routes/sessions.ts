@@ -1,5 +1,5 @@
 
-import { Router, type IRouter } from "express";
+import { Router, type IRouter, type Response, type NextFunction } from "express";
 import { db } from "@workspace/db";
 import { sessionsTable, scanRecordsTable, spliceRecordsTable, bomItemsTable, bomsTable, auditLogsTable, usersTable, changeoverOperatorsTable, type BomItem } from "@workspace/db/schema";
 import { eq, and, or, sql, desc, isNull, isNotNull, count, inArray } from "drizzle-orm";
@@ -20,6 +20,60 @@ import { randomUUID } from "node:crypto";
 const router: IRouter = Router();
 
 router.use(attachActor);
+
+// Module 2.2 IDOR guard for by-:sessionId legacy routes. Mirrors the ownership
+// rule GET /sessions already uses (see line ~727): qa/supervisor/admin pass
+// freely; an operator may only touch a changeover they own — via the
+// changeover_operators join (creator or handover co-owner) OR the legacy
+// operator_name == display-name match. NOTE: ownership is keyed on actor.name
+// (display name), not actor.username, because operator_name is the form-supplied
+// display name — the pre-existing requireLegacySessionAccess helper compares
+// against username and would wrongly 403 operators on their own sessions.
+async function requireLegacySessionOwnership(
+  req: AuthRequest,
+  res: Response,
+  next: NextFunction,
+): Promise<void> {
+  const actor = req.actor;
+  if (!actor) {
+    res.status(401).json({ error: "Unauthorized" });
+    return;
+  }
+  if (actor.role === "qa" || actor.role === "supervisor" || actor.role === "admin") {
+    next();
+    return;
+  }
+
+  const sessionId = Number(req.params.sessionId);
+  if (!Number.isInteger(sessionId) || sessionId <= 0) {
+    res.status(400).json({ error: "Invalid sessionId" });
+    return;
+  }
+
+  const [session] = await db
+    .select({ id: sessionsTable.id, operatorName: sessionsTable.operatorName })
+    .from(sessionsTable)
+    .where(eq(sessionsTable.id, sessionId));
+  if (!session) {
+    res.status(404).json({ error: "Session not found" });
+    return;
+  }
+
+  if (session.operatorName === actor.name) {
+    next();
+    return;
+  }
+  const [owned] = await db
+    .select({ sessionId: changeoverOperatorsTable.sessionId })
+    .from(changeoverOperatorsTable)
+    .where(and(eq(changeoverOperatorsTable.sessionId, sessionId), eq(changeoverOperatorsTable.operatorId, actor.id)));
+  if (owned) {
+    next();
+    return;
+  }
+
+  res.status(403).json({ error: "Forbidden: changeover does not belong to you" });
+}
 
 type BomRowForMPN = {
   internalPartNumber?: string | null;
@@ -760,23 +814,38 @@ router.get("/sessions", requireRole("operator", "qa", "supervisor", "admin"), as
     }));
     res.json(result);
   } catch (err) {
-    const errorMessage = err instanceof Error ? err.message : String(err);
-    req.log.error({ error: err, message: errorMessage });
-    res.status(500).json({
-      error: "Failed to list sessions",
-      details: errorMessage,
-      type: err instanceof Error ? err.constructor.name : typeof err,
-      isDrizzle: errorMessage.includes("Failed query")
-    });
+    req.log.error({ err }, "Failed to list sessions");
+    res.status(500).json({ error: "Failed to list sessions" });
   }
 });
 
 router.get("/sessions/latest", requireRole("operator", "qa", "supervisor", "admin"), async (req: AuthRequest, res) => {
   try {
+    const actor = req.actor!;
+    // Module 2.2: operators only see their own latest changeover (owned via the
+    // changeover_operators join or a legacy operator_name match); privileged
+    // roles see the globally-latest. Mirrors GET /sessions scoping.
+    const isPrivileged = ["qa", "supervisor", "admin"].includes(actor.role);
+    let where = isNull(sessionsTable.deletedAt);
+    if (!isPrivileged) {
+      const owned = await db
+        .select({ sessionId: changeoverOperatorsTable.sessionId })
+        .from(changeoverOperatorsTable)
+        .where(eq(changeoverOperatorsTable.operatorId, actor.id));
+      const ownedIds = owned.map((o) => o.sessionId);
+      where = and(
+        isNull(sessionsTable.deletedAt),
+        or(
+          ownedIds.length > 0 ? inArray(sessionsTable.id, ownedIds) : sql`false`,
+          eq(sessionsTable.operatorName, actor.name),
+        ),
+      )!;
+    }
+
     const [latest] = await db
       .select()
       .from(sessionsTable)
-      .where(isNull(sessionsTable.deletedAt))
+      .where(where)
       .orderBy(desc(sessionsTable.startTime), desc(sessionsTable.id))
       .limit(1);
 
@@ -799,12 +868,8 @@ router.get("/sessions/latest", requireRole("operator", "qa", "supervisor", "admi
       },
     });
   } catch (err) {
-    const errorMessage = err instanceof Error ? err.message : String(err);
-    req.log.error({ error: err, message: errorMessage });
-    res.status(500).json({
-      error: "Failed to fetch latest session",
-      details: errorMessage,
-    });
+    req.log.error({ err }, "Failed to fetch latest session");
+    res.status(500).json({ error: "Failed to fetch latest session" });
   }
 });
 
@@ -813,7 +878,7 @@ router.post("/sessions", requireRole("operator", "qa", "supervisor", "admin"), a
     const {
       bomId, companyName, customerName, panelName, supervisorName,
       operatorName, qaName, engineerName, shiftName, shiftDate, logoUrl, productionCount,
-      machineName, lineName, verificationMode,
+      machineName, lineName, verificationMode, pcbName,
       bomVerificationSkipped, bomSkipApproverRole, bomSkipApproverName, bomSkipApprovalRemarks,
     } = req.body;
 
@@ -896,6 +961,9 @@ router.post("/sessions", requireRole("operator", "qa", "supervisor", "admin"), a
       .insert(sessionsTable)
       .values({
         bomId: finalBomId, companyName, customerName, panelName, supervisorName,
+        // Free-scan sessions (no BOM) carry a manually-entered PCB name; BOM
+        // sessions leave it null and derive the name from the BOM.
+        pcbName: finalBomId === null && typeof pcbName === "string" && pcbName.trim() ? pcbName.trim() : null,
         operatorName, qaName, engineerName: engineerName ?? null, shiftName, shiftDate, logoUrl,
         productionCount: productionCount ?? 0,
         machineName: machineName ?? null,
@@ -1141,7 +1209,7 @@ router.get("/sessions/active", requireAuth, async (_req: AuthRequest, res) => {
 });
 
 // Parametric routes
-router.get("/sessions/:sessionId", requireRole("operator", "qa", "supervisor", "admin"), async (req: AuthRequest, res) => {
+router.get("/sessions/:sessionId", requireRole("operator", "qa", "supervisor", "admin"), requireLegacySessionOwnership, async (req: AuthRequest, res) => {
   try {
     const sessionId = Number(req.params.sessionId);
     const [session] = await db.select().from(sessionsTable).where(eq(sessionsTable.id, sessionId));
@@ -1199,7 +1267,7 @@ router.get("/sessions/:sessionId", requireRole("operator", "qa", "supervisor", "
   }
 });
 
-router.get("/sessions/:sessionId/scans", requireRole("operator", "qa", "supervisor", "admin"), async (req: AuthRequest, res) => {
+router.get("/sessions/:sessionId/scans", requireRole("operator", "qa", "supervisor", "admin"), requireLegacySessionOwnership, async (req: AuthRequest, res) => {
   try {
     const sessionId = Number(req.params.sessionId);
     if (!Number.isFinite(sessionId)) {
@@ -1298,10 +1366,55 @@ router.get("/sessions/:sessionId/scans", requireRole("operator", "qa", "supervis
   }
 });
 
-router.patch("/sessions/:sessionId", requireRole("operator", "qa", "supervisor", "admin"), async (req: AuthRequest, res) => {
+router.patch("/sessions/:sessionId", requireRole("operator", "qa", "supervisor", "admin"), requireLegacySessionOwnership, async (req: AuthRequest, res) => {
   try {
     const sessionId = Number(req.params.sessionId);
     const { endTime, productionCount, status, logoUrl, verificationMode, totalProductionQuantity, currentCycleTime } = req.body;
+
+    // Reject any status outside the known changeover lifecycle so garbage
+    // strings can't be written straight to the column.
+    const ALLOWED_STATUSES = new Set([
+      "active", "pending_qa", "qa_in_review", "qa_confirmed",
+      "splicing_pending_qa", "completed", "cancelled", "incomplete",
+    ]);
+    if (status !== undefined && !ALLOWED_STATUSES.has(String(status))) {
+      res.status(400).json({ error: "Invalid status" });
+      return;
+    }
+
+    // QA 200% splicing gate (commit 674c76f): a changeover that has any splices
+    // must be closed by QA via POST /verification/qa-queue/:id/complete (which
+    // enforces every splice is verified), never by a direct status→completed
+    // PATCH. Without this an operator could PATCH {status:"completed"} and skip
+    // the 200% reverification. No-splice changeovers still close directly here
+    // (the intended path). Splices are keyed by the SMT changeover id derived
+    // from the session's start date + numeric id — the same derivation the QA
+    // close path uses to count them.
+    if (status === "completed") {
+      const [current] = await db
+        .select({ status: sessionsTable.status, startTime: sessionsTable.startTime })
+        .from(sessionsTable)
+        .where(eq(sessionsTable.id, sessionId));
+      if (!current) {
+        res.status(404).json({ error: "Session not found" });
+        return;
+      }
+      if (current.status !== "completed") {
+        const changeoverId = formatSmtSessionId(current.startTime, sessionId);
+        const [spliceRow] = await db
+          .select({ n: count() })
+          .from(spliceRecordsTable)
+          .where(eq(spliceRecordsTable.changeoverId, changeoverId));
+        if (Number(spliceRow?.n ?? 0) > 0) {
+          res.status(409).json({
+            error: "Changeover has splices; close it through QA 200% splicing verification, not a direct status update.",
+            status: current.status,
+          });
+          return;
+        }
+      }
+    }
+
     const updates: Record<string, unknown> = {};
     if (endTime !== undefined) updates.endTime = new Date(endTime);
     if (productionCount !== undefined) updates.productionCount = productionCount;
@@ -1392,7 +1505,7 @@ router.patch("/sessions/:sessionId", requireRole("operator", "qa", "supervisor",
   }
 });
 
-router.patch("/sessions/:sessionId/mode", requireRole("operator", "qa", "supervisor", "admin"), async (req: AuthRequest, res) => {
+router.patch("/sessions/:sessionId/mode", requireRole("operator", "qa", "supervisor", "admin"), requireLegacySessionOwnership, async (req: AuthRequest, res) => {
   try {
     const sessionId = Number(req.params.sessionId);
     const mode = String(req.body?.mode ?? req.body?.verificationMode ?? "").trim().toUpperCase();
@@ -1429,7 +1542,7 @@ router.patch("/sessions/:sessionId/mode", requireRole("operator", "qa", "supervi
 // confirmation. Idempotent: moves an active session to pending_qa (or leaves an
 // already-pending one unchanged) and fires a cross-dashboard notification so QA
 // sees it on their queue. QA then confirms from their own dashboard.
-router.post("/sessions/:sessionId/submit-qa", requireRole("operator", "qa", "supervisor", "admin"), async (req: AuthRequest, res) => {
+router.post("/sessions/:sessionId/submit-qa", requireRole("operator", "qa", "supervisor", "admin"), requireLegacySessionOwnership, async (req: AuthRequest, res) => {
   try {
     const sessionId = Number(req.params.sessionId);
     if (!Number.isFinite(sessionId)) {
@@ -1472,7 +1585,7 @@ router.post("/sessions/:sessionId/submit-qa", requireRole("operator", "qa", "sup
 // already passed loading QA (status qa_confirmed) and now must be QA-verified
 // again before the changeover can be closed. Moves qa_confirmed → splicing_pending_qa
 // and notifies QA. Idempotent if already splicing_pending_qa.
-router.post("/sessions/:sessionId/submit-splicing-qa", requireRole("operator", "qa", "supervisor", "admin"), async (req: AuthRequest, res) => {
+router.post("/sessions/:sessionId/submit-splicing-qa", requireRole("operator", "qa", "supervisor", "admin"), requireLegacySessionOwnership, async (req: AuthRequest, res) => {
   try {
     const sessionId = Number(req.params.sessionId);
     if (!Number.isFinite(sessionId)) {
@@ -1531,7 +1644,7 @@ const ScanBodySchema = z.object({
   selectedItemId: z.union([z.number(), z.string()]).optional(),
 });
 
-router.post("/sessions/:sessionId/scans", scanLimiter, requireRole("operator", "qa", "supervisor", "admin"), async (req: AuthRequest, res) => {
+router.post("/sessions/:sessionId/scans", scanLimiter, requireRole("operator", "qa", "supervisor", "admin"), requireLegacySessionOwnership, async (req: AuthRequest, res) => {
   try {
     // === PERFORMANCE: Track validation time ===
     const validationStartTime = Date.now();
@@ -1916,7 +2029,7 @@ router.post("/sessions/:sessionId/scans", scanLimiter, requireRole("operator", "
   }
 });
 
-router.get("/sessions/:sessionId/splices", requireRole("operator", "qa", "supervisor", "admin"), async (req: AuthRequest, res) => {
+router.get("/sessions/:sessionId/splices", requireRole("operator", "qa", "supervisor", "admin"), requireLegacySessionOwnership, async (req: AuthRequest, res) => {
   try {
     const sessionId = Number(req.params.sessionId);
     if (!Number.isFinite(sessionId)) {
@@ -2061,7 +2174,7 @@ router.patch(
   },
 );
 
-router.post("/sessions/:sessionId/splices", requireRole("operator", "qa", "supervisor", "admin"), async (req: AuthRequest, res) => {
+router.post("/sessions/:sessionId/splices", requireRole("operator", "qa", "supervisor", "admin"), requireLegacySessionOwnership, async (req: AuthRequest, res) => {
   try {
     const sessionId = Number(req.params.sessionId);
     const {
@@ -2328,7 +2441,7 @@ router.post("/sessions/:sessionId/splices", requireRole("operator", "qa", "super
   }
 });
 
-router.get("/sessions/:sessionId/summary", requireRole("operator", "qa", "supervisor", "admin"), async (req: AuthRequest, res) => {
+router.get("/sessions/:sessionId/summary", requireRole("operator", "qa", "supervisor", "admin"), requireLegacySessionOwnership, async (req: AuthRequest, res) => {
   try {
     const sessionId = Number(req.params.sessionId);
     const [session] = await db.select().from(sessionsTable).where(eq(sessionsTable.id, sessionId));
@@ -2384,7 +2497,7 @@ router.get("/sessions/:sessionId/summary", requireRole("operator", "qa", "superv
   }
 });
 
-router.get("/sessions/:sessionId/report", requireRole("operator", "qa", "supervisor", "admin"), async (req: AuthRequest, res) => {
+router.get("/sessions/:sessionId/report", requireRole("operator", "qa", "supervisor", "admin"), requireLegacySessionOwnership, async (req: AuthRequest, res) => {
   try {
     const sessionId = Number(req.params.sessionId);
     if (!Number.isFinite(sessionId)) {
@@ -3113,7 +3226,7 @@ router.get("/sessions/:sessionId/report/pdf", requireRole("qa", "supervisor", "a
 // Module 6: Excel export of the final changeover report. Two sheets — a
 // Summary (header + counts + production figures) and a Components table
 // mirroring the PDF report rows.
-router.get("/sessions/:sessionId/report/xlsx", requireRole("operator", "qa", "supervisor", "admin"), async (req: AuthRequest, res) => {
+router.get("/sessions/:sessionId/report/xlsx", requireRole("operator", "qa", "supervisor", "admin"), requireLegacySessionOwnership, async (req: AuthRequest, res) => {
   try {
     const sessionId = Number(req.params.sessionId);
     if (!Number.isInteger(sessionId)) {
@@ -3252,7 +3365,7 @@ router.delete("/sessions/:sessionId", requireRole("qa", "supervisor", "admin"), 
   }
 });
 
-router.delete("/sessions/:sessionId/scans", requireRole("operator", "qa", "supervisor", "admin"), async (req: AuthRequest, res) => {
+router.delete("/sessions/:sessionId/scans", requireRole("operator", "qa", "supervisor", "admin"), requireLegacySessionOwnership, async (req: AuthRequest, res) => {
   try {
     const sessionId = Number(req.params.sessionId);
     const userId = req.actor?.username || "unknown";

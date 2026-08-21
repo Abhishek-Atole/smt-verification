@@ -90,6 +90,9 @@ export default function SessionNew() {
   const [bomSearch, setBomSearch] = useState("");
   const [bomPickerOpen, setBomPickerOpen] = useState(false);
   const [freeScanMode, setFreeScanMode] = useState(false);
+  // Free Scan has no BOM to derive the PCB/panel name from, so the supervisor
+  // types it in manually. Feeds `panelName` on submit.
+  const [freeScanPcbName, setFreeScanPcbName] = useState("");
   const [supervisorName, setSupervisorName] = useState("");
   const [qaName, setQaName] = useState("");
   const [machineName, setMachineName] = useState("");
@@ -104,9 +107,10 @@ export default function SessionNew() {
   const [skipRemarks, setSkipRemarks] = useState("");
 
   const operatorName = user?.name ?? "";
-  // Free Scan Mode bypasses all BOM validation, so only supervisor/QA may enable it.
-  // Operators must run against a selected BOM.
-  const canFreeScan = user?.role === "supervisor" || user?.role === "qa";
+  // Free Scan Mode bypasses all BOM validation, so only supervisors may enable it.
+  // Operators must run against a selected BOM. (The route only admits
+  // supervisor/operator, so no qa branch is reachable here.)
+  const canFreeScan = user?.role === "supervisor";
   const defaultLogoUrl = appConfig.logoUrl ?? "";
   const { shiftName, shiftDate } = useMemo(() => computeShift(new Date()), []);
 
@@ -149,6 +153,7 @@ export default function SessionNew() {
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     if (!freeScanMode && !bomId) return alert("Please select a BOM or enable Free Scan Mode");
+    if (freeScanMode && !freeScanPcbName.trim()) return alert("Please enter the PCB name");
     const resolvedSupervisor = supervisorName === "__other__" ? "" : supervisorName;
     const resolvedQa = qaName === "__other__" ? "" : qaName;
     if (!operatorName) return alert("Operator not identified — please sign in again");
@@ -169,7 +174,10 @@ export default function SessionNew() {
         bomId: freeScanMode ? 0 : Number(bomId),
         companyName: COMPANY_NAME,
         customerName: selectedBom?.customer || undefined,
-        panelName: selectedBom?.product || selectedBom?.name || "FREE SCAN",
+        panelName: freeScanMode
+          ? freeScanPcbName.trim()
+          : selectedBom?.product || selectedBom?.name || "FREE SCAN",
+        pcbName: freeScanMode ? freeScanPcbName.trim() : undefined,
         supervisorName: resolvedSupervisor,
         operatorName,
         qaName: resolvedQa,
@@ -217,6 +225,7 @@ export default function SessionNew() {
   const canStart =
     !createSession.isPending &&
     (freeScanMode || Boolean(bomId)) &&
+    (!freeScanMode || Boolean(freeScanPcbName.trim())) &&
     Boolean(operatorName) &&
     Boolean(lineName) &&
     Boolean(supervisorName) && supervisorName !== "__other__" &&
@@ -247,7 +256,7 @@ export default function SessionNew() {
                 type="checkbox"
                 id="free-scan"
                 checked={freeScanMode}
-                onChange={(e) => { setFreeScanMode(e.target.checked); if (e.target.checked) setBomId(""); }}
+                onChange={(e) => { setFreeScanMode(e.target.checked); if (e.target.checked) { setBomId(""); } else { setFreeScanPcbName(""); } }}
                 className="w-4 h-4 rounded cursor-pointer"
               />
               <Label htmlFor="free-scan" className="text-sm font-medium cursor-pointer flex items-center gap-2">
@@ -315,9 +324,22 @@ export default function SessionNew() {
             </Popover>
           )}
           {freeScanMode && (
-            <div className="bg-amber-50 dark:bg-amber-950/20 border border-amber-200 dark:border-amber-800 p-3 rounded-md text-sm text-amber-700 dark:text-amber-400">
-              <p className="font-bold mb-1">Free Scan Mode Active</p>
-              <p>You can scan any feeder numbers and spools without BOM validation.</p>
+            <div className="space-y-3">
+              <div className="bg-amber-50 dark:bg-amber-950/20 border border-amber-200 dark:border-amber-800 p-3 rounded-md text-sm text-amber-700 dark:text-amber-400">
+                <p className="font-bold mb-1">Free Scan Mode Active</p>
+                <p>You can scan any feeder numbers and spools without BOM validation.</p>
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="free-scan-pcb">PCB Name *</Label>
+                <Input
+                  id="free-scan-pcb"
+                  value={freeScanPcbName}
+                  onChange={(e) => setFreeScanPcbName(e.target.value)}
+                  placeholder="Enter PCB / panel name"
+                  className="bg-background rounded-sm"
+                  autoComplete="off"
+                />
+              </div>
             </div>
           )}
           {/* Module 1.2/1.3: Skip BOM verification requires a single QA or Supervisor approval. */}

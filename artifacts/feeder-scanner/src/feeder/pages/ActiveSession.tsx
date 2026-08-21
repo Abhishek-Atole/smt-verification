@@ -355,6 +355,11 @@ export default function SessionActive() {
   const [freeMpn, setFreeMpn] = useState("");
   const [freeLot, setFreeLot] = useState("");
   const [freeSubmitting, setFreeSubmitting] = useState(false);
+  // Synchronous in-flight guard. A scanner fires the accept token via onChange and
+  // an Enter via onKeyDown in the same tick; the freeSubmitting *state* is still
+  // false on the second call (React hasn't re-rendered), so a ref is needed to
+  // reject the duplicate submit.
+  const freeInFlightRef = useRef(false);
   const [showAcceptTokenHelp, setShowAcceptTokenHelp] = useState(false);
   const freeFeederRef = useRef<HTMLInputElement>(null);
   const freeMpnRef = useRef<HTMLInputElement>(null);
@@ -1103,8 +1108,9 @@ export default function SessionActive() {
   // The backend (bomId = null) auto-accepts and still rejects duplicate feeders.
   const handleFreeScanAccept = async () => {
     const feeder = freeFeeder.trim();
-    if (!feeder || freeSubmitting) return;
+    if (!feeder || freeInFlightRef.current) return;
 
+    freeInFlightRef.current = true;
     setFreeSubmitting(true);
     try {
       const res = await scanFeeder.mutateAsync({
@@ -1140,6 +1146,7 @@ export default function SessionActive() {
       setLastScanResult({ status: "reject", feeder, msg });
       showErrorAlert(msg, "high");
     } finally {
+      freeInFlightRef.current = false;
       setFreeSubmitting(false);
     }
   };
