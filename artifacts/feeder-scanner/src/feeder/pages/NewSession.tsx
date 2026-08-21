@@ -1,5 +1,5 @@
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useLocation } from "wouter";
 import { useListBoms, useCreateSession } from "@workspace/api-client-react";
 import { useAuth } from "@/context/auth-context";
@@ -16,10 +16,6 @@ import { appConfig } from "@/lib/appConfig";
 import { AppLogo } from "@/components/AppLogo";
 
 const COMPANY_NAME = "UCAL ELECTRONICS PVT.LTD.";
-const SUPERVISOR_NAMES = ["Umesh Nagile", "Dhupchand Bhardwaj", "Maruti Birader"];
-const QA_NAMES = ["Ravi Patel", "Priya Singh", "Amit Kumar"];
-// Placeholder engineer roster (same pool as supervisors for now) — replace with the real list.
-const ENGINEER_NAMES = ["Umesh Nagile", "Dhupchand Bhardwaj", "Maruti Birader"];
 
 // Compute the current shift + the date the shift STARTED.
 // Morning 06:30–15:00 · Afternoon 15:00–23:30 · Night 23:30–06:30.
@@ -96,12 +92,49 @@ export default function SessionNew() {
   const [freeScanMode, setFreeScanMode] = useState(false);
   const [supervisorName, setSupervisorName] = useState("");
   const [qaName, setQaName] = useState("");
-  const [engineerName, setEngineerName] = useState("");
   const [machineName, setMachineName] = useState("");
+  const [supervisorNames, setSupervisorNames] = useState<string[]>([]);
+  const [qaNames, setQaNames] = useState<string[]>([]);
+  const [lineNames, setLineNames] = useState<string[]>([]);
+  const [lineName, setLineName] = useState("");
+  const [bomVerificationSkipped, setBomVerificationSkipped] = useState(false);
+  const [verificationMode, setVerificationMode] = useState<"AUTO" | "MANUAL" | "AUTO_LEGACY">("AUTO");
+  const [skipApproverRole, setSkipApproverRole] = useState<"qa" | "supervisor" | "">("");
+  const [skipApproverName, setSkipApproverName] = useState("");
+  const [skipRemarks, setSkipRemarks] = useState("");
 
   const operatorName = user?.name ?? "";
+  // Free Scan Mode bypasses all BOM validation, so only supervisor/QA may enable it.
+  // Operators must run against a selected BOM.
+  const canFreeScan = user?.role === "supervisor" || user?.role === "qa";
   const defaultLogoUrl = appConfig.logoUrl ?? "";
   const { shiftName, shiftDate } = useMemo(() => computeShift(new Date()), []);
+
+  // Approver rosters are managed at runtime (Manage Approvers screen) and read
+  // from the API here. NameSelect still offers "Other" for one-off names.
+  useEffect(() => {
+    let active = true;
+    void (async () => {
+      try {
+        const res = await fetch("/api/approvers", { credentials: "include" });
+        if (!res.ok) return;
+        const data = (await res.json()) as {
+          supervisors?: { name: string }[];
+          qa?: { name: string }[];
+          lines?: { name: string }[];
+        };
+        if (!active) return;
+        setSupervisorNames(Array.isArray(data.supervisors) ? data.supervisors.map((s) => s.name) : []);
+        setQaNames(Array.isArray(data.qa) ? data.qa.map((q) => q.name) : []);
+        setLineNames(Array.isArray(data.lines) ? data.lines.map((l) => l.name) : []);
+      } catch {
+        // Leave lists empty on failure; "Other" still allows manual entry.
+      }
+    })();
+    return () => {
+      active = false;
+    };
+  }, []);
 
   const machineScanner = useScanner({
     onSubmit: (v) => setMachineName(v),
@@ -118,13 +151,19 @@ export default function SessionNew() {
     if (!freeScanMode && !bomId) return alert("Please select a BOM or enable Free Scan Mode");
     const resolvedSupervisor = supervisorName === "__other__" ? "" : supervisorName;
     const resolvedQa = qaName === "__other__" ? "" : qaName;
-    const resolvedEngineer = engineerName === "__other__" ? "" : engineerName;
     if (!operatorName) return alert("Operator not identified — please sign in again");
+    if (!lineName) return alert("Please select the line number");
     if (!resolvedSupervisor) return alert("Please select the supervisor");
     if (!resolvedQa) return alert("Please select the QA");
-    if (!resolvedEngineer) return alert("Please select the engineer");
     if (!machineName) return alert("Please scan the machine QR");
+    if (bomVerificationSkipped) {
+      const resolvedApprover = skipApproverName === "__other__" ? "" : skipApproverName;
+      if (skipApproverRole !== "qa" && skipApproverRole !== "supervisor")
+        return alert("Skipping BOM verification requires a QA or Supervisor approval role");
+      if (!resolvedApprover) return alert("Please select the approver who authorized skipping BOM verification");
+    }
 
+    const resolvedSkipApprover = skipApproverName === "__other__" ? "" : skipApproverName;
     createSession.mutate({
       data: {
         bomId: freeScanMode ? 0 : Number(bomId),
@@ -134,14 +173,26 @@ export default function SessionNew() {
         supervisorName: resolvedSupervisor,
         operatorName,
         qaName: resolvedQa,
-        engineerName: resolvedEngineer,
         shiftName,
         shiftDate,
         machineName,
+        lineName,
         logoUrl: defaultLogoUrl,
+        verificationMode,
+        bomVerificationSkipped,
+        bomSkipApproverRole: bomVerificationSkipped ? skipApproverRole : undefined,
+        bomSkipApproverName: bomVerificationSkipped ? resolvedSkipApprover : undefined,
+        bomSkipApprovalRemarks: bomVerificationSkipped && skipRemarks ? skipRemarks : undefined,
       },
     }, {
       onSuccess: (session) => setLocation(`/session/${session.id}`),
+      onError: (err: unknown) => {
+        // Surface server-side gates (Module 2.1 max-2-per-line, Module 1 approval
+        // requirements) to the operator instead of failing silently.
+        const data = (err as { data?: { error?: string } })?.data;
+        const message = (err as { message?: string })?.message;
+        alert(data?.error ?? message ?? "Failed to start changeover");
+      },
     });
   };
 
@@ -167,10 +218,11 @@ export default function SessionNew() {
     !createSession.isPending &&
     (freeScanMode || Boolean(bomId)) &&
     Boolean(operatorName) &&
+    Boolean(lineName) &&
     Boolean(supervisorName) && supervisorName !== "__other__" &&
     Boolean(qaName) && qaName !== "__other__" &&
-    Boolean(engineerName) && engineerName !== "__other__" &&
-    Boolean(machineName);
+    Boolean(machineName) &&
+    (!bomVerificationSkipped || ((skipApproverRole === "qa" || skipApproverRole === "supervisor") && Boolean(skipApproverName) && skipApproverName !== "__other__"));
 
   return (
     <div className="w-full space-y-4 sm:space-y-6 lg:space-y-8 px-4 sm:px-6 lg:px-8 py-4 sm:py-6 lg:py-8">
@@ -189,19 +241,21 @@ export default function SessionNew() {
         {/* Step 1: BOM */}
         <div className="space-y-3">
           <h2 className="text-base sm:text-lg font-bold text-primary border-b border-border pb-2 tracking-wide">1 · SELECT BOM</h2>
-          <div className="flex items-center gap-2">
-            <input
-              type="checkbox"
-              id="free-scan"
-              checked={freeScanMode}
-              onChange={(e) => { setFreeScanMode(e.target.checked); if (e.target.checked) setBomId(""); }}
-              className="w-4 h-4 rounded cursor-pointer"
-            />
-            <Label htmlFor="free-scan" className="text-sm font-medium cursor-pointer flex items-center gap-2">
-              Free Scan Mode
-              <span className="text-xs text-muted-foreground font-normal">(scan without BOM validation)</span>
-            </Label>
-          </div>
+          {canFreeScan && (
+            <div className="flex items-center gap-2">
+              <input
+                type="checkbox"
+                id="free-scan"
+                checked={freeScanMode}
+                onChange={(e) => { setFreeScanMode(e.target.checked); if (e.target.checked) setBomId(""); }}
+                className="w-4 h-4 rounded cursor-pointer"
+              />
+              <Label htmlFor="free-scan" className="text-sm font-medium cursor-pointer flex items-center gap-2">
+                Free Scan Mode
+                <span className="text-xs text-muted-foreground font-normal">(scan without BOM validation)</span>
+              </Label>
+            </div>
+          )}
           {!freeScanMode && (
             <Popover
               open={bomPickerOpen}
@@ -266,14 +320,83 @@ export default function SessionNew() {
               <p>You can scan any feeder numbers and spools without BOM validation.</p>
             </div>
           )}
+          {/* Module 1.2/1.3: Skip BOM verification requires a single QA or Supervisor approval. */}
+          <div className="flex items-center gap-2 pt-2">
+            <input
+              type="checkbox"
+              id="skip-bom"
+              checked={bomVerificationSkipped}
+              onChange={(e) => {
+                setBomVerificationSkipped(e.target.checked);
+                if (!e.target.checked) { setSkipApproverRole(""); setSkipApproverName(""); setSkipRemarks(""); }
+              }}
+              className="w-4 h-4 rounded cursor-pointer"
+            />
+            <label htmlFor="skip-bom" className="text-sm cursor-pointer">Skip BOM Verification (requires approval)</label>
+          </div>
+          {bomVerificationSkipped && (
+            <div className="space-y-3 border border-amber-300 dark:border-amber-800 bg-amber-50 dark:bg-amber-950/20 p-3 rounded-md">
+              <p className="text-sm font-bold text-amber-700 dark:text-amber-400">Approval required to skip BOM verification</p>
+              <div>
+                <label className="block text-sm mb-1">Approver Role</label>
+                <select
+                  value={skipApproverRole}
+                  onChange={(e) => {
+                    setSkipApproverRole(e.target.value as "qa" | "supervisor" | "");
+                    setSkipApproverName("");
+                  }}
+                  className="w-full rounded-sm border border-border bg-background px-3 py-2 text-sm"
+                >
+                  <option value="">Select role…</option>
+                  <option value="qa">QA</option>
+                  <option value="supervisor">Supervisor</option>
+                </select>
+              </div>
+              {skipApproverRole && (
+                <NameSelect
+                  label="Approver Name"
+                  names={skipApproverRole === "qa" ? qaNames : supervisorNames}
+                  value={skipApproverName}
+                  onChange={setSkipApproverName}
+                  required
+                />
+              )}
+              <div>
+                <label className="block text-sm mb-1">Remarks (optional)</label>
+                <input
+                  type="text"
+                  value={skipRemarks}
+                  onChange={(e) => setSkipRemarks(e.target.value)}
+                  placeholder="Reason for skipping"
+                  className="w-full rounded-sm border border-border bg-background px-3 py-2 text-sm"
+                />
+              </div>
+            </div>
+          )}
+
+          {/* Verification mode: AUTO (scan feeder→MPN→auto-submit), MANUAL (confirm each),
+              or AUTO_LEGACY (feeders pre-loaded in BOM order — operator scans MPN + lot only). */}
+          <div className="pt-2 space-y-2">
+            <Label>Verification Mode</Label>
+            <Select value={verificationMode} onValueChange={(v) => setVerificationMode(v as typeof verificationMode)}>
+              <SelectTrigger className="bg-background rounded-sm">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="AUTO">Auto (scan feeder, then MPN — auto-submit)</SelectItem>
+                <SelectItem value="MANUAL">Manual (confirm each match)</SelectItem>
+                <SelectItem value="AUTO_LEGACY">Auto Legacy (serial feeders — scan MPN + lot only)</SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
         </div>
 
         {/* Step 2: Approvers */}
         <div className="space-y-4">
-          <h2 className="text-base sm:text-lg font-bold text-primary border-b border-border pb-2 tracking-wide">2 · APPROVERS</h2>
-          <NameSelect label="Supervisor" names={SUPERVISOR_NAMES} value={supervisorName} onChange={setSupervisorName} required />
-          <NameSelect label="QA" names={QA_NAMES} value={qaName} onChange={setQaName} required />
-          <NameSelect label="Engineer" names={ENGINEER_NAMES} value={engineerName} onChange={setEngineerName} required />
+          <h2 className="text-base sm:text-lg font-bold text-primary border-b border-border pb-2 tracking-wide">2 · LINE & APPROVERS</h2>
+          <NameSelect label="Line Number" names={lineNames} value={lineName} onChange={setLineName} required />
+          <NameSelect label="Supervisor" names={supervisorNames} value={supervisorName} onChange={setSupervisorName} required />
+          <NameSelect label="QA" names={qaNames} value={qaName} onChange={setQaName} required />
         </div>
 
         {/* Auto shift + date */}

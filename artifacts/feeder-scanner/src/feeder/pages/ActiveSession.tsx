@@ -43,6 +43,7 @@ import type { FeederScan, SplicingRecord } from "@/types";
 import { AppLogo } from "@/components/AppLogo";
 import { buildCandidates, normalizeMpn } from "@/utils/mpnUtils";
 import { logger } from "@/lib/logger";
+import { ACCEPT_TOKEN, isAcceptToken } from "@/lib/accept-token";
 
 type ScanStep = "feeder" | "spool" | "lot";
 type Mode = "scan" | "splice";
@@ -97,6 +98,34 @@ function focusNextFrame(inputRef: React.RefObject<HTMLInputElement | null>) {
 
 function normalizeScanValue(value: string): string {
   return value.trim().toUpperCase();
+}
+
+// AUTO_LEGACY skips the feeder-scan step, so it never runs the alternate-selection
+// prompt that AUTO/MANUAL use. To keep MPN validation correct for feeders that have
+// alternate rows, build candidates from EVERY BOM row matching the current feeder
+// (union across sources), de-duplicated by value. Falls back to the single locked row.
+function buildLegacyCandidates(
+  feeder: string,
+  sessionRows: any[],
+  uiRows: any[] | undefined,
+  lockedFeeder: any,
+): ReturnType<typeof buildCandidates> {
+  const target = normalizeScanValue(feeder);
+  const rows = [
+    ...(sessionRows ?? []),
+    ...(uiRows ?? []),
+  ].filter((row) => normalizeScanValue(String(row?.feederNumber ?? "")) === target);
+  const source = rows.length > 0 ? rows : lockedFeeder ? [lockedFeeder] : [];
+  const seen = new Set<string>();
+  const merged: ReturnType<typeof buildCandidates> = [];
+  for (const row of source) {
+    for (const candidate of buildCandidates(row)) {
+      if (seen.has(candidate.value)) continue;
+      seen.add(candidate.value);
+      merged.push(candidate);
+    }
+  }
+  return merged;
 }
 
 // Web Audio API sound generator
@@ -210,6 +239,10 @@ export default function SessionActive() {
     },
   });
   const bomId = session?.bomId;
+  // Free Scan Mode: no BOM attached (stored as NULL in the DB). Every scan is
+  // captured with no validation. Keyed off the absence of a bomId — not `=== 0`,
+  // which never matches the NULL the backend actually stores.
+  const isFreeScan = !!session && !bomId;
   const { data: bomDetail, isLoading: bomLoading } = useGetBom(bomId!, {
     query: { enabled: !!bomId && isValidSessionId, queryKey: getGetBomQueryKey(bomId!) },
   });
@@ -307,7 +340,7 @@ export default function SessionActive() {
   } | null>(null);
   const [selectedItemIdForScan, setSelectedItemIdForScan] = useState<number | null>(null);
   const [needsAlternateSelection, setNeedsAlternateSelection] = useState(false);
-  const [verificationMode, setVerificationMode] = useState<"AUTO" | "MANUAL">("AUTO");
+  const [verificationMode, setVerificationMode] = useState<"AUTO" | "MANUAL" | "AUTO_LEGACY">("AUTO");
   const [pendingVerification, setPendingVerification] = useState<any>(null);
   const [verificationLocked, setVerificationLocked] = useState(false);
   const [lastVerificationTime, setLastVerificationTime] = useState<number | null>(null);
@@ -316,11 +349,27 @@ export default function SessionActive() {
   const [scanning, setScanning] = useState(false);
   const scanningRef = useRef(false);
 
+  // Free Scan Mode capture: three fields (Feeder + MPN + Lot), committed
+  // manually. Kept separate from the BOM-coupled scan state machine.
+  const [freeFeeder, setFreeFeeder] = useState("");
+  const [freeMpn, setFreeMpn] = useState("");
+  const [freeLot, setFreeLot] = useState("");
+  const [freeSubmitting, setFreeSubmitting] = useState(false);
+  const [showAcceptTokenHelp, setShowAcceptTokenHelp] = useState(false);
+  const freeFeederRef = useRef<HTMLInputElement>(null);
+  const freeMpnRef = useRef<HTMLInputElement>(null);
+  const freeLotRef = useRef<HTMLInputElement>(null);
+  // Captures the app accept barcode / Enter to confirm a MANUAL pending scan.
+  const verifyScanRef = useRef<HTMLInputElement>(null);
+
   useEffect(() => {
     if (session?.verificationMode) {
-      setVerificationMode(String(session.verificationMode).toUpperCase() === "MANUAL" ? "MANUAL" : "AUTO");
+      const raw = String(session.verificationMode).toUpperCase();
+      setVerificationMode(raw === "MANUAL" ? "MANUAL" : raw === "AUTO_LEGACY" ? "AUTO_LEGACY" : "AUTO");
     }
   }, [session?.verificationMode]);
+
+  const legacyMode = verificationMode === "AUTO_LEGACY";
 
   const handleVerificationModeChange = async (mode: "AUTO" | "MANUAL") => {
     if (!isValidSessionId) {
@@ -384,6 +433,11 @@ export default function SessionActive() {
   const [submittingSplicingQa, setSubmittingSplicingQa] = useState(false);
   const splicingCompletedRedirectedRef = useRef(false);
   const [showResetDialog, setShowResetDialog] = useState(false);
+  // Module 3: closure prompt captures production quantity + cycle time before
+  // the changeover is completed (or submitted to splicing QA).
+  const [showClosureDialog, setShowClosureDialog] = useState(false);
+  const [closureQty, setClosureQty] = useState("");
+  const [closureCycle, setClosureCycle] = useState("");
   const [lastScanResult, setLastScanResult] = useState<{
     status: "ok" | "reject" | "splice";
     feeder: string;
@@ -443,6 +497,22 @@ export default function SessionActive() {
       isComplete: qaConfirmed || (verifiedCount >= totalRequired && totalRequired > 0),
     };
   }, [verificationBomEntries, scannedFeeders, session?.bomItemCount, session?.status]);
+
+  // AUTO_LEGACY: feeders are populated serially in BOM order, so the operator never
+  // scans a feeder barcode. Pre-load the next un-verified feeder and jump straight to
+  // the MPN (spool) step. After each successful scan the flow resets to scanStep
+  // "feeder" with an empty pendingFeeder, and this effect re-fires to load the next one.
+  useEffect(() => {
+    if (!legacyMode) return;
+    if (session?.status !== "active" || activeTab !== "loading") return;
+    if (scanStep !== "feeder" || pendingFeeder) return;
+    const nextFeeder = verificationProgress.remainingFeeders[0];
+    if (!nextFeeder) return;
+    setPendingFeeder(nextFeeder);
+    setFeederScanTime(Date.now());
+    setScanStep("spool");
+  }, [legacyMode, session?.status, activeTab, scanStep, pendingFeeder, verificationProgress.remainingFeeders]);
+
   const clearSplicingRecords = useSplicingStore((state) => state.clearRecords);
   const hydrateSplicingRecords = useSplicingStore((state) => state.hydrateRecords);
   const splicingRecords = useSplicingStore((state) => state.records);
@@ -712,7 +782,9 @@ export default function SessionActive() {
           return;
         }
 
-        const candidates = buildCandidates(lockedFeeder);
+        const candidates = legacyMode
+          ? buildLegacyCandidates(pendingFeeder, sessionApiBom, bomDetail?.items, lockedFeeder)
+          : buildCandidates(lockedFeeder);
 
         logger.debug("[MPN MATCH ATTEMPT] scanned:", normalizedScanned);
         logger.debug("[MPN MATCH ATTEMPT] candidates:", candidates);
@@ -812,6 +884,7 @@ export default function SessionActive() {
     pendingScanDuration,
     internalIdType,
     verificationMode,
+    legacyMode,
     // State setters
     setVerificationInProgress,
     setScanStep,
@@ -844,6 +917,10 @@ export default function SessionActive() {
   } = useScanner({
     onSubmit: handleScanBarcode,
     resetAfterMs: 10000,
+    // Pause the periodic re-focus while a data-entry modal is open, otherwise it
+    // steals focus back to the hidden scan input every 1.2s and the operator
+    // can't type into the closure / handover fields.
+    autoFocus: !showClosureDialog && !showHandoverModal,
   });
 
   const { reset: resetAutoScan } = useAutoScan(scanInput, {
@@ -863,7 +940,7 @@ export default function SessionActive() {
     },
     delayMs: 300,
     minLength: 3,
-    enabled: session?.status === "active" && activeTab === "loading" && scanStep !== "lot",
+    enabled: session?.status === "active" && activeTab === "loading" && scanStep !== "lot" && !showClosureDialog && !showHandoverModal,
   });
 
   const feederInputRef = inputRef;
@@ -871,7 +948,7 @@ export default function SessionActive() {
   const lotCodeInputRef = inputRef;
 
   useEffect(() => {
-    if (session?.status !== "active" || activeTab !== "loading") {
+    if (session?.status !== "active" || activeTab !== "loading" || showClosureDialog || showHandoverModal) {
       return;
     }
 
@@ -885,7 +962,7 @@ export default function SessionActive() {
       focusMap[scanStep]?.current?.focus();
     }, 80);
     return () => clearTimeout(t);
-  }, [activeTab, feederInputRef, lotCodeInputRef, mpnInputRef, scanStep, session?.status]);
+  }, [activeTab, feederInputRef, lotCodeInputRef, mpnInputRef, scanStep, session?.status, showClosureDialog, showHandoverModal]);
 
   useEffect(() => {
     return () => {
@@ -1021,6 +1098,64 @@ export default function SessionActive() {
       setVerificationLocked(false);
     }
   };
+
+  // Free Scan Mode: commit the captured Feeder + MPN + Lot with no validation.
+  // The backend (bomId = null) auto-accepts and still rejects duplicate feeders.
+  const handleFreeScanAccept = async () => {
+    const feeder = freeFeeder.trim();
+    if (!feeder || freeSubmitting) return;
+
+    setFreeSubmitting(true);
+    try {
+      const res = await scanFeeder.mutateAsync({
+        sessionId,
+        data: {
+          sessionId,
+          feederNumber: feeder,
+          mpnOrInternalId: freeMpn.trim() || undefined,
+          lotCode: freeLot.trim() || undefined,
+          verificationMode: "AUTO",
+        },
+      });
+
+      setLastScanResult({
+        status: res.status as "ok" | "reject",
+        feeder,
+        msg: res.message,
+      });
+
+      if (res.status === "ok") {
+        showSuccessAlert(`Recorded feeder ${feeder}.`);
+        setFreeFeeder("");
+        setFreeMpn("");
+        setFreeLot("");
+        queryClient.invalidateQueries({ queryKey: getGetSessionQueryKey(sessionId) });
+        queryClient.invalidateQueries({ queryKey: ["session-scan-log", sessionId] });
+        requestAnimationFrame(() => freeFeederRef.current?.focus());
+      } else {
+        showErrorAlert(res.message || `Feeder ${feeder} rejected.`, "high");
+      }
+    } catch (err: any) {
+      const msg = err?.message || "Failed to record scan";
+      setLastScanResult({ status: "reject", feeder, msg });
+      showErrorAlert(msg, "high");
+    } finally {
+      setFreeSubmitting(false);
+    }
+  };
+
+  // Shared onChange for the free-scan fields: if the operator scans the app
+  // accept barcode, commit instead of writing the token into the field.
+  const handleFreeFieldChange =
+    (setter: React.Dispatch<React.SetStateAction<string>>) =>
+    (e: React.ChangeEvent<HTMLInputElement>) => {
+      const v = e.target.value;
+      if (isAcceptToken(v)) {
+        void handleFreeScanAccept();
+        return;
+      }
+      setter(v);
+    };
 
   const clearScanInput = () => {
     setScanInput("");
@@ -1162,17 +1297,52 @@ export default function SessionActive() {
   };
 
   const handleEndSession = () => {
-    if (confirm("End this verification session?")) {
-      updateSession.mutate(
-        { sessionId, data: { status: "completed", endTime: new Date().toISOString() } },
-        {
-          onSuccess: () => {
-            queryClient.invalidateQueries({ queryKey: getGetSessionQueryKey(sessionId) });
-            setLocation(`/session/${sessionId}/report`);
-          },
-        }
-      );
+    // Module 3: capture production quantity + cycle time at closure before either
+    // completing directly or routing splices through the QA 200% verification.
+    setShowClosureDialog(true);
+  };
+
+  const confirmClosure = () => {
+    const qty = Number(closureQty);
+    const cycle = Number(closureCycle);
+    if (closureQty.trim() === "" || !Number.isInteger(qty) || qty < 0) {
+      alert("Enter a valid total production quantity (whole number ≥ 0).");
+      return;
     }
+    if (closureCycle.trim() === "" || !Number.isFinite(cycle) || cycle < 0) {
+      alert("Enter a valid current cycle time in seconds (≥ 0).");
+      return;
+    }
+
+    const hasSplices = (splices?.length ?? 0) > 0;
+    const data: { totalProductionQuantity: number; currentCycleTime: number; status?: "completed"; endTime?: string } = {
+      totalProductionQuantity: qty,
+      currentCycleTime: cycle,
+    };
+    // No splices → close directly in the same request. With splices the changeover
+    // is submitted for QA 200% verification and QA performs the final close.
+    if (!hasSplices) {
+      data.status = "completed";
+      data.endTime = new Date().toISOString();
+    }
+
+    updateSession.mutate(
+      { sessionId, data },
+      {
+        onSuccess: () => {
+          setShowClosureDialog(false);
+          queryClient.invalidateQueries({ queryKey: getGetSessionQueryKey(sessionId) });
+          if (hasSplices) {
+            handleSubmitSplicingQa();
+          } else {
+            setLocation(`/session/${sessionId}/report`);
+          }
+        },
+        onError: (err: any) => {
+          alert(`Failed to record closure data: ${err?.data?.error || err?.message || "Unknown error"}`);
+        },
+      }
+    );
   };
 
   const handleCancelSession = () => {
@@ -1393,9 +1563,18 @@ export default function SessionActive() {
     if (needsAlternateSelection) {
       return `SELECT COMPONENT for ${pendingFeeder} — Click primary or alternate, then press ENTER`;
     }
+    if (legacyMode) {
+      if (scanStep === "spool") {
+        return `AUTO LEGACY — Feeder ${pendingFeeder} auto-loaded · SCAN MPN / INTERNAL ID`;
+      }
+      if (scanStep === "lot") {
+        return `AUTO LEGACY — Feeder ${pendingFeeder} · SCAN LOT CODE (Enter/Skip)`;
+      }
+      return "AUTO LEGACY — Loading next feeder…";
+    }
     if (scanStep === "feeder") {
-      return verificationMode === "AUTO" 
-        ? "STEP 1 — Scan FEEDER NUMBER (Auto-Advance)" 
+      return verificationMode === "AUTO"
+        ? "STEP 1 — Scan FEEDER NUMBER (Auto-Advance)"
         : "STEP 1 / 2 — Scan FEEDER NUMBER";
     }
     if (scanStep === "spool") {
@@ -1463,7 +1642,7 @@ export default function SessionActive() {
           </div>
           <div className="flex items-center gap-2 sm:gap-4 ml-auto sm:ml-0 w-full sm:w-auto justify-between sm:justify-end">
             <div className="flex items-center gap-2">
-              {session?.bomId === 0 && (
+              {isFreeScan && (
                 <div className="px-2 py-1 sm:px-3 sm:py-1.5 bg-amber-100 dark:bg-amber-900/30 border border-amber-300 dark:border-amber-700 rounded-sm text-xs sm:text-sm font-bold text-amber-800 dark:text-amber-400">
                   FREE SCAN
                 </div>
@@ -1505,6 +1684,35 @@ export default function SessionActive() {
                 </Button>
                 <Button variant="destructive" className="font-bold tracking-widest text-xs sm:text-sm py-1 sm:py-2 px-2 sm:px-4 h-auto" onClick={handleEndSession}>
                   END
+                </Button>
+                <Button
+                  variant="outline"
+                  className="font-bold tracking-widest border-destructive text-destructive hover:bg-destructive hover:text-destructive-foreground text-xs sm:text-sm py-1 sm:py-2 px-2 sm:px-3 h-auto"
+                  onClick={handleCancelSession}
+                >
+                  <X className="w-3 h-3 sm:w-4 sm:h-4" />
+                </Button>
+              </div>
+            ) : isSpliceEligible ? (
+              // Splicing phase: the primary action lives on top so the operator can
+              // finish easily. With splices recorded, END submits them for the QA
+              // 200% verification; with none, END closes the changeover directly.
+              <div className="flex gap-1 sm:gap-2 flex-col-reverse sm:flex-row">
+                <Button
+                  variant="secondary"
+                  className="font-bold tracking-widest text-xs sm:text-sm py-1 sm:py-2 px-2 sm:px-4 h-auto"
+                  onClick={() => window.open(`/api/sessions/${sessionId}/report/pdf`, "_blank")}
+                >
+                  📄 PDF
+                </Button>
+                <Button
+                  variant="destructive"
+                  className="font-bold tracking-widest text-xs sm:text-sm py-1 sm:py-2 px-3 sm:px-5 h-auto"
+                  disabled={submittingSplicingQa}
+                  onClick={handleEndSession}
+                >
+                  {submittingSplicingQa && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+                  {(splices?.length ?? 0) > 0 ? "SUBMIT TO QA" : "END SESSION"}
                 </Button>
                 <Button
                   variant="outline"
@@ -1574,24 +1782,108 @@ export default function SessionActive() {
 
             {session.status === "active" && activeTab === "loading" && (
             <>
-              <div className="flex justify-end">
-                <ModeToggle
-                  currentMode={verificationMode}
-                  onModeChange={handleVerificationModeChange}
-                  sessionId={String(sessionId)}
-                  sessionStartedAt={session.startedAt || ""}
-                />
-              </div>
+              {isFreeScan ? (
+                <div className="space-y-4">
+                  <div
+                    className="inline-flex items-center gap-2 rounded-full px-3 py-1 text-xs sm:text-sm font-bold tracking-widest"
+                    style={{ border: "1px solid #93C5FD", color: "#1D4ED8", background: "rgba(59, 130, 246, 0.08)" }}
+                  >
+                    🆓 FREE SCAN — NO BOM VALIDATION
+                  </div>
+
+                  <div className="bg-card border-2 border-primary/50 p-3 sm:p-6 rounded-xl shadow-[0_0_20px_rgba(var(--primary),0.1)] space-y-4">
+                    <Label className="text-sm lg:text-lg tracking-widest text-primary flex items-center gap-2 font-black uppercase">
+                      <ScanLine className="w-4 h-4 lg:w-5 lg:h-5" /> Capture — Feeder · MPN · Lot
+                    </Label>
+
+                    <div className="space-y-3">
+                      <div className="space-y-1">
+                        <Label className="text-xs font-bold text-muted-foreground">FEEDER</Label>
+                        <Input
+                          ref={freeFeederRef}
+                          value={freeFeeder}
+                          onChange={handleFreeFieldChange(setFreeFeeder)}
+                          onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); freeMpnRef.current?.focus(); } }}
+                          placeholder="SCAN FEEDER"
+                          autoComplete="off"
+                          autoFocus
+                          className="text-center text-xl lg:text-2xl h-12 lg:h-14 font-mono tracking-widest"
+                        />
+                      </div>
+                      <div className="space-y-1">
+                        <Label className="text-xs font-bold text-muted-foreground">MPN / INTERNAL ID</Label>
+                        <Input
+                          ref={freeMpnRef}
+                          value={freeMpn}
+                          onChange={handleFreeFieldChange(setFreeMpn)}
+                          onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); freeLotRef.current?.focus(); } }}
+                          placeholder="SCAN MPN / ID"
+                          autoComplete="off"
+                          className="text-center text-xl lg:text-2xl h-12 lg:h-14 font-mono tracking-widest"
+                        />
+                      </div>
+                      <div className="space-y-1">
+                        <Label className="text-xs font-bold text-muted-foreground">LOT CODE</Label>
+                        <Input
+                          ref={freeLotRef}
+                          value={freeLot}
+                          onChange={handleFreeFieldChange(setFreeLot)}
+                          onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); void handleFreeScanAccept(); } }}
+                          placeholder="SCAN LOT (ENTER = ACCEPT)"
+                          autoComplete="off"
+                          className="text-center text-xl lg:text-2xl h-12 lg:h-14 font-mono tracking-widest"
+                        />
+                      </div>
+                    </div>
+
+                    <Button
+                      className="w-full h-12 font-black tracking-widest"
+                      onClick={() => handleFreeScanAccept()}
+                      disabled={!freeFeeder.trim() || freeSubmitting}
+                    >
+                      {freeSubmitting && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+                      ✓ ACCEPT & RECORD
+                    </Button>
+
+                    <div className="text-center">
+                      <button
+                        type="button"
+                        className="text-xs underline text-muted-foreground hover:text-foreground"
+                        onClick={() => setShowAcceptTokenHelp((v) => !v)}
+                      >
+                        {showAcceptTokenHelp ? "Hide" : "Show"} accept-barcode help
+                      </button>
+                      {showAcceptTokenHelp && (
+                        <div className="mt-2 text-xs text-muted-foreground bg-muted/50 border border-border rounded p-2 leading-relaxed">
+                          Accept three ways: the <strong>ACCEPT &amp; RECORD</strong> button, <strong>Enter</strong> in the lot field,
+                          or scan a barcode/QR that encodes <code className="font-mono font-bold text-foreground">{ACCEPT_TOKEN}</code> into any field.
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              ) : (
+              <>
+              {!legacyMode && (
+                <div className="flex justify-end">
+                  <ModeToggle
+                    currentMode={verificationMode}
+                    onModeChange={handleVerificationModeChange}
+                    sessionId={String(sessionId)}
+                    sessionStartedAt={session.startedAt || ""}
+                  />
+                </div>
+              )}
 
               <div
                 className="inline-flex items-center gap-2 rounded-full px-3 py-1 text-xs sm:text-sm font-bold tracking-widest"
                 style={{
-                  border: `1px solid ${verificationMode === "AUTO" ? "#93C5FD" : "#FCD34D"}`,
-                  color: verificationMode === "AUTO" ? "#1D4ED8" : "#B45309",
-                  background: verificationMode === "AUTO" ? "rgba(59, 130, 246, 0.08)" : "rgba(245, 158, 11, 0.08)",
+                  border: `1px solid ${legacyMode ? "#C4B5FD" : verificationMode === "AUTO" ? "#93C5FD" : "#FCD34D"}`,
+                  color: legacyMode ? "#6D28D9" : verificationMode === "AUTO" ? "#1D4ED8" : "#B45309",
+                  background: legacyMode ? "rgba(139, 92, 246, 0.08)" : verificationMode === "AUTO" ? "rgba(59, 130, 246, 0.08)" : "rgba(245, 158, 11, 0.08)",
                 }}
               >
-                {verificationMode === "AUTO" ? "⚡ AUTO — STRICT" : "🔒 MANUAL MODE"}
+                {legacyMode ? "🔁 AUTO LEGACY — STRICT" : verificationMode === "AUTO" ? "⚡ AUTO — STRICT" : "🔒 MANUAL MODE"}
               </div>
 
               {/* Pending Verification Alert */}
@@ -1631,6 +1923,30 @@ export default function SessionActive() {
                   >
                     ✓ VERIFY & CONFIRM ENTRY
                   </Button>
+
+                  {/* Three-way manual accept: the button above, Enter, or the
+                      app accept barcode (##ACCEPT##) scanned into this field. */}
+                  <input
+                    ref={verifyScanRef}
+                    autoFocus
+                    aria-label="Scan accept barcode or press Enter to confirm"
+                    className="w-full text-center text-xs font-mono tracking-widest bg-white/70 dark:bg-blue-900/20 border border-blue-300 dark:border-blue-700 rounded px-2 py-1 text-blue-900 dark:text-blue-100 placeholder:text-blue-400"
+                    placeholder="Scan ✓ accept barcode or press ENTER"
+                    autoComplete="off"
+                    onChange={(e) => {
+                      if (isAcceptToken(e.currentTarget.value)) {
+                        e.currentTarget.value = "";
+                        void handleVerifyPendingScan();
+                      }
+                    }}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter") {
+                        e.preventDefault();
+                        e.currentTarget.value = "";
+                        void handleVerifyPendingScan();
+                      }
+                    }}
+                  />
                 </div>
               )}
 
@@ -1659,16 +1975,16 @@ export default function SessionActive() {
                   <div
                     className="inline-flex items-center gap-2 rounded-full px-3 py-1 text-xs font-bold tracking-widest"
                     style={{
-                      border: `1px solid ${verificationMode === "AUTO" ? "#93C5FD" : "#FCD34D"}`,
-                      color: verificationMode === "AUTO" ? "#1D4ED8" : "#B45309",
-                      background: verificationMode === "AUTO" ? "rgba(59, 130, 246, 0.08)" : "rgba(245, 158, 11, 0.08)",
+                      border: `1px solid ${legacyMode ? "#C4B5FD" : verificationMode === "AUTO" ? "#93C5FD" : "#FCD34D"}`,
+                      color: legacyMode ? "#6D28D9" : verificationMode === "AUTO" ? "#1D4ED8" : "#B45309",
+                      background: legacyMode ? "rgba(139, 92, 246, 0.08)" : verificationMode === "AUTO" ? "rgba(59, 130, 246, 0.08)" : "rgba(245, 158, 11, 0.08)",
                     }}
                   >
-                    {verificationMode === "AUTO" ? "⚡ AUTO — STRICT" : "🔒 MANUAL MODE"}
+                    {legacyMode ? "🔁 AUTO LEGACY — STRICT" : verificationMode === "AUTO" ? "⚡ AUTO — STRICT" : "🔒 MANUAL MODE"}
                   </div>
 
                   <div className="w-full flex gap-0.5 sm:gap-1 lg:gap-2 items-center justify-center min-h-12 sm:min-h-14 lg:min-h-16">
-                    {(scanStep === "spool" || scanStep === "lot") && !needsAlternateSelection && !pendingVerification && (
+                    {!legacyMode && (scanStep === "spool" || scanStep === "lot") && !needsAlternateSelection && !pendingVerification && (
                       <Button type="button" variant="ghost" size="icon" className="shrink-0 h-10 sm:h-12 lg:h-14 xl:h-16 w-10 sm:w-12 lg:w-14 xl:w-16" onClick={() => { setScanStep("feeder"); setPendingFeeder(""); setFeederScanTime(null); setScanInput(""); setNeedsAlternateSelection(false); setPendingAvailableOptions(null); setSelectedItemIdForScan(null); setInternalIdInput(""); setPendingMpnScan(""); setPendingScanDuration(undefined); setCaseConverted(false); }}>
                         <ArrowLeft className="w-3 h-3 sm:w-4 sm:h-4 lg:w-5 lg:h-5 xl:w-6 xl:h-6" />
                       </Button>
@@ -1685,7 +2001,7 @@ export default function SessionActive() {
                         onChange={(e) => setScanInput(e.target.value)}
                         onKeyDown={handlePrimaryInputKeyDown}
                         className="flex-1 text-center text-2xl sm:text-3xl lg:text-4xl xl:text-5xl h-14 sm:h-16 lg:h-20 xl:h-24 font-mono tracking-[0.15em] sm:tracking-[0.2em] bg-background border-2 border-border focus-visible:border-primary rounded-lg shadow-inner text-xs sm:text-sm"
-                        placeholder={needsAlternateSelection ? "Press ENTER..." : (scanStep === "feeder" ? "SCAN FEEDER..." : scanStep === "spool" ? (verificationMode === "AUTO" ? "SCAN MPN/ID" : "SCAN MPN/ID...") : "SCAN LOT CODE (ENTER=SKIP)")}
+                        placeholder={needsAlternateSelection ? "Press ENTER..." : legacyMode ? (scanStep === "lot" ? "SCAN LOT CODE (ENTER=SKIP)" : "SCAN MPN/ID") : (scanStep === "feeder" ? "SCAN FEEDER..." : scanStep === "spool" ? (verificationMode === "AUTO" ? "SCAN MPN/ID" : "SCAN MPN/ID...") : "SCAN LOT CODE (ENTER=SKIP)")}
                         autoComplete="off"
                       />
                     )}
@@ -1739,7 +2055,9 @@ export default function SessionActive() {
                   )}
                 </form>
               </div>
-            
+              </>
+              )}
+
 
           {/* Feedback Area - Responsive */}
           <div className="h-20 sm:h-24 lg:h-32 xl:h-40 flex items-center justify-center shrink-0">
@@ -1892,23 +2210,12 @@ export default function SessionActive() {
             <div className="flex flex-col">
               <SplicingPage />
 
-              {/* 200% QA checkpoint: operator submits splicing for QA, then QA
-                  reviews every splice and closes the changeover. */}
+              {/* 200% QA checkpoint. The submit action lives in the top header
+                  (SUBMIT TO QA); this strip just tells the operator what's next. */}
               {isSpliceEligible && splicingRecords.length > 0 && (
-                <div className="border-t border-border bg-card p-4 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
-                  <div className="text-sm text-muted-foreground">
-                    <span className="font-bold text-foreground">{splicingRecords.length}</span> splice(s) recorded.
-                    Submit for the QA 200% verification to close the changeover.
-                  </div>
-                  <Button
-                    variant="destructive"
-                    className="font-bold tracking-widest"
-                    disabled={submittingSplicingQa}
-                    onClick={handleSubmitSplicingQa}
-                  >
-                    {submittingSplicingQa && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
-                    SUBMIT SPLICING FOR QA
-                  </Button>
+                <div className="border-t border-border bg-card p-4 text-sm text-muted-foreground">
+                  <span className="font-bold text-foreground">{splicingRecords.length}</span> splice(s) recorded.
+                  Use <span className="font-bold text-foreground">SUBMIT TO QA</span> at the top to send them for the 200% verification — QA and the supervisor are notified, and the changeover closes once every splice is verified.
                 </div>
               )}
 
@@ -1927,7 +2234,7 @@ export default function SessionActive() {
           {/* End of left column */}
 
         {/* Right Panel: BOM Checklist - Hidden on mobile, shown on lg, hidden if free scan mode */}
-        {session?.bomId !== 0 && (
+        {!isFreeScan && (
           <div className="w-80 hidden lg:flex flex-col bg-card shrink-0 shadow-[-4px_0_15px_-5px_rgba(0,0,0,0.1)] z-10 border-l border-border overflow-hidden">
             <div className="p-3 border-b border-border bg-secondary/30 flex justify-between items-center gap-2 shrink-0">
               <h2 className="font-bold tracking-wider uppercase text-xs truncate">BOM</h2>
@@ -2154,6 +2461,49 @@ export default function SessionActive() {
             >
               Reset Session
             </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      <AlertDialog open={showClosureDialog} onOpenChange={setShowClosureDialog}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Close Changeover</AlertDialogTitle>
+            <AlertDialogDescription>
+              Enter the production figures for this changeover. Total output units are computed as production quantity × BOM cavity count.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <div className="space-y-4 py-2">
+            <div className="space-y-2">
+              <Label htmlFor="closure-qty">Total Production Quantity *</Label>
+              <Input
+                id="closure-qty"
+                type="number"
+                min={0}
+                step={1}
+                value={closureQty}
+                onChange={(e) => setClosureQty(e.target.value)}
+                placeholder="e.g. 1200"
+              />
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="closure-cycle">Current Cycle Time (seconds) *</Label>
+              <Input
+                id="closure-cycle"
+                type="number"
+                min={0}
+                step="any"
+                value={closureCycle}
+                onChange={(e) => setClosureCycle(e.target.value)}
+                placeholder="e.g. 12.5"
+              />
+            </div>
+          </div>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <Button onClick={confirmClosure} disabled={updateSession.isPending}>
+              {(splices?.length ?? 0) > 0 ? "Save & Submit to QA" : "Save & Close Changeover"}
+            </Button>
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>

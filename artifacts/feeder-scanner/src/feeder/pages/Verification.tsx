@@ -13,6 +13,7 @@ import { ScanNotification } from "@/components/notifications/ScanNotification";
 import { LogPanel } from "@/components/LogPanel";
 import { AppLogo } from "@/components/AppLogo";
 import { appConfig } from "@/lib/appConfig";
+import { isAcceptToken } from "@/lib/accept-token";
 
 export default function VerificationPage() {
   const [, setLocation] = useLocation();
@@ -172,8 +173,22 @@ export default function VerificationPage() {
                   <Label>Lot Code (Optional)</Label>
                   <Input
                     value={lotCodeValue}
-                    onChange={(e) => setLotCodeValue(e.target.value)}
-                    placeholder="Scan lot code"
+                    onChange={(e) => {
+                      // App accept barcode saves the lot immediately instead of
+                      // being stored as the lot value.
+                      if (isAcceptToken(e.target.value)) {
+                        submitLot();
+                        return;
+                      }
+                      setLotCodeValue(e.target.value);
+                    }}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter") {
+                        e.preventDefault();
+                        submitLot();
+                      }
+                    }}
+                    placeholder="Scan lot code (Enter = Save)"
                     className="scan-input-surface h-12 font-mono"
                   />
                   <div className="flex gap-2">

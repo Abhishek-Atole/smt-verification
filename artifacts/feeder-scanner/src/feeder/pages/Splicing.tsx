@@ -17,6 +17,7 @@ import { appConfig } from "@/lib/appConfig";
 import { useAuth } from "@/context/auth-context";
 import { useSession } from "@/context/session-context";
 import { logger } from "@/lib/logger";
+import { isAcceptToken } from "@/lib/accept-token";
 import { getGetBomQueryKey, getGetSessionQueryKey, getListSplicesQueryKey, useGetBom, useGetSession, useListSplices, useRecordSplice } from "@workspace/api-client-react";
 
 type WorkflowStep = "feeder" | "oldSpool" | "newSpool" | "newLot" | "confirm";
@@ -367,6 +368,10 @@ export default function SplicingPage() {
   const records = useMemo(() => (spliceQuery.data ?? []).map((record) => normalizeRemoteRecord(record as RemoteSpliceRecord)), [spliceQuery.data]);
 
   const bomLoaded = !!bomId && !bomQuery.isLoading && bomItems.length > 0;
+  // Approved "Skip BOM Verification" changeover: splicing must not reject on BOM
+  // mismatch — feeder/spool scans are accepted as-is. The backend enforces the
+  // same bypass; this only relaxes the client-side workflow gates.
+  const bomBypass = (sessionQuery.data as { bomVerificationSkipped?: boolean } | undefined)?.bomVerificationSkipped === true;
   const currentSessionVerificationMode = String(sessionQuery.data?.verificationMode ?? "AUTO").toUpperCase() === "MANUAL" ? "MANUAL" : "AUTO";
   const operatorId = String(user?.userId ?? activeSession?.operatorId ?? "");
 
@@ -636,7 +641,19 @@ export default function SplicingPage() {
     const value = raw.trim();
     if (!value) return;
 
-    if (!bomLoaded) {
+    // App accept barcode: at the confirm step it finalizes the splice (same as
+    // the button / Enter). At data-entry steps it is not a scannable value, so
+    // ignore it rather than storing the token (e.g. as a lot code).
+    if (isAcceptToken(value)) {
+      if (step === "confirm") {
+        cancelAutoSubmit();
+        void onFinalize();
+      }
+      clearStepInput();
+      return;
+    }
+
+    if (!bomLoaded && !bomBypass) {
       const failure: StepFailure = {
         code: "NO_BOM_LOADED",
         step: "feeder",
@@ -650,7 +667,7 @@ export default function SplicingPage() {
     if (step === "feeder") {
       const normalizedFeeder = normalizeValue(value);
       const bomItem = bomByFeeder.get(normalizedFeeder);
-      if (!bomItem) {
+      if (!bomItem && !bomBypass) {
         const failure: StepFailure = {
           code: "FEEDER_NOT_IN_BOM",
           step: "feeder",
@@ -661,8 +678,16 @@ export default function SplicingPage() {
         return;
       }
 
+      // Bypass: accept a feeder that isn't in the BOM as a free-scan line.
+      const lockedItem: BomLine = bomItem ?? {
+        feederNumber: normalizedFeeder,
+        mpn1: null, mpn2: null, mpn3: null,
+        internalId: null, description: null, refDes: null,
+        quantity: null, supplier: null,
+      };
+
       setFeederNumber(normalizedFeeder);
-      setLockedBomItem(bomItem);
+      setLockedBomItem(lockedItem);
       setStep("oldSpool");
       setWorkflowFailure(null);
       setRetryCounts((current) => ({ ...current, feeder: 0 }));
@@ -679,16 +704,19 @@ export default function SplicingPage() {
       }
 
       const parsed = parseSpoolLabel(value);
-      const match = findMatch(parsed, lockedBomItem);
+      let match = findMatch(parsed, lockedBomItem);
       if (!match) {
-        const failure: StepFailure = {
-          code: "OLD_SPOOL_BOM_MISMATCH",
-          step: "oldSpool",
-          message: `Old spool does not match BOM feeder ${feederNumber}.`,
-        };
-        await recordFailure(failure, parsed, { feederNumber, bom: lockedBomItem });
-        clearStepInput();
-        return;
+        if (!bomBypass) {
+          const failure: StepFailure = {
+            code: "OLD_SPOOL_BOM_MISMATCH",
+            step: "oldSpool",
+            message: `Old spool does not match BOM feeder ${feederNumber}.`,
+          };
+          await recordFailure(failure, parsed, { feederNumber, bom: lockedBomItem });
+          clearStepInput();
+          return;
+        }
+        match = { field: "internalId", label: "BOM bypassed", expected: "-", received: parsed.internalId || parsed.raw };
       }
 
       setOldSpool(parsed);
@@ -721,13 +749,23 @@ export default function SplicingPage() {
       // physical spool is also allowed (the operator may simply be re-confirming).
       const match = findMatch(parsed, lockedBomItem);
       if (!match) {
-        const failure: StepFailure = {
-          code: "NEW_SPOOL_MISMATCH",
-          step: "newSpool",
-          message: `New spool does not match BOM feeder ${feederNumber} (MPN1, MPN2, MPN3, or Internal ID).`,
-        };
-        await recordFailure(failure, parsed, { feederNumber, bom: lockedBomItem });
+        if (!bomBypass) {
+          const failure: StepFailure = {
+            code: "NEW_SPOOL_MISMATCH",
+            step: "newSpool",
+            message: `New spool does not match BOM feeder ${feederNumber} (MPN1, MPN2, MPN3, or Internal ID).`,
+          };
+          await recordFailure(failure, parsed, { feederNumber, bom: lockedBomItem });
+          clearStepInput();
+          return;
+        }
+        setNewSpool(parsed);
+        setNewMatch({ field: "internalId", label: "BOM bypassed", expected: "-", received: parsed.internalId || parsed.raw });
+        setStep("newLot");
+        setWorkflowFailure(null);
+        setRetryCounts((current) => ({ ...current, newSpool: 0 }));
         clearStepInput();
+        showSuccessAlert("New spool accepted (BOM bypassed). Scan the new spool LOT CODE.", "medium");
         return;
       }
 
@@ -796,7 +834,8 @@ export default function SplicingPage() {
   }
 
   // ─── No BOM state ─────────────────────────────────────────────────────────────
-  if (!bomLoaded) {
+  // Skipped when the changeover has an approved BOM-verification bypass.
+  if (!bomLoaded && !bomBypass) {
     return (
       <div className="min-h-screen bg-background p-4 md:p-6">
         <div className="mx-auto max-w-2xl space-y-4">
@@ -1135,6 +1174,33 @@ export default function SplicingPage() {
                     {finalizing ? "Submitting..." : "Submit & Finalize"}
                   </Button>
                 </div>
+
+                {/* Three-way accept: the button above, Enter, or the app accept
+                    barcode (##ACCEPT##) scanned into this field. */}
+                {!finalizing && (
+                  <input
+                    autoFocus
+                    aria-label="Scan accept barcode or press Enter to finalize"
+                    className="w-full text-center text-xs font-mono tracking-widest bg-background/80 border border-emerald-300 dark:border-emerald-800 rounded px-2 py-1 text-emerald-900 dark:text-emerald-100 placeholder:text-emerald-500/60"
+                    placeholder="Scan ✓ accept barcode or press ENTER to submit"
+                    autoComplete="off"
+                    onChange={(e) => {
+                      if (isAcceptToken(e.currentTarget.value)) {
+                        e.currentTarget.value = "";
+                        cancelAutoSubmit();
+                        void onFinalize();
+                      }
+                    }}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter") {
+                        e.preventDefault();
+                        e.currentTarget.value = "";
+                        cancelAutoSubmit();
+                        void onFinalize();
+                      }
+                    }}
+                  />
+                )}
               </div>
             )}
 
