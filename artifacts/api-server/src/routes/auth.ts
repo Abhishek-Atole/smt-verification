@@ -8,9 +8,11 @@ import { usersTable, loginEventsTable } from "@workspace/db/schema";
 import {
   computeFingerprint,
   getAccessTtlSec,
+  getReauthTtlSec,
   getRefreshTtlSec,
   hashRefreshToken,
   signAccessToken,
+  signReauthToken,
   verifyAccessToken,
   type AccessTokenPayload,
 } from "../lib/authTokens";
@@ -59,6 +61,18 @@ function refreshCookieOptions(req?: { hostname?: string }) {
     sameSite: "strict" as const,
     maxAge: getRefreshTtlSec() * 1000,
     path: "/api/auth",
+  };
+}
+
+// Step-up proof cookie. Path "/api" so it rides along on the BOM write routes it
+// authorizes; short TTL so a single confirm only opens a brief write window.
+function reauthCookieOptions(req?: { hostname?: string }) {
+  return {
+    httpOnly: true,
+    secure: isProd(req),
+    sameSite: "strict" as const,
+    maxAge: getReauthTtlSec() * 1000,
+    path: "/api",
   };
 }
 
@@ -492,6 +506,10 @@ router.post("/auth/verify-password", attachActor, requireAuth, async (req: AuthR
     res.status(401).json({ error: "auth_invalid_credentials", message: "Password is incorrect" });
     return;
   }
+  // Issue a short-lived step-up proof so the sensitive BOM writes this confirm
+  // authorizes are actually enforced server-side (requireStepUp), not just gated
+  // in the UI.
+  res.cookie("smt_reauth", signReauthToken(userId), reauthCookieOptions(req));
   res.status(200).json({ valid: true });
 });
 

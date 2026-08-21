@@ -11,6 +11,11 @@ const router: IRouter = Router();
 
 // Protect all routes with role-based access control
 router.use(attachActor);
+// Reports expose plant-wide analytics (FPY/OEE/operator-performance/etc.) that
+// the UI restricts to supervisor/qa. Gate the whole router so no data endpoint
+// is left open to operator/storekeeper — the per-route export gates below are
+// now redundant but kept for clarity.
+router.use(requireRole("qa", "supervisor", "admin"));
 
 /**
  * Middleware to validate date filters
@@ -465,13 +470,13 @@ router.post("/reports/export/:reportType", requireRole("qa", "supervisor", "admi
 
     switch (format) {
       case "pdf":
-        filePath = await ExportService.exportToPdf(reportData, exportOptions, (req as any).user?.id || "system");
+        filePath = await ExportService.exportToPdf(reportData, exportOptions, req.actor?.id ?? "system");
         break;
       case "xlsx":
-        filePath = await ExportService.exportToExcel(reportData, exportOptions, (req as any).user?.id || "system");
+        filePath = await ExportService.exportToExcel(reportData, exportOptions, req.actor?.id ?? "system");
         break;
       case "csv":
-        filePath = await ExportService.exportToCsv(reportData, exportOptions, (req as any).user?.id || "system");
+        filePath = await ExportService.exportToCsv(reportData, exportOptions, req.actor?.id ?? "system");
         break;
       default:
         throw new Error("Invalid export format");
@@ -489,7 +494,7 @@ router.post("/reports/export/:reportType", requireRole("qa", "supervisor", "admi
         filters: filters ?? {},
         recordCount: Array.isArray(reportData) ? reportData.length : 0,
         queryTimeMs: queryTime,
-        generatedBy: (req as any).user?.id || "system",
+        generatedBy: req.actor?.id ?? "system",
       })
       .returning({ id: reportsTable.id });
 
@@ -497,7 +502,7 @@ router.post("/reports/export/:reportType", requireRole("qa", "supervisor", "admi
     if (reportRecord?.id) {
       await ExportService.recordExport(
         reportRecord.id,
-        (req as any).user?.id || "system",
+        req.actor?.id ?? "system",
         format as "pdf" | "xlsx" | "csv",
         req.ip,
         req.get("user-agent")
@@ -538,7 +543,7 @@ router.post("/reports/export/:reportType", requireRole("qa", "supervisor", "admi
  */
 router.get("/reports/exports/history", requireRole("qa", "supervisor", "admin"), async (req: AuthRequest, res) => {
   try {
-    const userId = (req as any).user?.id || "system";
+    const userId = req.actor?.id ?? "system";
 
     const exports = await db.select().from(reportExportsTable).where(eq(reportExportsTable.userId, userId));
 

@@ -2,7 +2,7 @@ import { Router, type IRouter, type Response } from "express";
 import { db } from "@workspace/db";
 import { bomsTable, bomItemsTable, changeoverSessionsTable, sessionsTable } from "@workspace/db/schema";
 import { eq, and, sql, isNull, isNotNull } from "drizzle-orm";
-import { attachActor, requireRole, requireAuth, type AuthRequest } from "../middleware/auth";
+import { attachActor, requireRole, requireAuth, requireStepUp, type AuthRequest } from "../middleware/auth";
 import { bomCache, buildKey, getCached, invalidatePrefix, setCached } from "../lib/cache";
 import { auditLog } from "../lib/auditLogger";
 import { pushNotification } from "../lib/notify";
@@ -232,7 +232,7 @@ router.get("/bom", requireRole("operator", "qa", "supervisor", "admin"), async (
   }
 });
 
-router.post("/bom", requireRole("qa", "supervisor", "admin"), async (req: AuthRequest, res) => {
+router.post("/bom", requireRole("qa", "supervisor", "admin"), requireStepUp, async (req: AuthRequest, res) => {
   try {
     const { name, description, version, product, customer, cavityCount, revisionLabel, revisionNotes } = req.body;
     if (!name) {
@@ -319,7 +319,7 @@ router.get("/bom/:bomId", requireRole("operator", "qa", "supervisor", "admin"), 
   }
 });
 
-router.patch("/bom/:bomId", requireRole("qa", "supervisor", "admin"), async (req: AuthRequest, res) => {
+router.patch("/bom/:bomId", requireRole("qa", "supervisor", "admin"), requireStepUp, async (req: AuthRequest, res) => {
   try {
     const bomId = Number(req.params.bomId);
     const { name, description, version, product, customer, cavityCount } = req.body;
@@ -531,7 +531,7 @@ router.post("/bom/:bomId/items", requireRole("qa", "supervisor", "admin"), async
   }
 });
 
-router.post("/bom/:bomId/import", requireRole("qa", "supervisor", "admin"), async (req: AuthRequest, res) => {
+router.post("/bom/:bomId/import", requireRole("qa", "supervisor", "admin"), requireStepUp, async (req: AuthRequest, res) => {
   try {
     const bomId = Number(req.params.bomId);
     if (!(await assertBomEditable(bomId, res))) return;
@@ -732,7 +732,7 @@ router.delete("/bom/:bomId/items/:itemId", requireRole("qa", "supervisor", "admi
 });
 
 // Soft delete - move BOM to trash
-router.patch("/bom/:bomId/delete", requireRole("qa", "supervisor", "admin"), async (req: AuthRequest, res) => {
+router.patch("/bom/:bomId/delete", requireRole("qa", "supervisor", "admin"), requireStepUp, async (req: AuthRequest, res) => {
   try {
     const bomId = Number(req.params.bomId);
     const deletedBy = req.actor?.username || "system";
@@ -763,7 +763,7 @@ router.patch("/bom/:bomId/delete", requireRole("qa", "supervisor", "admin"), asy
 });
 
 // Restore from trash
-router.patch("/bom/:bomId/restore", requireRole("qa", "supervisor", "admin"), async (req: AuthRequest, res) => {
+router.patch("/bom/:bomId/restore", requireRole("qa", "supervisor", "admin"), requireStepUp, async (req: AuthRequest, res) => {
   try {
     const bomId = Number(req.params.bomId);
     
@@ -800,7 +800,7 @@ const STATUS_META: Record<string, { event: "BOM_LOCKED" | "BOM_RELEASED" | "BOM_
   hold: { event: "BOM_HELD", verb: "put on hold", type: "warning" },
 };
 
-router.patch("/bom/:bomId/status", requireRole("qa", "supervisor", "admin"), async (req: AuthRequest, res) => {
+router.patch("/bom/:bomId/status", requireRole("qa", "supervisor", "admin"), requireStepUp, async (req: AuthRequest, res) => {
   try {
     const bomId = Number(req.params.bomId);
     const status = String(req.body?.status ?? "");
@@ -837,7 +837,7 @@ router.patch("/bom/:bomId/status", requireRole("qa", "supervisor", "admin"), asy
 });
 
 // Hard delete - permanently delete BOM
-router.delete("/bom/:bomId/permanent", requireRole("qa", "supervisor", "admin"), async (req: AuthRequest, res) => {
+router.delete("/bom/:bomId/permanent", requireRole("qa", "supervisor", "admin"), requireStepUp, async (req: AuthRequest, res) => {
   try {
     const bomId = Number(req.params.bomId);
 

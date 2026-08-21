@@ -9,6 +9,7 @@ import type { UserRole } from "../middleware/auth";
 
 const DEFAULT_ACCESS_TTL_SEC  = 30 * 60;
 const DEFAULT_REFRESH_TTL_SEC = 7 * 24 * 60 * 60;
+const DEFAULT_REAUTH_TTL_SEC  = 5 * 60;
 
 export interface AccessTokenPayload {
   userId: string;
@@ -35,6 +36,32 @@ export function getAccessTtlSec(): number {
 export function getRefreshTtlSec(): number {
   const fromEnv = Number(process.env.JWT_REFRESH_TTL_SEC);
   return Number.isFinite(fromEnv) && fromEnv > 0 ? fromEnv : DEFAULT_REFRESH_TTL_SEC;
+}
+
+export function getReauthTtlSec(): number {
+  const fromEnv = Number(process.env.JWT_REAUTH_TTL_SEC);
+  return Number.isFinite(fromEnv) && fromEnv > 0 ? fromEnv : DEFAULT_REAUTH_TTL_SEC;
+}
+
+// Step-up (re-auth) proof. Issued by POST /auth/verify-password once the actor
+// re-enters their own password; required by sensitive BOM writes so those can no
+// longer be driven from a bare session cookie without a fresh password check.
+// Short-lived + bound to the user via `sub`; `purpose` fences it off from access
+// tokens signed with the same secret.
+export function signReauthToken(userId: string): string {
+  return jwt.sign({ sub: userId, purpose: "reauth" }, getJwtSecret(), { expiresIn: getReauthTtlSec() });
+}
+
+// Returns the bound userId when the token is a valid, unexpired reauth proof,
+// else null.
+export function verifyReauthToken(token: string): string | null {
+  try {
+    const decoded = jwt.verify(token, getJwtSecret()) as JwtPayload;
+    if (decoded.purpose !== "reauth") return null;
+    return typeof decoded.sub === "string" && decoded.sub ? decoded.sub : null;
+  } catch {
+    return null;
+  }
 }
 
 export function signAccessToken(payload: AccessTokenPayload): string {

@@ -20,11 +20,15 @@ router.use(attachActor);
  */
 router.post("/audit/log", requireRole("qa", "supervisor", "admin"), async (req: AuthRequest, res) => {
   try {
-    const { entityType, entityId, action, oldValue, newValue, changedBy, description } = req.body;
+    const { entityType, entityId, action, oldValue, newValue, description } = req.body;
+    // Non-repudiation: attribute the entry to the authenticated actor, never a
+    // client-supplied changedBy — otherwise a caller could forge audit rows as
+    // any user.
+    const changedBy = req.actor!.id;
 
-    if (!entityType || !entityId || !action || !changedBy) {
+    if (!entityType || !entityId || !action) {
       return res.status(400).json({
-        error: "Missing required fields: entityType, entityId, action, changedBy",
+        error: "Missing required fields: entityType, entityId, action",
       });
     }
 
@@ -40,7 +44,8 @@ router.post("/audit/log", requireRole("qa", "supervisor", "admin"), async (req: 
 
     return res.json({ success: true, log });
   } catch (error) {
-    return res.status(500).json({ error: `Failed to record audit log: ${error}` });
+    req.log.error({ err: error }, "Failed to record audit log");
+    return res.status(500).json({ error: "Failed to record audit log" });
   }
 });
 
@@ -59,7 +64,8 @@ router.get("/audit/logs/:entityType/:entityId", requireRole("qa", "supervisor", 
       logs,
     });
   } catch (error) {
-    return res.status(500).json({ error: `Failed to get audit logs: ${error}` });
+    req.log.error({ err: error }, "Failed to get audit logs");
+    return res.status(500).json({ error: "Failed to get audit logs" });
   }
 });
 
@@ -77,7 +83,8 @@ router.get("/audit/logs/action/:action", requireRole("qa", "supervisor", "admin"
       logs,
     });
   } catch (error) {
-    return res.status(500).json({ error: `Failed to get audit logs by action: ${error}` });
+    req.log.error({ err: error }, "Failed to get audit logs by action");
+    return res.status(500).json({ error: "Failed to get audit logs by action" });
   }
 });
 
@@ -95,7 +102,8 @@ router.get("/audit/logs/user/:userId", requireRole("qa", "supervisor", "admin"),
       logs,
     });
   } catch (error) {
-    return res.status(500).json({ error: `Failed to get audit logs by user: ${error}` });
+    req.log.error({ err: error }, "Failed to get audit logs by user");
+    return res.status(500).json({ error: "Failed to get audit logs by user" });
   }
 });
 
@@ -123,7 +131,8 @@ router.get("/audit/recent", requireRole("admin"), async (req: AuthRequest, res) 
 
     return res.json({ count: logs.length, logs });
   } catch (error) {
-    return res.status(500).json({ error: `Failed to get recent audit logs: ${error}` });
+    req.log.error({ err: error }, "Failed to get recent audit logs");
+    return res.status(500).json({ error: "Failed to get recent audit logs" });
   }
 });
 
@@ -164,7 +173,8 @@ router.get("/audit/monitoring", requireRole("admin"), async (req: AuthRequest, r
       byAction,
     });
   } catch (error) {
-    return res.status(500).json({ error: `Failed to get monitoring data: ${error}` });
+    req.log.error({ err: error }, "Failed to get monitoring data");
+    return res.status(500).json({ error: "Failed to get monitoring data" });
   }
 });
 
@@ -228,7 +238,8 @@ router.get("/monitoring/summary", requireRole("admin"), async (req: AuthRequest,
       recentEvents: handovers,
     });
   } catch (error) {
-    return res.status(500).json({ error: `Failed to get monitoring summary: ${error}` });
+    req.log.error({ err: error }, "Failed to get monitoring summary");
+    return res.status(500).json({ error: "Failed to get monitoring summary" });
   }
 });
 

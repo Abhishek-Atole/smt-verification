@@ -3,6 +3,7 @@ import { db } from "@workspace/db";
 import { changeoverSessionsTable, sessionsTable } from "@workspace/db/schema";
 import { eq } from "drizzle-orm";
 import { getAuthActorFromCookie } from "../routes/auth";
+import { verifyReauthToken } from "../lib/authTokens";
 import { isRevoked } from "../lib/tokenBlacklist";
 import { auditLog } from "../lib/auditLogger";
 
@@ -102,6 +103,32 @@ export function requireRole(...allowedRoles: string[]) {
     }
     next();
   };
+}
+
+/**
+ * Step-up (re-auth) guard. Requires a fresh `smt_reauth` proof cookie — issued by
+ * POST /auth/verify-password when the actor re-enters their password — bound to
+ * the current actor. Without it, sensitive writes (BOM create/edit/delete/status)
+ * are rejected even for an authenticated privileged session, so the password
+ * confirm can no longer be bypassed by calling the API directly. Must run after
+ * attachActor. 403 `reauth_required` tells the client to re-prompt.
+ */
+export function requireStepUp(req: AuthRequest, res: Response, next: NextFunction): void {
+  const actor = req.actor;
+  if (!actor) {
+    res.status(401).json({ error: "Unauthorized" });
+    return;
+  }
+  const token = (req as Request & { cookies?: { smt_reauth?: string } }).cookies?.smt_reauth ?? "";
+  const userId = token ? verifyReauthToken(token) : null;
+  if (!userId || userId !== actor.id) {
+    res.status(403).json({
+      error: "reauth_required",
+      message: "Re-enter your password to confirm this action.",
+    });
+    return;
+  }
+  next();
 }
 
 /**

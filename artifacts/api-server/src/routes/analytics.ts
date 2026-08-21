@@ -72,7 +72,6 @@ router.get("/analytics/pareto", requireRole("qa", "supervisor", "admin"), async 
 
     if (totalRejects === 0) {
       return res.json({ items: [], totalRejects: 0 });
-      return;
     }
 
     // Group by feeder number

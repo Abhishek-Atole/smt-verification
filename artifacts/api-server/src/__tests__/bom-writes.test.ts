@@ -71,7 +71,7 @@ vi.mock("bcryptjs", () => ({
 }));
 
 const app = (await import("../app")).default;
-const { signAccessToken } = await import("../lib/authTokens");
+const { signAccessToken, signReauthToken } = await import("../lib/authTokens");
 
 app.set("trust proxy", 1);
 
@@ -87,6 +87,12 @@ function supervisorCookie(): string {
     jti: randomUUID(),
   });
   return `smt_token=${token}`;
+}
+
+// Fresh step-up proof bound to USER_ID — required by the gated BOM write routes
+// (requireStepUp). In the app it's issued by POST /auth/verify-password.
+function reauthCookie(): string {
+  return `smt_reauth=${signReauthToken(USER_ID)}`;
 }
 
 const csrf = "XMLHttpRequest";
@@ -139,9 +145,9 @@ describe("BOM writes emit audit + notification", () => {
   test("POST /bom → 201, BOM_CREATED audit event, and a notification", async () => {
     const res = await request(app)
       .post("/api/bom")
-      .set("Cookie", supervisorCookie())
+      .set("Cookie", [supervisorCookie(), reauthCookie()])
       .set("X-Requested-With", csrf)
-      .send({ name: "Test BOM" });
+      .send({ name: "Test BOM", cavityCount: 1 });
 
     expect(res.status).toBe(201);
     expect(mocks.auditLog).toHaveBeenCalledWith(expect.objectContaining({ event: "BOM_CREATED" }));
@@ -149,13 +155,26 @@ describe("BOM writes emit audit + notification", () => {
       expect.objectContaining({ type: "success", entityId: "1" }),
     );
   });
+
+  test("POST /bom without a step-up proof → 403 reauth_required, no write", async () => {
+    const res = await request(app)
+      .post("/api/bom")
+      .set("Cookie", supervisorCookie())
+      .set("X-Requested-With", csrf)
+      .send({ name: "Test BOM", cavityCount: 1 });
+
+    expect(res.status).toBe(403);
+    expect(res.body).toEqual(expect.objectContaining({ error: "reauth_required" }));
+    expect(mocks.insert).not.toHaveBeenCalled();
+    expect(mocks.auditLog).not.toHaveBeenCalled();
+  });
 });
 
 describe("PATCH /bom/:id/status (revision lock/release/hold)", () => {
   test("lock → 200, BOM_LOCKED audit event + notification", async () => {
     const res = await request(app)
       .patch("/api/bom/1/status")
-      .set("Cookie", supervisorCookie())
+      .set("Cookie", [supervisorCookie(), reauthCookie()])
       .set("X-Requested-With", csrf)
       .send({ status: "locked" });
 
@@ -167,7 +186,7 @@ describe("PATCH /bom/:id/status (revision lock/release/hold)", () => {
   test("release → BOM_RELEASED audit event", async () => {
     const res = await request(app)
       .patch("/api/bom/1/status")
-      .set("Cookie", supervisorCookie())
+      .set("Cookie", [supervisorCookie(), reauthCookie()])
       .set("X-Requested-With", csrf)
       .send({ status: "active" });
 
@@ -178,7 +197,7 @@ describe("PATCH /bom/:id/status (revision lock/release/hold)", () => {
   test("invalid status → 400, no audit event", async () => {
     const res = await request(app)
       .patch("/api/bom/1/status")
-      .set("Cookie", supervisorCookie())
+      .set("Cookie", [supervisorCookie(), reauthCookie()])
       .set("X-Requested-With", csrf)
       .send({ status: "bogus" });
 
@@ -202,6 +221,7 @@ describe("POST /sessions rejects a locked BOM", () => {
         bomId: 1,
         companyName: "Acme",
         panelName: "P1",
+        lineName: "L1",
         supervisorName: "Sup",
         operatorName: "Op",
         shiftName: "A",
