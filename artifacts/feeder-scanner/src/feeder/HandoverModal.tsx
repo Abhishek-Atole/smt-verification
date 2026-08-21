@@ -99,7 +99,7 @@ export function HandoverModal({
 
     try {
       const res = await fetch(
-        `/api/verification/handover/${encodeURIComponent(sessionId)}`,
+        `/api/sessions/${encodeURIComponent(sessionId)}/handover`,
         {
           method: "POST",
           credentials: "include",

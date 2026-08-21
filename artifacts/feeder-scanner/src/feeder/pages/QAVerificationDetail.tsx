@@ -218,11 +218,19 @@ export default function QAVerificationDetail() {
       const res = await fetch(`/api/verification/qa-queue/${sessionId}/complete`, {
         method: "POST", credentials: "include",
       });
+      const data = await res.json().catch(() => ({}));
       if (res.ok) {
+        // Splicing 200% close returns status "completed": the changeover is done,
+        // so QA returns to the queue to pick up the next changeover. Normal 200%
+        // ends in "qa_confirmed" and stays here as before.
+        if (data.status === "completed") {
+          success("Changeover Completed", "Splicing verified — changeover closed");
+          setLocation("/feeder/qa-queue");
+          return;
+        }
         success("QA Review Completed", "Session has been marked as QA confirmed");
         fetchDetail();
       } else {
-        const data = await res.json();
         error("Failed to Complete", data.error || "Unknown error");
       }
     } catch {
@@ -314,16 +322,24 @@ export default function QAVerificationDetail() {
               </p>
             </div>
           </div>
-          {!isLocked && session.status !== "qa_confirmed" && (
-            <Button onClick={acquireLock} disabled={locking} className="font-mono text-xs rounded-sm">
-              {locking ? "Locking..." : "Start Review"}
-            </Button>
-          )}
-          {isLocked && (
-            <Button variant="outline" onClick={handleReleaseLock} className="font-mono text-xs rounded-sm">
-              Release &amp; Go Back
-            </Button>
-          )}
+          <div className="flex items-center gap-2">
+            {!isLocked && session.status !== "qa_confirmed" && (
+              <Button onClick={acquireLock} disabled={locking} className="font-mono text-xs rounded-sm">
+                {locking ? "Locking..." : "Start Review"}
+              </Button>
+            )}
+            {isLocked && allDone && (
+              <Button onClick={handleComplete} className="font-mono text-xs rounded-sm">
+                <FileText className="w-4 h-4 mr-1.5" />
+                Complete QA Review
+              </Button>
+            )}
+            {isLocked && (
+              <Button variant="outline" onClick={handleReleaseLock} className="font-mono text-xs rounded-sm">
+                Release &amp; Go Back
+              </Button>
+            )}
+          </div>
         </div>
 
         {/* Progress bar */}
@@ -343,12 +359,6 @@ export default function QAVerificationDetail() {
               <CheckCircle2 className="w-4 h-4 mr-1.5" />
               Confirm All — Manually Verified
             </Button>
-            {allDone && (
-              <Button onClick={handleComplete} className="font-mono text-xs rounded-sm">
-                <FileText className="w-4 h-4 mr-1.5" />
-                Complete QA Review
-              </Button>
-            )}
           </div>
         )}
 

@@ -18,6 +18,7 @@ import autoTable from "jspdf-autotable";
 import { AppLogo } from "@/components/AppLogo";
 import { appConfig } from "@/lib/appConfig";
 import { formatSmtSessionCode } from "@/lib/session-code";
+import { useAuth } from "@/context/auth-context";
 import { logger } from "../lib/logger";
 import { C_NAVY, C_WHITE, C_GREY_LIGHT, C_GREY, C_BLUE_LIGHT, C_GREEN, C_AMBER, C_RED, toRgb, dash } from "@/utils/colors";
 
@@ -54,6 +55,10 @@ function formatDiffHHMMSS(start: unknown, end: unknown): string {
 export default function SessionReport() {
   const [, params] = useRoute("/session/:id/report");
   const sessionId = Number(params?.id);
+  const { user } = useAuth();
+  // Operators may view the report on-screen but not export it — the PDF/Excel
+  // endpoints are qa/supervisor/admin only, so hide those buttons for operators.
+  const canExport = user?.role !== "operator";
 
   const { data: report, isLoading } = useGetSessionReport(sessionId, {
     query: { enabled: !!sessionId, queryKey: getGetSessionReportQueryKey(sessionId) },
@@ -286,7 +291,6 @@ export default function SessionReport() {
           { label: "QA Engineer", value: dash(session.qaName) },
           { label: "End Time", value: formatTimeOnly(endTimeValue) },
           { label: "Supervisor", value: dash(session.supervisorName) },
-          { label: "Engineer", value: dash(session.engineerName) },
         ];
 
         const cols = 3;
@@ -537,7 +541,6 @@ export default function SessionReport() {
         ["SUPERVISOR", dash(session.supervisorName)],
         ["OPERATOR", dash(session.operatorName)],
         ["QA ENGINEER", dash(session.qaName)],
-        ["ENGINEER", dash(session.engineerName)],
         ["PRODUCTION MANAGER", "________________________"],
       ];
 
@@ -586,16 +589,9 @@ export default function SessionReport() {
 
   const exportExcel = async () => {
     try {
-      // Excel export is handled by backend API for security
-      const response = await fetch(`/api/reports/export/session`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          format: "xlsx",
-          sessionId: session.id,
-          title: `${appConfig.systemTitle} - ${session.id}`,
-          includeSplices: showSplices,
-        }),
+      // Module 6: backend streams a two-sheet .xlsx (Summary + Components).
+      const response = await fetch(`/api/sessions/${session.id}/report/xlsx`, {
+        credentials: "include",
       });
       if (!response.ok) throw new Error("Export failed");
       const blob = await response.blob();
@@ -634,17 +630,21 @@ export default function SessionReport() {
           <Button onClick={() => setShowCustomize(!showCustomize)} variant="outline" className="font-mono rounded-sm text-xs sm:text-sm py-1 sm:py-2 px-2 sm:px-3 h-auto">
             <Settings2 className="w-3 h-3 sm:w-4 sm:h-4 mr-1 sm:mr-2" /> <span className="hidden sm:inline">Customize</span><span className="sm:hidden">Customize</span>
           </Button>
-          <Button
-            onClick={() => window.open(`/api/sessions/${sessionId}/report/pdf`, "_blank")}
-            variant="secondary"
-            className="font-mono rounded-sm text-xs sm:text-sm py-1 sm:py-2 px-2 sm:px-3 h-auto"
-            data-testid="btn-export-pdf"
-          >
-            <FileText className="w-3 h-3 sm:w-4 sm:h-4 mr-1 sm:mr-2" /> <span className="hidden sm:inline">PDF</span>
-          </Button>
-          <Button onClick={() => exportExcel()} variant="secondary" className="font-mono rounded-sm text-xs sm:text-sm py-1 sm:py-2 px-2 sm:px-3 h-auto" data-testid="btn-export-excel">
-            <Download className="w-3 h-3 sm:w-4 sm:h-4 mr-1 sm:mr-2" /> <span className="hidden sm:inline">EXCEL</span>
-          </Button>
+          {canExport && (
+            <>
+              <Button
+                onClick={() => window.open(`/api/sessions/${sessionId}/report/pdf`, "_blank")}
+                variant="secondary"
+                className="font-mono rounded-sm text-xs sm:text-sm py-1 sm:py-2 px-2 sm:px-3 h-auto"
+                data-testid="btn-export-pdf"
+              >
+                <FileText className="w-3 h-3 sm:w-4 sm:h-4 mr-1 sm:mr-2" /> <span className="hidden sm:inline">PDF</span>
+              </Button>
+              <Button onClick={() => exportExcel()} variant="secondary" className="font-mono rounded-sm text-xs sm:text-sm py-1 sm:py-2 px-2 sm:px-3 h-auto" data-testid="btn-export-excel">
+                <Download className="w-3 h-3 sm:w-4 sm:h-4 mr-1 sm:mr-2" /> <span className="hidden sm:inline">EXCEL</span>
+              </Button>
+            </>
+          )}
         </div>
       </div>
 
@@ -711,7 +711,6 @@ export default function SessionReport() {
             { label: "End", value: session.endTime ? formatTimeOnly(session.endTime) : (session.completedAt ? formatTimeOnly(session.completedAt) : "N/A") },
             { label: "Duration", value: formatDiffHHMMSS(session.startedAt || session.startTime, session.completedAt || session.endTime) },
             { label: "QA", value: session.qaName || "N/A" },
-            { label: "Engineer", value: session.engineerName || "N/A" },
           ].map(({ label, value }) => (
             <div key={label} className="min-w-0 rounded-sm border border-border bg-background px-3 py-2.5 shadow-sm">
               <div className="text-[10px] sm:text-xs font-bold text-muted-foreground uppercase tracking-wide truncate">
@@ -1093,7 +1092,6 @@ export default function SessionReport() {
             { title: "Supervisor", name: session.supervisorName },
             { title: "OPERATOR", name: session.operatorName },
             { title: "QA", name: session.qaName || "N/A" },
-            { title: "Engineer", name: session.engineerName || "N/A" },
           ].map(({ title, name }) => (
             <div key={title} className="flex flex-col items-center gap-2 min-w-0 rounded-sm border border-border bg-background px-4 py-5">
               <span className={`font-bold text-sm tracking-wide ${title === "OPERATOR" ? "text-foreground uppercase" : "text-muted-foreground"}`}>{title}</span>

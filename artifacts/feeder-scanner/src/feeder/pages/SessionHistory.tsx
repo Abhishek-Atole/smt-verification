@@ -88,9 +88,10 @@ export default function SessionHistory() {
     })
     .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
 
-  // Separate sessions into completed and active/resumable
-  const completedSessions = filtered.filter(s => s.status === 'completed');
-  const pendingSessions = filtered.filter(s => s.status !== 'completed');
+  // Session History shows only terminal sessions — completed or cancelled.
+  // In-progress sessions live on the Active Sessions board (no duplication).
+  // Cancelled sessions are read-only: report only, never resumable.
+  const historySessions = filtered.filter(s => String(s.status) === 'completed' || String(s.status) === 'cancelled');
 
   return (
     <div className="w-full space-y-4 sm:space-y-6 mt-6 sm:mt-8">
@@ -181,9 +182,9 @@ export default function SessionHistory() {
 
       {/* Desktop Table View - Hidden on mobile */}
       <div className="hidden lg:block px-4 sm:px-6 lg:px-8 space-y-6">
-        {/* Completed Sessions Section */}
+        {/* Completed & Cancelled Sessions */}
         <div>
-          <h2 className="text-lg font-mono font-bold text-foreground mb-4">COMPLETED SESSIONS</h2>
+          <h2 className="text-lg font-mono font-bold text-foreground mb-4">COMPLETED &amp; CANCELLED</h2>
           <div className="bg-card border border-border rounded-sm overflow-hidden">
             <Table>
               <TableHeader>
@@ -200,14 +201,14 @@ export default function SessionHistory() {
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {completedSessions.length === 0 ? (
+                {historySessions.length === 0 ? (
                   <TableRow className="border-border hover:bg-transparent">
                     <TableCell colSpan={canDelete ? 9 : 8} className="text-center py-8 text-muted-foreground font-mono text-sm">
-                      No completed sessions found.
+                      No completed or cancelled sessions found.
                     </TableCell>
                   </TableRow>
                 ) : (
-                  completedSessions.map((session) => (
+                  historySessions.map((session) => (
                     <TableRow key={session.id} className="border-border hover:bg-secondary/50 transition-colors">
                       <TableCell className="font-mono text-xs sm:text-sm">
                         <div>{format(new Date(session.startTime), "MMM dd, yyyy")}</div>
@@ -230,9 +231,9 @@ export default function SessionHistory() {
                       <TableCell className="font-mono text-xs sm:text-sm">{session.shiftName || session.shiftDate}</TableCell>
                       <TableCell>
                         <span className={`px-2 py-1 text-xs font-mono font-bold rounded-sm uppercase tracking-wider inline-block ${
-                          session.status === 'completed' 
-                            ? 'bg-success/20 text-success' 
-                            : 'bg-amber-100 dark:bg-amber-900/30 text-amber-800 dark:text-amber-600'
+                          session.status === 'completed'
+                            ? 'bg-success/20 text-success'
+                            : 'bg-destructive/20 text-destructive'
                         }`}>
                           {session.status}
                         </span>
@@ -262,98 +263,20 @@ export default function SessionHistory() {
             </Table>
           </div>
         </div>
-
-        {/* Pending/Resume Sessions Section */}
-        <div>
-          <h2 className="text-lg font-mono font-bold text-foreground mb-4">PENDING / RESUME SESSIONS</h2>
-          <div className="bg-card border border-border rounded-sm overflow-hidden">
-            <Table>
-              <TableHeader>
-                <TableRow className="border-border hover:bg-transparent">
-                  <TableHead className="font-mono text-xs sm:text-sm">DATE / TIME</TableHead>
-                  <TableHead className="font-mono text-xs sm:text-sm">CHANGEOVER ID</TableHead>
-                  <TableHead className="font-mono text-xs sm:text-sm">PANEL</TableHead>
-                  <TableHead className="font-mono text-xs sm:text-sm">BOM</TableHead>
-                  <TableHead className="font-mono text-xs sm:text-sm">OPERATOR</TableHead>
-                  <TableHead className="font-mono text-xs sm:text-sm">SHIFT</TableHead>
-                  <TableHead className="font-mono text-xs sm:text-sm">STATUS</TableHead>
-                  <TableHead className="font-mono text-xs sm:text-sm text-right">ACTION</TableHead>
-                  {canDelete && <TableHead className="w-10"></TableHead>}
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {pendingSessions.length === 0 ? (
-                  <TableRow className="border-border hover:bg-transparent">
-                    <TableCell colSpan={canDelete ? 9 : 8} className="text-center py-8 text-muted-foreground font-mono text-sm">
-                      No pending sessions found.
-                    </TableCell>
-                  </TableRow>
-                ) : (
-                  pendingSessions.map((session) => (
-                    <TableRow key={session.id} className="border-border hover:bg-secondary/50 transition-colors">
-                      <TableCell className="font-mono text-xs sm:text-sm">
-                        <div>{format(new Date(session.startTime), "MMM dd, yyyy")}</div>
-                        <div className="text-muted-foreground text-xs">{format(new Date(session.startTime), "HH:mm")}</div>
-                      </TableCell>
-                      <TableCell className="font-mono font-mono text-xs sm:text-sm text-foreground">
-                        <span className="inline-block px-2 py-1 rounded-sm bg-slate-100 text-slate-900 dark:bg-slate-800 dark:text-slate-100 text-[11px] tracking-wide font-semibold">
-                          {session.changeoverCode}
-                        </span>
-                      </TableCell>
-                      <TableCell className="font-mono font-bold text-primary text-sm">{session.panelName}</TableCell>
-                      <TableCell className="font-mono text-xs sm:text-sm">
-                        {session.bomId === 0 ? (
-                          <span className="px-1.5 py-0.5 bg-amber-100 dark:bg-amber-900/30 border border-amber-300 dark:border-amber-700 rounded text-amber-800 dark:text-amber-400 text-xs font-bold">FREE SCAN</span>
-                        ) : (
-                          <span>{renderBomText(session)}</span>
-                        )}
-                      </TableCell>
-                      <TableCell className="font-mono text-xs sm:text-sm">{session.operatorName}</TableCell>
-                      <TableCell className="font-mono text-xs sm:text-sm">{session.shiftName || session.shiftDate}</TableCell>
-                      <TableCell>
-                        <span className="px-2 py-1 text-xs font-mono font-bold rounded-sm uppercase tracking-wider inline-block bg-primary/20 text-primary">
-                          {session.status}
-                        </span>
-                      </TableCell>
-                      <TableCell className="text-right">
-                        <Button asChild variant="secondary" size="sm" className="rounded-sm font-mono text-xs sm:text-sm">
-                          <Link href={`/session/${session.id}`}>
-                            RESUME
-                          </Link>
-                        </Button>
-                      </TableCell>
-                      {canDelete && (
-                        <TableCell>
-                          <button
-                            onClick={() => handleDelete(String(session.id))}
-                            className="p-1.5 rounded-sm text-muted-foreground hover:text-red-600 hover:bg-red-50 dark:hover:bg-red-950/30 transition-colors"
-                            title="Delete session"
-                          >
-                            <Trash2 className="w-4 h-4" />
-                          </button>
-                        </TableCell>
-                      )}
-                    </TableRow>
-                  ))
-                )}
-              </TableBody>
-            </Table>
-          </div>
-        </div>
       </div>
 
       {/* Mobile/Tablet Card View */}
       <div className="lg:hidden px-4 sm:px-6 space-y-6">
-        {/* Completed Sessions Section */}
+        {/* Completed & Cancelled Sessions */}
         <div>
-          <h2 className="text-base font-mono font-bold text-foreground mb-3">COMPLETED SESSIONS</h2>
-          {completedSessions.length === 0 ? (
+          <h2 className="text-base font-mono font-bold text-foreground mb-3">COMPLETED &amp; CANCELLED</h2>
+          {historySessions.length === 0 ? (
             <div className="text-center py-8 text-muted-foreground font-mono text-sm">
-              No completed sessions found.
+              No completed or cancelled sessions found.
             </div>
           ) : (
             <div className="space-y-3">
-              {completedSessions.map(session => (
+              {historySessions.map(session => (
                 <Link key={session.id} href={`/session/${session.id}/report`}>
                   <div className="bg-card border border-border rounded-lg p-4 hover:bg-secondary/50 transition-colors active:bg-secondary cursor-pointer tap-highlight-transparent">
                     {/* Top Row: Date and Status */}
@@ -366,7 +289,7 @@ export default function SessionHistory() {
                       <span className={`px-2 py-1 text-xs font-mono font-bold rounded-sm uppercase tracking-wider whitespace-nowrap flex-shrink-0 ${
                         session.status === 'completed'
                           ? 'bg-success/20 text-success'
-                          : 'bg-amber-100 dark:bg-amber-900/30 text-amber-800 dark:text-amber-600'
+                          : 'bg-destructive/20 text-destructive'
                       }`}>
                         {session.status}
                       </span>
@@ -430,109 +353,6 @@ export default function SessionHistory() {
                     >
                       <div>
                         <span>VIEW REPORT</span>
-                        <ChevronRight className="w-4 h-4" />
-                      </div>
-                    </Button>
-                  </div>
-                  {canDelete && (
-                    <div className="border-t border-border px-4 py-2 flex justify-end">
-                      <button
-                        onClick={() => handleDelete(String(session.id))}
-                        className="flex items-center gap-1.5 text-xs font-mono text-muted-foreground hover:text-red-600 transition-colors"
-                      >
-                        <Trash2 className="w-3.5 h-3.5" />
-                        Delete
-                      </button>
-                    </div>
-                  )}
-                </Link>
-              ))}
-            </div>
-          )}
-        </div>
-
-        {/* Pending/Resume Sessions Section */}
-        <div>
-          <h2 className="text-base font-mono font-bold text-foreground mb-3">PENDING / RESUME SESSIONS</h2>
-          {pendingSessions.length === 0 ? (
-            <div className="text-center py-8 text-muted-foreground font-mono text-sm">
-              No pending sessions found.
-            </div>
-          ) : (
-            <div className="space-y-3">
-              {pendingSessions.map(session => (
-                <Link key={session.id} href={`/session/${session.id}`}>
-                  <div className="bg-card border border-border rounded-lg p-4 hover:bg-secondary/50 transition-colors active:bg-secondary cursor-pointer tap-highlight-transparent">
-                    {/* Top Row: Date and Status */}
-                    <div className="flex justify-between items-start mb-3 gap-2">
-                      <div className="flex-1">
-                        <div className="font-mono text-xs text-muted-foreground">
-                          {format(new Date(session.startTime), "MMM dd, yyyy HH:mm")}
-                        </div>
-                      </div>
-                      <span className="px-2 py-1 text-xs font-mono font-bold rounded-sm uppercase tracking-wider whitespace-nowrap flex-shrink-0 bg-primary/20 text-primary">
-                        {session.status}
-                      </span>
-                    </div>
-
-                    <div className="mb-3 grid gap-3 sm:grid-cols-2">
-                      <div>
-                        <div className="text-xs text-muted-foreground font-mono">CHANGEOVER ID</div>
-                        <div className="font-mono font-semibold text-sm truncate">{session.changeoverCode}</div>
-                      </div>
-                      <div className="text-right">
-                        <div className="text-xs text-muted-foreground font-mono">SHIFT</div>
-                        <div className="font-mono text-sm truncate">{session.shiftName || session.shiftDate}</div>
-                      </div>
-                    </div>
-
-                    <div className="grid grid-cols-2 gap-3 mb-4">
-                      <div>
-                        <div className="text-xs text-muted-foreground font-mono">COMPANY</div>
-                        <div className="font-mono text-xs truncate">{session.companyName || "—"}</div>
-                      </div>
-                      <div>
-                        <div className="text-xs text-muted-foreground font-mono">CUSTOMER</div>
-                        <div className="font-mono text-xs truncate">{session.customerName || "—"}</div>
-                      </div>
-                    </div>
-
-                    {/* Panel Name - Prominent */}
-                    <div className="mb-3">
-                      <div className="text-xs text-muted-foreground font-mono">PANEL</div>
-                      <div className="font-mono font-bold text-primary text-base truncate">
-                        {session.panelName}
-                      </div>
-                    </div>
-
-                    {/* BOM and Operator - Two Columns */}
-                    <div className="grid grid-cols-2 gap-3 mb-4">
-                      <div>
-                        <div className="text-xs text-muted-foreground font-mono">BOM</div>
-                        <div className="font-mono text-xs truncate flex items-center gap-2">
-                          {session.bomId === 0 ? (
-                            <span className="px-1.5 py-0.5 bg-amber-100 dark:bg-amber-900/30 border border-amber-300 dark:border-amber-700 rounded text-amber-800 dark:text-amber-400 text-xs font-bold">FREE</span>
-                          ) : (
-                            <span>{renderBomText(session)}</span>
-                          )}
-                        </div>
-                      </div>
-                      <div>
-                        <div className="text-xs text-muted-foreground font-mono">OPERATOR</div>
-                        <div className="font-mono text-xs truncate">
-                          {session.operatorName}
-                        </div>
-                      </div>
-                    </div>
-
-                    {/* Action Button - Full Width on Mobile, Icon on Tablet */}
-                    <Button 
-                      asChild 
-                      variant="secondary" 
-                      className="w-full rounded-md font-mono text-sm py-2 h-auto flex items-center justify-between"
-                    >
-                      <div>
-                        <span>RESUME</span>
                         <ChevronRight className="w-4 h-4" />
                       </div>
                     </Button>

@@ -1,4 +1,4 @@
-import { pgTable, serial, text, integer, timestamp, boolean, index, pgEnum, uuid, jsonb } from "drizzle-orm/pg-core";
+import { pgTable, serial, text, integer, doublePrecision, timestamp, boolean, index, uniqueIndex, pgEnum, uuid, jsonb } from "drizzle-orm/pg-core";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod/v4";
 import { bomsTable } from "./bom";
@@ -43,6 +43,18 @@ export const sessionsTable = pgTable("sessions", {
   endTime: timestamp("end_time"),
   machineName: text("machine_name"),
   lineName: text("line_name"),
+  // Module 1: BOM verification skip + single-approver gate. When skipped, either
+  // a QA or a Supervisor (one is sufficient) must approve before progression.
+  bomVerificationSkipped: boolean("bom_verification_skipped").notNull().default(false),
+  bomSkipApproverRole: text("bom_skip_approver_role"), // "qa" | "supervisor"
+  bomSkipApproverName: text("bom_skip_approver_name"),
+  bomSkipApprovalAt: timestamp("bom_skip_approval_at"),
+  bomSkipApprovalRemarks: text("bom_skip_approval_remarks"),
+  // Module 3: production data captured at changeover closure. total_output_units
+  // = total_production_quantity * bom.cavity_count (computed server-side).
+  totalProductionQuantity: integer("total_production_quantity"),
+  currentCycleTime: doublePrecision("current_cycle_time"),
+  totalOutputUnits: integer("total_output_units"),
   createdAt: timestamp("created_at").defaultNow().notNull(),
   deletedAt: timestamp("deleted_at"), // Soft delete timestamp
   deletedBy: text("deleted_by"), // User who deleted
@@ -204,6 +216,29 @@ export const sessionHandoversTable = pgTable("session_handovers", {
   notes: text("notes"),
 });
 
+// Module 2.2/4.3: co-ownership of a changeover (legacy sessionsTable). Creator
+// is inserted on session start; handover recipients are added later (Module 4),
+// so both operators retain access. Access filtering joins on this table.
+export const changeoverOperatorsTable = pgTable(
+  "changeover_operators",
+  {
+    id: serial("id").primaryKey(),
+    sessionId: integer("session_id")
+      .notNull()
+      .references(() => sessionsTable.id, { onDelete: "cascade" }),
+    operatorId: uuid("operator_id")
+      .notNull()
+      .references(() => usersTable.id),
+    role: text("role").notNull().default("creator"), // "creator" | "handover"
+    addedAt: timestamp("added_at").defaultNow().notNull(),
+  },
+  (table) => ({
+    sessionIdIdx: index("changeover_operators_session_id_idx").on(table.sessionId),
+    operatorIdIdx: index("changeover_operators_operator_id_idx").on(table.operatorId),
+    sessionOperatorUq: uniqueIndex("changeover_operators_session_operator_uq").on(table.sessionId, table.operatorId),
+  })
+);
+
 export const insertSessionSchema = createInsertSchema(sessionsTable).omit({ id: true }).extend({
   createdAt: z.date().optional(),
   startTime: z.date().optional(),
@@ -237,3 +272,5 @@ export const insertSessionHandoverSchema = createInsertSchema(sessionHandoversTa
 });
 export type SessionHandover = typeof sessionHandoversTable.$inferSelect;
 export type InsertSessionHandover = z.infer<typeof insertSessionHandoverSchema>;
+export type ChangeoverOperator = typeof changeoverOperatorsTable.$inferSelect;
+export type InsertChangeoverOperator = typeof changeoverOperatorsTable.$inferInsert;

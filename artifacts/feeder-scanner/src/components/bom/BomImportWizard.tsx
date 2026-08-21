@@ -45,6 +45,7 @@ export function BomImportWizard({ onSuccess }: { onSuccess: (bomId?: number) => 
     version: "",
     product: "",
     customer: "",
+    cavityCount: "1",
     description: "",
   });
   const [csvData, setCsvData] = useState<any[]>([]);
@@ -64,7 +65,7 @@ export function BomImportWizard({ onSuccess }: { onSuccess: (bomId?: number) => 
     setBomData(prev => ({ ...prev, [field]: value }));
   };
 
-  const canProceedStep1 = bomData.name.trim() && bomData.version.trim();
+  const canProceedStep1 = bomData.name.trim() && bomData.version.trim() && Number.isInteger(Number(bomData.cavityCount)) && Number(bomData.cavityCount) >= 1;
 
   const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -205,6 +206,7 @@ export function BomImportWizard({ onSuccess }: { onSuccess: (bomId?: number) => 
           version: bomData.version.trim(),
           product: bomData.product || null,
           customer: bomData.customer || null,
+          cavityCount: Number(bomData.cavityCount),
           description: bomData.description || null,
         }),
       });
@@ -336,6 +338,19 @@ export function BomImportWizard({ onSuccess }: { onSuccess: (bomId?: number) => 
               placeholder="Customer name (optional)"
               value={bomData.customer}
               onChange={(e) => handleBomDataChange("customer", e.target.value)}
+            />
+          </div>
+          <div>
+            <label className="block text-sm font-semibold text-gray-700 mb-2">
+              Cavity Count *
+            </label>
+            <Input
+              type="number"
+              min={1}
+              step={1}
+              placeholder="e.g., 1"
+              value={bomData.cavityCount}
+              onChange={(e) => handleBomDataChange("cavityCount", e.target.value)}
             />
           </div>
           <div>

@@ -43,6 +43,11 @@ import FeederSessionHistory from "@/feeder/pages/SessionHistory";
 import FeederVerification from "@/feeder/pages/Verification";
 import QAVerificationQueue from "@/feeder/pages/QAVerificationQueue";
 import QAVerificationDetail from "@/feeder/pages/QAVerificationDetail";
+import ManageApprovers from "@/feeder/pages/ManageApprovers";
+import QAInhouseRejection from "@/feeder/pages/QAInhouseRejection";
+import BypassTracking from "@/feeder/pages/BypassTracking";
+import AdminMonitoring from "@/feeder/pages/AdminMonitoring";
+import LabelPrinting from "@/pages/label-printing";
 const queryClient = new QueryClient({
   defaultOptions: {
     queries: {
@@ -208,6 +213,41 @@ function Router() {
                   )}
                 </Route>
 
+                {/* --- Approver roster management (edits the New Changeover dropdowns) --- */}
+                <Route path="/feeder/approvers">
+                  {() => (
+                    <ProtectedRoute component={ManageApprovers} allowedRoles={["qa", "supervisor", "admin"]} />
+                  )}
+                </Route>
+
+                {/* --- Module 7: QA in-house rejection logging + PPM charts --- */}
+                <Route path="/feeder/qa-rejections">
+                  {() => (
+                    <ProtectedRoute component={QAInhouseRejection} allowedRoles={["qa", "supervisor", "admin"]} />
+                  )}
+                </Route>
+
+                {/* --- Module 8: bypass quantity tracking graphs --- */}
+                <Route path="/feeder/bypass-tracking">
+                  {() => (
+                    <ProtectedRoute component={BypassTracking} allowedRoles={["qa", "supervisor", "admin"]} />
+                  )}
+                </Route>
+
+                {/* --- Module 9: admin audit log + monitoring dashboard (admin-only) --- */}
+                <Route path="/feeder/monitoring">
+                  {() => (
+                    <ProtectedRoute component={AdminMonitoring} allowedRoles={["admin"]} />
+                  )}
+                </Route>
+
+                {/* Admin-only label/sticker printing (accept barcode, machine QR, feeder numbers). */}
+                <Route path="/feeder/labels">
+                  {() => (
+                    <ProtectedRoute component={LabelPrinting} allowedRoles={["admin"]} />
+                  )}
+                </Route>
+
                 {/* --- Legacy routes (still point to feeder pages, no session provider needed) --- */}
                 <Route path="/session/new">
                   {() => <ProtectedRoute component={SessionNew} allowedRoles={["supervisor", "operator"]} />}
@@ -222,7 +262,7 @@ function Router() {
                   {() => <ProtectedRoute component={SessionActive} allowedRoles={["supervisor", "operator", "qa"]} />}
                 </Route>
                 <Route path="/session/:id/report">
-                  {() => <ProtectedRoute component={SessionReport} allowedRoles={["supervisor", "qa"]} />}
+                  {() => <ProtectedRoute component={SessionReport} allowedRoles={["supervisor", "qa", "operator"]} />}
                 </Route>
                 <Route path="/sessions" component={SessionHistory} />
                 <Route path="/analytics">

@@ -1,5 +1,5 @@
 import { Link, useLocation } from "wouter";
-import { LayoutDashboard, Boxes, History, PlusSquare, BarChart3, LogOut, Sun, Moon, Menu, X, Trash2, TrendingUp, ScanLine, Scissors, MessageSquareWarning, Play, ShieldCheck, PanelLeftClose, PanelLeftOpen } from "lucide-react";
+import { LayoutDashboard, Boxes, History, PlusSquare, BarChart3, LogOut, Sun, Moon, Menu, X, Trash2, TrendingUp, ScanLine, Scissors, MessageSquareWarning, Play, ShieldCheck, PanelLeftClose, PanelLeftOpen, UserCog, ShieldAlert, GitBranch, Activity, Printer } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useAuth } from "@/context/auth-context";
 import { useTheme } from "@/components/theme-provider";
@@ -51,6 +51,11 @@ export function Layout({ children }: { children: ReactNode }) {
     { href: "/feeder/sessions/new", label: "New Session", icon: PlusSquare, roles: ["supervisor", "operator", "qa", "admin"] },
     { href: "/feeder/sessions/active", label: "Active Sessions", icon: Play, roles: ["supervisor", "operator", "qa", "admin"] },
     { href: "/feeder/qa-queue", label: "QA Queue", icon: ShieldCheck, roles: ["qa", "supervisor"] },
+    { href: "/feeder/qa-rejections", label: "QA Rejections", icon: ShieldAlert, roles: ["qa", "supervisor", "admin"] },
+    { href: "/feeder/bypass-tracking", label: "Bypass Tracking", icon: GitBranch, roles: ["qa", "supervisor", "admin"] },
+    { href: "/feeder/monitoring", label: "Monitoring & Audit", icon: Activity, roles: ["admin"] },
+    { href: "/feeder/labels", label: "Print Labels", icon: Printer, roles: ["admin"] },
+    { href: "/feeder/approvers", label: "Manage Approvers", icon: UserCog, roles: ["qa", "supervisor", "admin"] },
     { href: "/feeder/sessions/history", label: "Session History", icon: History, roles: ["supervisor", "operator", "qa", "admin"] },
     { href: "/bom", label: "BOM Manager", icon: Boxes, roles: ["supervisor"] },
     { href: "/analytics", label: "Analytics", icon: BarChart3, roles: ["supervisor", "qa"] },

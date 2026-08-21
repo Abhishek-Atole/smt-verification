@@ -14,4 +14,10 @@ export * from "./program_versions";
 export * from "./program_issues";
 export * from "./issue_comments";
 export * from "./notifications";
+export * from "./approvers";
+export * from "./qa_rejections";
+export * from "./daily_inspection_log";
+export * from "./bypass_log";
+export * from "./master_lists";
+export * from "./document_control";
 

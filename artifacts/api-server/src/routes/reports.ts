@@ -1,6 +1,6 @@
 import { Router, type IRouter } from "express";
 import { db } from "@workspace/db";
-import { reportsTable, reportExportsTable } from "@workspace/db/schema";
+import { reportsTable, reportExportsTable, auditLogsTable } from "@workspace/db/schema";
 import { eq, desc } from "drizzle-orm";
 import { ReportService } from "../services/report-service";
 import { FilterService, ReportFilters } from "../services/filter-service";
@@ -502,6 +502,20 @@ router.post("/reports/export/:reportType", requireRole("qa", "supervisor", "admi
         req.ip,
         req.get("user-agent")
       );
+    }
+
+    // Module 9.2: consolidated audit trail entry for the report export.
+    const actor = req.actor;
+    if (actor?.id) {
+      await db.insert(auditLogsTable).values({
+        entityType: "report",
+        entityId: reportRecord?.id ? String(reportRecord.id) : String(reportType),
+        action: "report_exported",
+        changedBy: actor.id,
+        actorRole: actor.role,
+        newValue: JSON.stringify({ reportType, format, recordCount: Array.isArray(reportData) ? reportData.length : 0 }),
+        description: `Report "${reportType}" exported as ${String(format).toUpperCase()} by ${actor.name}`,
+      });
     }
 
     return res.json({

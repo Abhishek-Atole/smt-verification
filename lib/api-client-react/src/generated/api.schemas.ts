@@ -83,11 +83,13 @@ export interface BomDetail {
 export interface CreateBomRequest {
   name: string;
   description?: string;
+  cavityCount: number;
 }
 
 export interface UpdateBomRequest {
   name?: string;
   description?: string;
+  cavityCount?: number;
 }
 
 export interface CreateBomItemRequest {
@@ -228,6 +230,9 @@ export interface SessionDetail {
   startedAt?: string;
   endTime?: string;
   completedAt?: string;
+  totalProductionQuantity?: number;
+  currentCycleTime?: number;
+  totalOutputUnits?: number;
   bomVersion?: string;
   pcbPartNumber?: string;
   scans: ScanRecord[];
@@ -269,6 +274,11 @@ export interface CreateSessionRequest {
   productionCount?: number;
   machineName?: string;
   lineName?: string;
+  verificationMode?: string;
+  bomVerificationSkipped?: boolean;
+  bomSkipApproverRole?: string;
+  bomSkipApproverName?: string;
+  bomSkipApprovalRemarks?: string;
 }
 
 export type UpdateSessionRequestStatus = typeof UpdateSessionRequestStatus[keyof typeof UpdateSessionRequestStatus];
@@ -285,6 +295,8 @@ export interface UpdateSessionRequest {
   productionCount?: number;
   status?: UpdateSessionRequestStatus;
   logoUrl?: string;
+  totalProductionQuantity?: number;
+  currentCycleTime?: number;
 }
 
 export type ScanFeederRequestVerificationMode = typeof ScanFeederRequestVerificationMode[keyof typeof ScanFeederRequestVerificationMode];

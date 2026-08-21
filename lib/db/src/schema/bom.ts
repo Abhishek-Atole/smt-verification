@@ -9,6 +9,9 @@ export const bomsTable = pgTable("boms", {
   version: text("version"),
   product: text("product"),
   customer: text("customer"),
+  // Module 5: number of cavities per panel. Required (min 1) at the API layer;
+  // DEFAULT 1 backfills pre-existing rows. Reused in output/OEE calc (Module 3.2).
+  cavityCount: integer("cavity_count").notNull().default(1),
   createdAt: timestamp("created_at").defaultNow().notNull(),
   createdBy: text("created_by"),
   deletedAt: timestamp("deleted_at"),

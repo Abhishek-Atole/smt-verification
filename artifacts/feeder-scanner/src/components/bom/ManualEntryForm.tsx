@@ -25,6 +25,7 @@ export function ManualEntryForm({ onSuccess }: { onSuccess: () => void }) {
   const [bomForm, setBomForm] = useState({
     name: "",
     description: "",
+    cavityCount: "1",
     revisionLabel: "",
     revisionNotes: "",
   });
@@ -118,6 +119,11 @@ export function ManualEntryForm({ onSuccess }: { onSuccess: () => void }) {
       toast({ title: "Error", description: "BOM Name is required", variant: "destructive" });
       return;
     }
+    const cavity = Number(bomForm.cavityCount);
+    if (!Number.isInteger(cavity) || cavity < 1) {
+      toast({ title: "Error", description: "Cavity Count must be a whole number of 1 or more", variant: "destructive" });
+      return;
+    }
     if (items.length === 0) {
       toast({ title: "Error", description: "Add at least one component before saving", variant: "destructive" });
       return;
@@ -146,6 +152,7 @@ export function ManualEntryForm({ onSuccess }: { onSuccess: () => void }) {
         body: JSON.stringify({
           name: bomForm.name,
           description: bomForm.description || null,
+          cavityCount: Number(bomForm.cavityCount),
           revisionLabel: bomForm.revisionLabel || null,
           revisionNotes: bomForm.revisionNotes || null,
         }),
@@ -220,6 +227,17 @@ export function ManualEntryForm({ onSuccess }: { onSuccess: () => void }) {
               placeholder="e.g., Rev A"
               value={bomForm.revisionLabel}
               onChange={(e) => handleBomFormChange("revisionLabel", e.target.value)}
+            />
+          </div>
+          <div>
+            <label className="block text-sm font-semibold text-gray-700 mb-2">Cavity Count *</label>
+            <Input
+              type="number"
+              min={1}
+              step={1}
+              placeholder="e.g., 1"
+              value={bomForm.cavityCount}
+              onChange={(e) => handleBomFormChange("cavityCount", e.target.value)}
             />
           </div>
           <div className="col-span-2">

@@ -12,6 +12,7 @@ export const auditLogsTable = pgTable(
     oldValue: text("old_value"), // JSON string of old data
     newValue: text("new_value"), // JSON string of new data
     changedBy: text("changed_by"), // User/operator who made the change
+    actorRole: text("actor_role"), // Module 9.2: role of the actor at event time
     description: text("description"), // Human-readable description
     chainHash: varchar("chain_hash", { length: 64 }),
     createdAt: timestamp("created_at").defaultNow().notNull(),

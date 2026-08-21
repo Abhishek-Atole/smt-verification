@@ -169,4 +169,58 @@ router.get("/analytics/trends", requireRole("qa", "supervisor", "admin"), async 
   }
 });
 
+// Module 8: bypass quantity tracking. A "bypass" is a changeover started with
+// BOM verification skipped (Module 1). Reports how many changeovers bypassed
+// verification and the production quantity (boards produced — what AOI/SPI
+// inspect, not the cavity-multiplied output units) they carried, broken down by
+// line and by day so the frontend can render the tracking graphs.
+router.get("/analytics/bypass", requireRole("qa", "supervisor", "admin"), async (req: AuthRequest, res) => {
+  try {
+    const sessions = await db
+      .select({
+        id: sessionsTable.id,
+        lineName: sessionsTable.lineName,
+        skipped: sessionsTable.bomVerificationSkipped,
+        productionQuantity: sessionsTable.totalProductionQuantity,
+        createdAt: sessionsTable.createdAt,
+      })
+      .from(sessionsTable)
+      .where(sql`${sessionsTable.deletedAt} IS NULL`);
+
+    const totalSessions = sessions.length;
+    const bypassed = sessions.filter((s) => s.skipped);
+    const totalBypassed = bypassed.length;
+    const bypassedProductionQuantity = bypassed.reduce((sum, s) => sum + (s.productionQuantity ?? 0), 0);
+    const bypassRate = totalSessions > 0 ? Math.round((totalBypassed / totalSessions) * 100 * 10) / 10 : 0;
+
+    const lineMap = new Map<string, { line: string; bypassed: number; total: number; productionQuantity: number }>();
+    for (const s of sessions) {
+      const line = s.lineName ?? "Unassigned";
+      if (!lineMap.has(line)) lineMap.set(line, { line, bypassed: 0, total: 0, productionQuantity: 0 });
+      const entry = lineMap.get(line)!;
+      entry.total++;
+      if (s.skipped) {
+        entry.bypassed++;
+        entry.productionQuantity += s.productionQuantity ?? 0;
+      }
+    }
+    const byLine = [...lineMap.values()].sort((a, b) => b.bypassed - a.bypassed);
+
+    const dateMap = new Map<string, { date: string; bypassed: number; productionQuantity: number }>();
+    for (const s of bypassed) {
+      const date = new Date(s.createdAt).toISOString().split("T")[0];
+      if (!dateMap.has(date)) dateMap.set(date, { date, bypassed: 0, productionQuantity: 0 });
+      const entry = dateMap.get(date)!;
+      entry.bypassed++;
+      entry.productionQuantity += s.productionQuantity ?? 0;
+    }
+    const byDate = [...dateMap.values()].sort((a, b) => a.date.localeCompare(b.date));
+
+    return res.json({ totalSessions, totalBypassed, bypassedProductionQuantity, bypassRate, byLine, byDate });
+  } catch (err) {
+    req.log.error(err);
+    return res.status(500).json({ error: "Failed to get bypass data" });
+  }
+});
+
 export default router;

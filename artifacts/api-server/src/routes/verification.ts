@@ -13,7 +13,7 @@ import {
   componentsTable,
   sessionHandoversTable,
 } from "@workspace/db/schema";
-import { and, desc, eq, inArray, isNull, sql, or, gt, lt, lte } from "drizzle-orm";
+import { and, desc, eq, inArray, notInArray, isNull, sql, or, gt, lt, lte } from "drizzle-orm";
 import { usersTable } from "@workspace/db/schema";
 import { getSessionProgress, verifyFeederScan } from "../services/verificationService";
 import ScanValidationPipeline from "../services/scan-validation-pipeline";
@@ -333,7 +333,10 @@ router.get("/verification/sessions/active", requireAuth, async (req: AuthRequest
       .leftJoin(usersTable, eq(changeoverSessionsTable.operatorId, usersTable.id))
       .$dynamic();
 
-    const changeoverConditions = [inArray(changeoverSessionsTable.status, ["active", "qa_confirmed"])];
+    // "Active board" = every in-progress session (active, pending_qa,
+    // qa_confirmed, splicing_pending_qa). Only completed/cancelled are terminal
+    // and live in Session History — so nothing in-flight falls between the tabs.
+    const changeoverConditions = [notInArray(changeoverSessionsTable.status, ["completed", "cancelled"])];
     if (isOperator) {
       changeoverConditions.push(eq(changeoverSessionsTable.operatorId, actor.id));
     }
@@ -362,7 +365,7 @@ router.get("/verification/sessions/active", requireAuth, async (req: AuthRequest
       .from(sessionsTable)
       .leftJoin(bomsTable, eq(sessionsTable.bomId, bomsTable.id))
       .where(and(
-        inArray(sessionsTable.status, ["active", "qa_confirmed"]),
+        notInArray(sessionsTable.status, ["completed", "cancelled"]),
         isNull(sessionsTable.endTime),
         isNull(sessionsTable.deletedAt),
       ))
@@ -2185,7 +2188,7 @@ router.post(
           await db.transaction(async (tx) => {
             await tx
               .update(sessionsTable)
-              .set({ status: "completed", qaName: actor.name })
+              .set({ status: "completed", qaName: actor.name, endTime: new Date() })
               .where(eq(sessionsTable.id, numericId));
 
             await tx.insert(auditLogsTable).values({

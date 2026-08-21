@@ -8,7 +8,7 @@ export interface ActiveSession {
   bomId: number;
   bomName: string;
   operatorId: string;
-  status: "active" | "completed" | "cancelled" | "qa_confirmed";
+  status: "active" | "completed" | "cancelled" | "qa_confirmed" | "pending_qa" | "splicing_pending_qa";
   startedAt: string;
 }
 
@@ -49,7 +49,14 @@ function normalizeActiveSession(payload: unknown): ActiveSession | null {
     return null;
   }
 
-  if (status !== "active" && status !== "completed" && status !== "cancelled" && status !== "qa_confirmed") {
+  if (
+    status !== "active" &&
+    status !== "completed" &&
+    status !== "cancelled" &&
+    status !== "qa_confirmed" &&
+    status !== "pending_qa" &&
+    status !== "splicing_pending_qa"
+  ) {
     return null;
   }
 

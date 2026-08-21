@@ -1,8 +1,8 @@
 
 import { Router, type IRouter } from "express";
 import { db } from "@workspace/db";
-import { sessionsTable, scanRecordsTable, spliceRecordsTable, bomItemsTable, bomsTable, auditLogsTable, usersTable, type BomItem } from "@workspace/db/schema";
-import { eq, and, sql, desc, isNull, isNotNull, count, inArray } from "drizzle-orm";
+import { sessionsTable, scanRecordsTable, spliceRecordsTable, bomItemsTable, bomsTable, auditLogsTable, usersTable, changeoverOperatorsTable, type BomItem } from "@workspace/db/schema";
+import { eq, and, or, sql, desc, isNull, isNotNull, count, inArray } from "drizzle-orm";
 import { z } from "zod";
 import { attachActor, requireRole, requireAuth, type AuthRequest } from "../middleware/auth";
 import { scanLimiter } from "../middleware/rateLimiters";
@@ -12,6 +12,7 @@ import { isUniqueViolation } from "../lib/dbErrors";
 import { formatSmtSessionId } from "../lib/session-id";
 import { TimestampService } from "../services/timestamp-service";
 import PDFDocument from "pdfkit";
+import ExcelJS from "exceljs";
 import fs from "node:fs";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
@@ -22,6 +23,7 @@ router.use(attachActor);
 
 type BomRowForMPN = {
   internalPartNumber?: string | null;
+  expectedMpn?: string | null;
   mpn1?: string | null;
   mpn2?: string | null;
   mpn3?: string | null;
@@ -41,7 +43,7 @@ type BomRowForMPN = {
 };
 
 type MatchResult = {
-  matchedField: "internalPartNumber" | "mpn1" | "mpn2" | "mpn3" | "mpn4" | "mpn5" | "mpn6" | "mpn7" | "mpn8";
+  matchedField: "internalPartNumber" | "expectedMpn" | "mpn1" | "mpn2" | "mpn3" | "mpn4" | "mpn5" | "mpn6" | "mpn7" | "mpn8";
   matchedMake: string | null;
 } | null;
 
@@ -125,6 +127,13 @@ function verifyMPN(scanned: string, bomRow: BomRowForMPN): MatchResult {
 
   if (normalizeExact(bomRow.mpn8) === s) {
     return { matchedField: "mpn8", matchedMake: bomRow.make8 ?? null };
+  }
+
+  // Fallback: some BOM imports carry the expected part only in expected_mpn
+  // (not mpn_1..8). Accept an exact match against it so those rows still
+  // validate. Checked last so a more specific mpn1..8 match wins.
+  if (normalizeExact(bomRow.expectedMpn) === s) {
+    return { matchedField: "expectedMpn", matchedMake: null };
   }
 
   return null;
@@ -242,6 +251,7 @@ function verifySpliceMpn(scanned: string, bomRow: BomRowForMPN): SpliceMatch | n
 function buildExpectedMpnValues(bomRow: BomRowForMPN): string[] {
   const values = [
     ...tokenizeInternalPartNumber(bomRow.internalPartNumber),
+    normalizeExact(bomRow.expectedMpn),
     normalizeExact(bomRow.mpn1),
     normalizeExact(bomRow.mpn2),
     normalizeExact(bomRow.mpn3),
@@ -329,6 +339,7 @@ function formatMatchedAs(matchedField: string | null | undefined, matchedMake: s
   if (field === "mpn7") return `MPN 7${matchedMake ? ` (${matchedMake})` : ""}`;
   if (field === "mpn8") return `MPN 8${matchedMake ? ` (${matchedMake})` : ""}`;
   if (field === "internalpartnumber") return "Internal P/N";
+  if (field === "expectedmpn") return "Expected MPN";
   return "—";
 }
 
@@ -351,6 +362,9 @@ type SessionReportPayload = {
     supervisorName: string | null;
     qaVerificationMethod: string | null;
     durationMinutes: number;
+    totalProductionQuantity?: number | null;
+    currentCycleTime?: number | null;
+    totalOutputUnits?: number | null;
   };
   summary: {
     sessionId: number;
@@ -683,6 +697,10 @@ async function buildSessionReportPayload(sessionId: number): Promise<SessionRepo
       supervisorName: session.supervisorName,
       qaVerificationMethod: null,
       durationMinutes,
+      // Module 3/6: production figures captured at closure, surfaced in reports.
+      totalProductionQuantity: session.totalProductionQuantity ?? null,
+      currentCycleTime: session.currentCycleTime ?? null,
+      totalOutputUnits: session.totalOutputUnits ?? null,
     },
     summary: {
       sessionId,
@@ -702,11 +720,32 @@ async function buildSessionReportPayload(sessionId: number): Promise<SessionRepo
 // Static routes
 router.get("/sessions", requireRole("operator", "qa", "supervisor", "admin"), async (req: AuthRequest, res) => {
   try {
-    // Only show non-deleted sessions (where deletedAt is null)
+    const actor = req.actor!;
+    // Module 2.2: operators see only changeovers they own (creator or handover
+    // co-owner via changeover_operators), plus legacy rows created under their
+    // name before the join table existed. QA/Supervisor/Admin see everything.
+    const isPrivileged = ["qa", "supervisor", "admin"].includes(actor.role);
+
+    let where = isNull(sessionsTable.deletedAt);
+    if (!isPrivileged) {
+      const owned = await db
+        .select({ sessionId: changeoverOperatorsTable.sessionId })
+        .from(changeoverOperatorsTable)
+        .where(eq(changeoverOperatorsTable.operatorId, actor.id));
+      const ownedIds = owned.map((o) => o.sessionId);
+      where = and(
+        isNull(sessionsTable.deletedAt),
+        or(
+          ownedIds.length > 0 ? inArray(sessionsTable.id, ownedIds) : sql`false`,
+          eq(sessionsTable.operatorName, actor.name),
+        ),
+      )!;
+    }
+
     const sessions = await db
       .select()
       .from(sessionsTable)
-      .where(isNull(sessionsTable.deletedAt))
+      .where(where)
       .orderBy(sessionsTable.createdAt);
 
     const bomIds = [...new Set(sessions.map((s) => s.bomId).filter((id): id is number => id !== null))];
@@ -774,13 +813,36 @@ router.post("/sessions", requireRole("operator", "qa", "supervisor", "admin"), a
     const {
       bomId, companyName, customerName, panelName, supervisorName,
       operatorName, qaName, engineerName, shiftName, shiftDate, logoUrl, productionCount,
-      machineName, lineName,
+      machineName, lineName, verificationMode,
+      bomVerificationSkipped, bomSkipApproverRole, bomSkipApproverName, bomSkipApprovalRemarks,
     } = req.body;
 
     // Allow bomId to be 0 (free scan) or a valid BOM ID, but not null/undefined
     if (bomId == null || !companyName || !panelName || !supervisorName || !operatorName || !shiftName || !shiftDate) {
       res.status(400).json({ error: "Missing required fields" });
       return;
+    }
+
+    // Module 1.1: line number is required to start a changeover.
+    if (!lineName || (typeof lineName === "string" && !lineName.trim())) {
+      res.status(400).json({ error: "lineName is required" });
+      return;
+    }
+
+    // Module 1.2/1.3: skipping BOM verification requires a single QA OR Supervisor
+    // approval. Block session creation until a valid approval is recorded.
+    const skipped = bomVerificationSkipped === true;
+    if (skipped) {
+      const role = typeof bomSkipApproverRole === "string" ? bomSkipApproverRole.toLowerCase() : "";
+      const approver = typeof bomSkipApproverName === "string" ? bomSkipApproverName.trim() : "";
+      if (role !== "qa" && role !== "supervisor") {
+        res.status(400).json({ error: "bomSkipApproverRole must be 'qa' or 'supervisor' when BOM verification is skipped" });
+        return;
+      }
+      if (!approver) {
+        res.status(400).json({ error: "bomSkipApproverName is required when BOM verification is skipped" });
+        return;
+      }
     }
 
     // Convert bomId = 0 (free scan mode) to null for database storage
@@ -802,8 +864,33 @@ router.post("/sessions", requireRole("operator", "qa", "supervisor", "admin"), a
       }
     }
 
+    // Module 2.1: at most 2 active changeovers per line. A changeover counts as
+    // active until it is completed or cancelled. Blocks the 3rd concurrent start.
+    const [{ value: activeOnLine }] = await db
+      .select({ value: count() })
+      .from(sessionsTable)
+      .where(
+        and(
+          eq(sessionsTable.lineName, lineName),
+          isNull(sessionsTable.deletedAt),
+          sql`${sessionsTable.status} NOT IN ('completed', 'cancelled')`,
+        ),
+      );
+    if (Number(activeOnLine) >= 2) {
+      res.status(409).json({ error: "Please close the previous changeover on this line before starting a new one." });
+      return;
+    }
+
     // Use server timestamp for session creation
     const timestamps = TimestampService.createSessionTimestamps();
+
+    // Verification mode is chosen at creation (New Changeover screen). AUTO_LEGACY
+    // pre-loads feeders in BOM order so the operator scans only MPN + lot; it still
+    // validates strictly like AUTO on the server. Anything unknown falls back to AUTO.
+    const normalizedMode = String(verificationMode ?? "AUTO").trim().toUpperCase();
+    const finalVerificationMode = ["AUTO", "MANUAL", "AUTO_LEGACY"].includes(normalizedMode)
+      ? normalizedMode
+      : "AUTO";
 
     const [session] = await db
       .insert(sessionsTable)
@@ -813,21 +900,160 @@ router.post("/sessions", requireRole("operator", "qa", "supervisor", "admin"), a
         productionCount: productionCount ?? 0,
         machineName: machineName ?? null,
         lineName: lineName ?? null,
+        verificationMode: finalVerificationMode,
+        bomVerificationSkipped: skipped,
+        bomSkipApproverRole: skipped ? String(bomSkipApproverRole).toLowerCase() : null,
+        bomSkipApproverName: skipped ? String(bomSkipApproverName).trim() : null,
+        bomSkipApprovalAt: skipped ? timestamps.createdAt : null,
+        bomSkipApprovalRemarks: skipped && bomSkipApprovalRemarks ? String(bomSkipApprovalRemarks) : null,
         status: "active",
         startTime: timestamps.startTime,
         createdAt: timestamps.createdAt,
       })
       .returning();
 
+    // Module 2.2: record the creator as an owner so operator-level access
+    // filtering (and later handover co-ownership) can join on this table.
+    if (req.actor?.id) {
+      await db
+        .insert(changeoverOperatorsTable)
+        .values({ sessionId: session.id, operatorId: req.actor.id, role: "creator" })
+        .onConflictDoNothing();
+    }
+
     let bomName = "";
     if (finalBomId !== null) {
       const [bom] = await db.select().from(bomsTable).where(eq(bomsTable.id, finalBomId));
       bomName = bom?.name ?? "";
     }
+
+    // Module 9.2: audit the changeover creation. When BOM verification was
+    // skipped, record a separate bom_skip_approved event carrying the approver.
+    const actor = req.actor;
+    if (actor?.id) {
+      await db.insert(auditLogsTable).values({
+        entityType: "session",
+        entityId: String(session.id),
+        action: "changeover_created",
+        changedBy: actor.id,
+        actorRole: actor.role,
+        newValue: JSON.stringify({ id: session.id, lineName: session.lineName, bomId: finalBomId, bomName, verificationMode: finalVerificationMode }),
+        description: `Changeover #${session.id} created on line ${session.lineName ?? "?"} by ${actor.name}`,
+      });
+      if (skipped) {
+        await db.insert(auditLogsTable).values({
+          entityType: "session",
+          entityId: String(session.id),
+          action: "bom_skip_approved",
+          changedBy: actor.id,
+          actorRole: actor.role,
+          newValue: JSON.stringify({
+            approverRole: session.bomSkipApproverRole,
+            approverName: session.bomSkipApproverName,
+            remarks: session.bomSkipApprovalRemarks,
+          }),
+          description: `BOM verification skipped on changeover #${session.id}, approved by ${session.bomSkipApproverName} (${session.bomSkipApproverRole})`,
+        });
+      }
+    }
+
     res.status(201).json({ ...session, bomName });
   } catch (err) {
     req.log.error(err);
     res.status(500).json({ error: "Failed to create session" });
+  }
+});
+
+// Module 4: shift handover on the live changeover. The recipient operator is
+// added as a co-owner (role "handover") in changeover_operators so both the
+// original operator and the recipient retain access (Module 2.2 access
+// filtering joins on this table). Any owner-operator or a supervisor/qa/admin
+// may initiate. This is the end-to-end transfer for the sessionsTable flow.
+router.post("/sessions/:sessionId/handover", requireAuth, async (req: AuthRequest, res) => {
+  try {
+    const sessionId = Number(req.params.sessionId);
+    if (!Number.isInteger(sessionId)) {
+      res.status(400).json({ error: "Invalid session id" });
+      return;
+    }
+    const toOperatorId = String(req.body?.toOperatorId ?? "").trim();
+    const toSupervisorId = String(req.body?.toSupervisorId ?? "").trim();
+    const notes = String(req.body?.notes ?? "").trim();
+    const actor = req.actor!;
+
+    if (!toOperatorId) {
+      res.status(400).json({ error: "toOperatorId is required" });
+      return;
+    }
+
+    const [session] = await db
+      .select({ id: sessionsTable.id, operatorName: sessionsTable.operatorName, status: sessionsTable.status })
+      .from(sessionsTable)
+      .where(and(eq(sessionsTable.id, sessionId), isNull(sessionsTable.deletedAt)));
+    if (!session) {
+      res.status(404).json({ error: "Changeover not found" });
+      return;
+    }
+    if (session.status === "completed" || session.status === "cancelled") {
+      res.status(409).json({ error: "Cannot hand over a closed changeover" });
+      return;
+    }
+
+    // Authz: an owner-operator (creator/handover) or a privileged role.
+    const isPrivileged = ["qa", "supervisor", "admin"].includes(actor.role);
+    if (!isPrivileged) {
+      const [owner] = await db
+        .select({ id: changeoverOperatorsTable.id })
+        .from(changeoverOperatorsTable)
+        .where(and(eq(changeoverOperatorsTable.sessionId, sessionId), eq(changeoverOperatorsTable.operatorId, actor.id)));
+      const isOwnerByName = session.operatorName === actor.name;
+      if (!owner && !isOwnerByName) {
+        res.status(403).json({ error: "Only an owner of this changeover or a supervisor can initiate handover" });
+        return;
+      }
+    }
+
+    // Resolve recipient(s). The incoming operator is required; a supervisor is
+    // optional. Both become co-owners so the handover is visible immediately.
+    const recipientIds = [toOperatorId, toSupervisorId].filter(Boolean);
+    const recipients = await db
+      .select({ id: usersTable.id, name: usersTable.name })
+      .from(usersTable)
+      .where(inArray(usersTable.id, recipientIds));
+    const toOperator = recipients.find((r) => r.id === toOperatorId);
+    if (!toOperator) {
+      res.status(404).json({ error: "Incoming operator not found" });
+      return;
+    }
+
+    for (const id of recipientIds) {
+      await db
+        .insert(changeoverOperatorsTable)
+        .values({ sessionId, operatorId: id, role: "handover" })
+        .onConflictDoNothing();
+    }
+
+    await db.insert(auditLogsTable).values({
+      entityType: "session",
+      entityId: String(sessionId),
+      action: "handover_added",
+      changedBy: actor.id,
+      newValue: JSON.stringify({ sessionId, toOperatorId, toSupervisorId: toSupervisorId || null, notes: notes || null }),
+      description: `Handover of changeover #${sessionId} to ${toOperator.name ?? toOperatorId} by ${actor.name}`,
+    });
+
+    await pushNotification({
+      type: "info",
+      message: `Changeover #${sessionId} handed over to ${toOperator.name ?? "operator"}`,
+      detail: notes || undefined,
+      entityId: String(sessionId),
+      createdBy: actor.id,
+    });
+
+    res.status(201).json({ success: true, sessionId, toOperatorId, toSupervisorId: toSupervisorId || null });
+  } catch (err) {
+    req.log.error(err);
+    res.status(500).json({ error: "Failed to initiate handover" });
   }
 });
 
@@ -923,6 +1149,33 @@ router.get("/sessions/:sessionId", requireRole("operator", "qa", "supervisor", "
       res.status(404).json({ error: "Session not found" });
       return;
     }
+
+    // Module 2.2: operators may only open changeovers they own (join-table
+    // membership or the legacy creator-by-name match). Privileged roles bypass.
+    const actor = req.actor!;
+    if (!["qa", "supervisor", "admin"].includes(actor.role)) {
+      const [membership] = await db
+        .select({ id: changeoverOperatorsTable.id })
+        .from(changeoverOperatorsTable)
+        .where(
+          and(
+            eq(changeoverOperatorsTable.sessionId, sessionId),
+            eq(changeoverOperatorsTable.operatorId, actor.id),
+          ),
+        );
+      if (!membership && session.operatorName !== actor.name) {
+        await auditLog({
+          event: "UNAUTHORIZED_ACCESS",
+          operatorId: actor.id,
+          sessionId: String(sessionId),
+          ip: req.ip,
+          detail: `Operator ${actor.name} denied access to changeover #${sessionId} (not an owner)`,
+        });
+        res.status(403).json({ error: "You do not have access to this changeover" });
+        return;
+      }
+    }
+
     const scans = await db.select().from(scanRecordsTable).where(eq(scanRecordsTable.sessionId, sessionId)).orderBy(scanRecordsTable.scannedAt);
     
     // Only query BOM if not in free scan mode (bomId is not NULL)
@@ -1048,7 +1301,7 @@ router.get("/sessions/:sessionId/scans", requireRole("operator", "qa", "supervis
 router.patch("/sessions/:sessionId", requireRole("operator", "qa", "supervisor", "admin"), async (req: AuthRequest, res) => {
   try {
     const sessionId = Number(req.params.sessionId);
-    const { endTime, productionCount, status, logoUrl, verificationMode } = req.body;
+    const { endTime, productionCount, status, logoUrl, verificationMode, totalProductionQuantity, currentCycleTime } = req.body;
     const updates: Record<string, unknown> = {};
     if (endTime !== undefined) updates.endTime = new Date(endTime);
     if (productionCount !== undefined) updates.productionCount = productionCount;
@@ -1056,11 +1309,44 @@ router.patch("/sessions/:sessionId", requireRole("operator", "qa", "supervisor",
     if (logoUrl !== undefined) updates.logoUrl = logoUrl;
     if (verificationMode !== undefined) {
       const normalizedMode = String(verificationMode).trim().toUpperCase();
-      if (!['AUTO', 'MANUAL'].includes(normalizedMode)) {
-        res.status(400).json({ error: "verificationMode must be 'AUTO' or 'MANUAL'" });
+      if (!['AUTO', 'MANUAL', 'AUTO_LEGACY'].includes(normalizedMode)) {
+        res.status(400).json({ error: "verificationMode must be 'AUTO', 'MANUAL' or 'AUTO_LEGACY'" });
         return;
       }
       updates.verificationMode = normalizedMode;
+    }
+
+    // Module 3: at closure the operator supplies production quantity + cycle time.
+    // total_output_units = total_production_quantity * bom.cavity_count (server-computed).
+    if (totalProductionQuantity !== undefined) {
+      const qty = Number(totalProductionQuantity);
+      if (!Number.isInteger(qty) || qty < 0) {
+        res.status(400).json({ error: "totalProductionQuantity must be a non-negative integer" });
+        return;
+      }
+      updates.totalProductionQuantity = qty;
+
+      const [current] = await db
+        .select({ bomId: sessionsTable.bomId })
+        .from(sessionsTable)
+        .where(eq(sessionsTable.id, sessionId));
+      let cavityCount = 1;
+      if (current?.bomId != null) {
+        const [bom] = await db
+          .select({ cavityCount: bomsTable.cavityCount })
+          .from(bomsTable)
+          .where(eq(bomsTable.id, current.bomId));
+        cavityCount = bom?.cavityCount ?? 1;
+      }
+      updates.totalOutputUnits = qty * cavityCount;
+    }
+    if (currentCycleTime !== undefined) {
+      const cycle = Number(currentCycleTime);
+      if (!Number.isFinite(cycle) || cycle < 0) {
+        res.status(400).json({ error: "currentCycleTime must be a non-negative number" });
+        return;
+      }
+      updates.currentCycleTime = cycle;
     }
 
     const updated = await db
@@ -1080,6 +1366,25 @@ router.patch("/sessions/:sessionId", requireRole("operator", "qa", "supervisor",
       const [bom] = await db.select().from(bomsTable).where(eq(bomsTable.id, session.bomId));
       bomName = bom?.name ?? "";
     }
+
+    // Module 9.2: audit changeover closure when this update completes it.
+    const actor = req.actor;
+    if (actor?.id && status === "completed") {
+      await db.insert(auditLogsTable).values({
+        entityType: "session",
+        entityId: String(sessionId),
+        action: "changeover_closed",
+        changedBy: actor.id,
+        actorRole: actor.role,
+        newValue: JSON.stringify({
+          status: session.status,
+          totalProductionQuantity: session.totalProductionQuantity ?? null,
+          totalOutputUnits: session.totalOutputUnits ?? null,
+        }),
+        description: `Changeover #${sessionId} closed by ${actor.name} (output units: ${session.totalOutputUnits ?? "n/a"})`,
+      });
+    }
+
     res.json({ ...session, bomName });
   } catch (err) {
     req.log.error(err);
@@ -1097,8 +1402,8 @@ router.patch("/sessions/:sessionId/mode", requireRole("operator", "qa", "supervi
       return;
     }
 
-    if (!['AUTO', 'MANUAL'].includes(mode)) {
-      res.status(400).json({ error: "mode must be 'AUTO' or 'MANUAL'" });
+    if (!['AUTO', 'MANUAL', 'AUTO_LEGACY'].includes(mode)) {
+      res.status(400).json({ error: "mode must be 'AUTO', 'MANUAL' or 'AUTO_LEGACY'" });
       return;
     }
 
@@ -1825,16 +2130,24 @@ router.post("/sessions/:sessionId/splices", requireRole("operator", "qa", "super
         )
       );
 
-    const [bomItem] = await db
-      .select()
-      .from(bomItemsTable)
-      .where(and(eq(bomItemsTable.bomId, session.bomId), eq(bomItemsTable.feederNumber, normalizedFeeder), isNull(bomItemsTable.deletedAt)));
+    // BOM verification bypass: a changeover created with an approved "Skip BOM
+    // Verification" must not have its splices rejected on BOM mismatch. When set,
+    // the feeder/old-spool/new-spool BOM gates below fall back to acceptance and
+    // still record the splice.
+    const bypassBom = session.bomVerificationSkipped === true;
 
-    if (!bomItem) {
+    const [bomItem] = session.bomId != null
+      ? await db
+          .select()
+          .from(bomItemsTable)
+          .where(and(eq(bomItemsTable.bomId, session.bomId), eq(bomItemsTable.feederNumber, normalizedFeeder), isNull(bomItemsTable.deletedAt)))
+      : [];
+
+    if (!bomItem && !bypassBom) {
       return res.status(404).json({ error: `Feeder ${normalizedFeeder} not found in BOM` });
     }
 
-    const bomRowForMatch = {
+    const bomRowForMatch = bomItem ? {
       internalPartNumber: bomItem.internalPartNumber,
       mpn1: bomItem.mpn1,
       mpn2: bomItem.mpn2,
@@ -1852,13 +2165,13 @@ router.post("/sessions/:sessionId/splices", requireRole("operator", "qa", "super
       make6: bomItem.make6,
       make7: bomItem.make7,
       make8: bomItem.make8,
-    };
+    } : null;
 
     // === STEP 3: Old spool - check it matches the BOM (allocated to feeder) ===
     let oldMatch: SpliceMatch | null = null;
-    if (oldSpoolObj && oldSpoolObj.barcode) {
+    if (oldSpoolObj && oldSpoolObj.barcode && bomRowForMatch) {
       oldMatch = verifySpliceMpn(oldSpoolObj.barcode, bomRowForMatch);
-      if (!oldMatch) {
+      if (!oldMatch && !bypassBom) {
         return res.status(400).json({
           error: `Old spool does not match BOM for feeder ${normalizedFeeder}.`,
           code: "OLD_SPOOL_BOM_MISMATCH",
@@ -1868,17 +2181,26 @@ router.post("/sessions/:sessionId/splices", requireRole("operator", "qa", "super
     }
 
     // === STEP 4: New spool - check it matches the BOM AND is allocated to the same feeder ===
-    const newMatch = verifySpliceMpn(newSpoolObj.barcode, bomRowForMatch);
+    let newMatch = bomRowForMatch ? verifySpliceMpn(newSpoolObj.barcode, bomRowForMatch) : null;
 
     if (!newMatch) {
-      return res.status(400).json({
-        error: `New spool is not allocated to feeder ${normalizedFeeder}. Expected: ${[bomItem.mpn1, bomItem.mpn2, bomItem.mpn3, bomItem.mpn4, bomItem.mpn5, bomItem.mpn6, bomItem.mpn7, bomItem.mpn8].filter(Boolean).join(" / ") || bomItem.internalPartNumber || "No part configured"}`,
-        code: "WRONG_FEEDER_ALLOCATION",
-        status: "failed",
-        expectedMpns: [bomItem.mpn1, bomItem.mpn2, bomItem.mpn3, bomItem.mpn4, bomItem.mpn5, bomItem.mpn6, bomItem.mpn7, bomItem.mpn8].filter(Boolean),
-        expectedInternalPartNumber: bomItem.internalPartNumber ?? null,
-        expectedFeeder: normalizedFeeder,
-      });
+      if (!bypassBom) {
+        return res.status(400).json({
+          error: `New spool is not allocated to feeder ${normalizedFeeder}. Expected: ${[bomItem?.mpn1, bomItem?.mpn2, bomItem?.mpn3, bomItem?.mpn4, bomItem?.mpn5, bomItem?.mpn6, bomItem?.mpn7, bomItem?.mpn8].filter(Boolean).join(" / ") || bomItem?.internalPartNumber || "No part configured"}`,
+          code: "WRONG_FEEDER_ALLOCATION",
+          status: "failed",
+          expectedMpns: [bomItem?.mpn1, bomItem?.mpn2, bomItem?.mpn3, bomItem?.mpn4, bomItem?.mpn5, bomItem?.mpn6, bomItem?.mpn7, bomItem?.mpn8].filter(Boolean),
+          expectedInternalPartNumber: bomItem?.internalPartNumber ?? null,
+          expectedFeeder: normalizedFeeder,
+        });
+      }
+      // Bypass: no BOM match required — record the scanned new spool as-is.
+      newMatch = {
+        matchedField: "internalPartNumber",
+        matchedAs: String(newSpoolObj.barcode).trim(),
+        matchedMake: "",
+        status: "alternate",
+      };
     }
 
     // === STEP 5: LOT code gate - new spool MUST have a lot code ===
@@ -2062,7 +2384,7 @@ router.get("/sessions/:sessionId/summary", requireRole("operator", "qa", "superv
   }
 });
 
-router.get("/sessions/:sessionId/report", requireRole("qa", "supervisor", "admin"), async (req: AuthRequest, res) => {
+router.get("/sessions/:sessionId/report", requireRole("operator", "qa", "supervisor", "admin"), async (req: AuthRequest, res) => {
   try {
     const sessionId = Number(req.params.sessionId);
     if (!Number.isFinite(sessionId)) {
@@ -2785,6 +3107,112 @@ router.get("/sessions/:sessionId/report/pdf", requireRole("qa", "supervisor", "a
   } catch (err) {
     req.log.error(err);
     res.status(500).json({ error: "Failed to generate session report PDF" });
+  }
+});
+
+// Module 6: Excel export of the final changeover report. Two sheets — a
+// Summary (header + counts + production figures) and a Components table
+// mirroring the PDF report rows.
+router.get("/sessions/:sessionId/report/xlsx", requireRole("operator", "qa", "supervisor", "admin"), async (req: AuthRequest, res) => {
+  try {
+    const sessionId = Number(req.params.sessionId);
+    if (!Number.isInteger(sessionId)) {
+      res.status(400).json({ error: "Invalid session id" });
+      return;
+    }
+    const payload = await buildSessionReportPayload(sessionId);
+    if (!payload) {
+      res.status(404).json({ error: "Session not found" });
+      return;
+    }
+    const { session: s, summary, reportRows } = payload;
+    const reportId = formatSmtSessionId(s.startedAt ? new Date(s.startedAt) : new Date(), s.id);
+
+    const wb = new ExcelJS.Workbook();
+    wb.creator = "SMT Verification";
+    wb.created = new Date();
+
+    const fmt = (v: unknown) => (v === null || v === undefined || v === "" ? "—" : String(v));
+    const summarySheet = wb.addWorksheet("Summary");
+    summarySheet.columns = [
+      { header: "Field", key: "field", width: 26 },
+      { header: "Value", key: "value", width: 40 },
+    ];
+    const infoRows: [string, unknown][] = [
+      ["Changeover ID", reportId],
+      ["Status", s.status],
+      ["Panel / PCB", s.panelId ?? s.pcbPartNumber],
+      ["Customer", s.customer],
+      ["BOM Version", s.bomVersion],
+      ["Line", s.line],
+      ["Machine", s.machine],
+      ["Shift", s.shift],
+      ["Verification Mode", s.verificationMode],
+      ["Operator", s.operatorName],
+      ["Supervisor", s.supervisorName],
+      ["QA", s.qaName],
+      ["Started At", s.startedAt ? new Date(s.startedAt).toLocaleString() : null],
+      ["Completed At", s.completedAt ? new Date(s.completedAt).toLocaleString() : null],
+      ["Duration (min)", s.durationMinutes],
+      ["Total BOM Items", summary.totalBomItems],
+      ["Scanned", summary.scannedCount],
+      ["Verified (OK)", summary.okCount],
+      ["Rejected", summary.rejectCount],
+      ["Missing", summary.missingCount],
+      ["Completion %", summary.completionPercent],
+      ["Total Production Quantity", s.totalProductionQuantity],
+      ["Current Cycle Time (s)", s.currentCycleTime],
+      ["Total Output Units", s.totalOutputUnits],
+    ];
+    for (const [field, value] of infoRows) {
+      summarySheet.addRow({ field, value: fmt(value) });
+    }
+    summarySheet.getRow(1).font = { bold: true };
+
+    const comp = wb.addWorksheet("Components");
+    comp.columns = [
+      { header: "#", key: "idx", width: 5 },
+      { header: "Feeder", key: "feeder", width: 12 },
+      { header: "Ref/Location", key: "ref", width: 16 },
+      { header: "Description", key: "desc", width: 30 },
+      { header: "Value", key: "value", width: 14 },
+      { header: "Package", key: "pkg", width: 14 },
+      { header: "Internal Part No", key: "ipn", width: 18 },
+      { header: "MPN1", key: "mpn1", width: 18 },
+      { header: "Scanned Value", key: "scanned", width: 20 },
+      { header: "Matched Field", key: "matched", width: 14 },
+      { header: "Matched Make", key: "make", width: 14 },
+      { header: "Lot Code", key: "lot", width: 14 },
+      { header: "Status", key: "status", width: 10 },
+      { header: "Scanned At", key: "at", width: 22 },
+    ];
+    reportRows.forEach((row: any, i: number) => {
+      comp.addRow({
+        idx: i + 1,
+        feeder: fmt(row.feederNumber),
+        ref: fmt(row.referenceLocation),
+        desc: fmt(row.description),
+        value: fmt(row.value),
+        pkg: fmt(row.packageDescription ?? row.packageType),
+        ipn: fmt(row.internalPartNumber),
+        mpn1: fmt(row.mpn1),
+        scanned: fmt(row.scannedValue),
+        matched: fmt(row.matchedField),
+        make: fmt(row.matchedMake),
+        lot: fmt(row.lotCode),
+        status: row.scanStatus === "verified" ? "PASS" : row.scanStatus === "failed" ? "FAIL" : "MISS",
+        at: row.scannedAt ? new Date(row.scannedAt).toLocaleString() : "—",
+      });
+    });
+    comp.getRow(1).font = { bold: true };
+
+    res.setHeader("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
+    res.setHeader("Content-Disposition", `attachment; filename="SMT_Report_${reportId}.xlsx"`);
+    await wb.xlsx.write(res);
+    res.end();
+  } catch (err) {
+    req.log.error(err);
+    res.status(500).json({ error: "Failed to generate session report Excel" });
   }
 });
 

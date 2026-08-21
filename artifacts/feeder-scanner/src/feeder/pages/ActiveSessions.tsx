@@ -35,6 +35,32 @@ function ElapsedBadge({ startedAt }: { startedAt: string }) {
   );
 }
 
+// The active board carries every in-progress status now, so the badge must
+// reflect where the session actually is rather than a hardcoded "active".
+function statusMeta(status: string): { label: string; className: string } {
+  switch (status) {
+    case "pending_qa":
+      return { label: "pending qa", className: "bg-amber-500/15 text-amber-700 dark:text-amber-400" };
+    case "qa_confirmed":
+      return { label: "splicing", className: "bg-blue-500/15 text-blue-700 dark:text-blue-400" };
+    case "splicing_pending_qa":
+      return { label: "splice qa", className: "bg-amber-500/15 text-amber-700 dark:text-amber-400" };
+    case "active":
+      return { label: "active", className: "bg-green-600/15 text-green-600 dark:bg-green-500/15 dark:text-green-400" };
+    default:
+      return { label: status, className: "bg-slate-500/15 text-slate-700 dark:text-slate-300" };
+  }
+}
+
+function StatusBadge({ status, className = "" }: { status: string; className?: string }) {
+  const meta = statusMeta(status);
+  return (
+    <span className={`px-2.5 py-1 text-xs font-mono font-bold rounded-sm uppercase tracking-wider inline-block whitespace-nowrap ${meta.className} ${className}`}>
+      {meta.label}
+    </span>
+  );
+}
+
 export default function ActiveSessions() {
   const { user } = useAuth();
   const [, setLocation] = useLocation();
@@ -135,9 +161,7 @@ export default function ActiveSessions() {
                         {session.bomName ?? `BOM #${session.bomId}`}
                       </div>
                     </div>
-                    <span className="px-2.5 py-1 text-xs font-mono font-bold rounded-sm uppercase tracking-wider bg-green-600/15 text-green-600 dark:bg-green-500/15 dark:text-green-400 whitespace-nowrap ml-3">
-                      active
-                    </span>
+                    <StatusBadge status={session.status} className="ml-3" />
                   </div>
 
                   <div className="flex items-center justify-between pt-3 border-t border-border">
@@ -236,9 +260,7 @@ export default function ActiveSessions() {
                         <ElapsedBadge startedAt={session.startedAt} />
                       </TableCell>
                       <TableCell>
-                        <span className="px-2.5 py-1 text-xs font-mono font-bold rounded-sm uppercase tracking-wider inline-block bg-green-600/15 text-green-600 dark:bg-green-500/15 dark:text-green-400">
-                          active
-                        </span>
+                        <StatusBadge status={session.status} />
                       </TableCell>
                       {canDelete && (
                         <TableCell>
@@ -277,9 +299,7 @@ export default function ActiveSessions() {
                           {session.sessionCode}
                         </span>
                       </div>
-                      <span className="px-2 py-1 text-xs font-mono font-bold rounded-sm uppercase tracking-wider bg-green-600/15 text-green-600 dark:bg-green-500/15 dark:text-green-400 whitespace-nowrap ml-2">
-                        active
-                      </span>
+                      <StatusBadge status={session.status} className="ml-2" />
                     </div>
                     <div className="mb-3">
                       <div className="text-xs text-muted-foreground font-mono">BOM</div>

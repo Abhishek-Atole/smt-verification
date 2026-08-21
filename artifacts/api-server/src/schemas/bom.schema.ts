@@ -11,6 +11,8 @@ import { z } from "zod";
 export const CreateBomSchema = z.object({
   name: z.string().min(1, "BOM name is required").trim(),
   description: z.string().optional().nullable(),
+  // Module 5: required cavity count, min 1.
+  cavityCount: z.number().int().min(1, "cavityCount must be an integer >= 1"),
 });
 
 /**
@@ -19,6 +21,7 @@ export const CreateBomSchema = z.object({
 export const UpdateBomSchema = z.object({
   name: z.string().min(1).trim().optional(),
   description: z.string().optional().nullable(),
+  cavityCount: z.number().int().min(1).optional(),
 });
 
 /**

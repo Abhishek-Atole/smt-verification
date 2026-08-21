@@ -234,9 +234,15 @@ router.get("/bom", requireRole("operator", "qa", "supervisor", "admin"), async (
 
 router.post("/bom", requireRole("qa", "supervisor", "admin"), async (req: AuthRequest, res) => {
   try {
-    const { name, description, version, product, customer, revisionLabel, revisionNotes } = req.body;
+    const { name, description, version, product, customer, cavityCount, revisionLabel, revisionNotes } = req.body;
     if (!name) {
       res.status(400).json({ error: "name is required" });
+      return;
+    }
+    // Module 5: cavity_count is required (integer >= 1) at BOM creation.
+    const cavity = Number(cavityCount);
+    if (!Number.isInteger(cavity) || cavity < 1) {
+      res.status(400).json({ error: "cavityCount is required and must be an integer >= 1" });
       return;
     }
     const [bom] = await db.insert(bomsTable).values({
@@ -245,6 +251,7 @@ router.post("/bom", requireRole("qa", "supervisor", "admin"), async (req: AuthRe
       version: version || null,
       product: product || null,
       customer: customer || null,
+      cavityCount: cavity,
       revisionLabel: revisionLabel || null,
       revisionNotes: revisionNotes || null,
     }).returning();
@@ -258,6 +265,7 @@ router.post("/bom", requireRole("qa", "supervisor", "admin"), async (req: AuthRe
       version: bom.version,
       product: bom.product,
       customer: bom.customer,
+      cavityCount: bom.cavityCount,
       revisionLabel: bom.revisionLabel,
       revisionNotes: bom.revisionNotes,
       itemCount: 0,
@@ -314,16 +322,25 @@ router.get("/bom/:bomId", requireRole("operator", "qa", "supervisor", "admin"), 
 router.patch("/bom/:bomId", requireRole("qa", "supervisor", "admin"), async (req: AuthRequest, res) => {
   try {
     const bomId = Number(req.params.bomId);
-    const { name, description, version, product, customer } = req.body;
+    const { name, description, version, product, customer, cavityCount } = req.body;
 
     if (!(await assertBomEditable(bomId, res))) return;
 
-    const updateData: { name?: string; description?: string; version?: string; product?: string; customer?: string } = {};
+    const updateData: { name?: string; description?: string; version?: string; product?: string; customer?: string; cavityCount?: number } = {};
     if (name !== undefined) updateData.name = name;
     if (description !== undefined) updateData.description = description;
     if (version !== undefined) updateData.version = version;
     if (product !== undefined) updateData.product = product;
     if (customer !== undefined) updateData.customer = customer;
+    // Module 5: cavity_count stays required (integer >= 1) when edited.
+    if (cavityCount !== undefined) {
+      const cavity = Number(cavityCount);
+      if (!Number.isInteger(cavity) || cavity < 1) {
+        res.status(400).json({ error: "cavityCount must be an integer >= 1" });
+        return;
+      }
+      updateData.cavityCount = cavity;
+    }
     
     const [updatedBom] = await db
       .update(bomsTable)
