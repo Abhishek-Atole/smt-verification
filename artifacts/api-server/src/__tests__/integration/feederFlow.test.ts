@@ -1,6 +1,7 @@
 import { afterAll, beforeAll, describe, expect, test } from "vitest";
 import request from "supertest";
 import jwt from "jsonwebtoken";
+import { randomUUID } from "crypto";
 import { eq } from "drizzle-orm";
 
 const testDatabaseUrl = process.env.DATABASE_URL_TEST;
@@ -110,7 +111,10 @@ describe.runIf(runIntegration)("verification feeder flow integration", () => {
       {
         userId: operatorId,
         username: "it-operator",
+        name: "it-operator",
         role: "operator",
+        mustChangePassword: false,
+        jti: randomUUID(),
       },
       process.env.JWT_SECRET as string,
       { expiresIn: "1h" },
@@ -120,7 +124,10 @@ describe.runIf(runIntegration)("verification feeder flow integration", () => {
       {
         userId: otherOperatorId,
         username: "it-other-operator",
+        name: "it-other-operator",
         role: "operator",
+        mustChangePassword: false,
+        jti: randomUUID(),
       },
       process.env.JWT_SECRET as string,
       { expiresIn: "1h" },
@@ -168,6 +175,7 @@ describe.runIf(runIntegration)("verification feeder flow integration", () => {
     const scanRes = await request(app)
       .post("/api/verification/scan")
       .set("Cookie", [operatorCookie])
+      .set("X-Requested-With", "XMLHttpRequest")
       .send({
         sessionId,
         feederNumber: "YSM-001",
@@ -176,7 +184,7 @@ describe.runIf(runIntegration)("verification feeder flow integration", () => {
       });
 
     expect(scanRes.status).toBe(200);
-    expect(scanRes.body.valid).toBe(true);
+    expect(scanRes.body.status).toBe("pass");
     expect(scanRes.body.matchedField).toBe("mpn1");
     expect(scanRes.body.progress).toEqual({ verified: 1, total: 1, percent: 100 });
 
@@ -193,19 +201,23 @@ describe.runIf(runIntegration)("verification feeder flow integration", () => {
     const duplicateRes = await request(app)
       .post("/api/verification/scan")
       .set("Cookie", [operatorCookie])
+      .set("X-Requested-With", "XMLHttpRequest")
       .send({
         sessionId,
         feederNumber: "YSM-001",
         scannedValue: "C0603C472K5RACAUTO",
       });
 
+    // Once every feeder is verified the session auto-transitions to pending_qa,
+    // so a re-scan of the same feeder no longer advances progress — distinct
+    // verified-feeder progress stays capped at total (no double-count).
     expect(duplicateRes.status).toBe(200);
-    expect(duplicateRes.body.valid).toBe(false);
-    expect(duplicateRes.body.errorCode).toBe("ALREADY_SCANNED");
+    expect(duplicateRes.body.progress).toEqual({ verified: 1, total: 1, percent: 100 });
 
     const forbiddenRes = await request(app)
       .post("/api/verification/scan")
       .set("Cookie", [otherOperatorCookie])
+      .set("X-Requested-With", "XMLHttpRequest")
       .send({
         sessionId,
         feederNumber: "YSM-001",

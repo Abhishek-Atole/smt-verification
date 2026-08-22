@@ -598,7 +598,10 @@ async function buildSessionReportPayload(sessionId: number): Promise<SessionRepo
     ? await db.select().from(bomsTable).where(eq(bomsTable.id, session.bomId))
     : [null];
 
-  const totalBomItems = bomItems.length;
+  // Free Scan Mode has no BOM items, so the scanned feeders are the only "total"
+  // the report can report against; fall back to the scan count so the header's
+  // Feeders / completion figures aren't stuck at zero for free-scan sessions.
+  const totalBomItems = bomItems.length > 0 ? bomItems.length : scans.length;
   const okCount = scans.filter((s) => s.status === "ok").length;
   const rejectCount = scans.filter((s) => s.status === "reject").length;
   const scannedFeederNumbers = new Set(scans.filter((s) => s.status === "ok").map((s) => s.feederNumber.trim().toLowerCase()));
@@ -608,7 +611,51 @@ async function buildSessionReportPayload(sessionId: number): Promise<SessionRepo
   const end = session.endTime ? new Date(session.endTime) : new Date();
   const durationMinutes = Math.round((end.getTime() - start.getTime()) / 60000);
 
-  const reportRows = bomItems.map((item: any) => {
+  const reportRows = bomItems.length === 0
+    // Free Scan Mode: no BOM to drive the rows off, so each scan record becomes a
+    // row on its own. BOM-derived columns (ref-des, expected MPN, package, internal
+    // P/N) stay blank because there is no BOM to compare the scan against.
+    ? scans.map((scan: any) => {
+        const scannedVal = scan.spoolBarcode ?? scan.internalIdScanned ?? scan.scannedMpn ?? null;
+        const scanStatus = scan.status === "ok" ? "verified" : scan.status === "reject" ? "failed" : null;
+        return {
+          id: sessionId,
+          startedAt: session.startTime,
+          completedAt: session.endTime,
+          status: scanStatus ?? "missing",
+          verificationMode: scan.verificationMode ?? session.verificationMode ?? "manual",
+          panelId: session.panelName,
+          shift: session.shiftName,
+          customer: session.customerName,
+          machine: session.machineName ?? null,
+          pcbPartNumber: session.panelName,
+          line: session.lineName ?? null,
+          bomVersion: null,
+          operatorName: session.operatorName,
+          qaName: session.qaName ?? null,
+          supervisorName: session.supervisorName,
+          feederNumber: scan.feederNumber,
+          scannedValue: scannedVal,
+          matchedField: null,
+          matchedMake: null,
+          matchedAs: formatMatchedAs(null, null),
+          lotCode: scan.lotNumber ?? null,
+          scanStatus,
+          scannedAt: scan.scannedAt ?? null,
+          quantity: null,
+          referenceLocation: scan.location ?? null,
+          description: scan.description ?? null,
+          value: null,
+          packageDescription: null,
+          packageType: null,
+          internalPartNumber: null,
+          make1: null, mpn1: null, make2: null, mpn2: null,
+          make3: null, mpn3: null, make4: null, mpn4: null,
+          make5: null, mpn5: null, make6: null, mpn6: null,
+          make7: null, mpn7: null, make8: null, mpn8: null,
+        };
+      })
+    : bomItems.map((item: any) => {
     const feederScan = scans.find((s: any) => s.feederNumber?.trim()?.toUpperCase() === item.feederNumber?.trim()?.toUpperCase());
     
     // Determine scanned value and matched field
@@ -2655,14 +2702,16 @@ router.get("/sessions/:sessionId/report/pdf", requireRole("qa", "supervisor", "a
     const CO_NAME = process.env.COMPANY_NAME ?? process.env.VITE_COMPANY_NAME ?? baseSession?.companyName ?? "Your Company";
     const CO_SHORT = process.env.COMPANY_SHORT ?? process.env.VITE_COMPANY_SHORT ?? "CO";
     const CO_LOGO = process.env.COMPANY_LOGO_PATH ?? process.env.VITE_LOGO_URL ?? null;
-    const SYS_TITLE = process.env.SYSTEM_TITLE ?? process.env.VITE_SYSTEM_TITLE ?? "SMT Verification";
 
     const getLogoPath = () => {
       const candidates = [
         CO_LOGO,
         CO_LOGO ? path.resolve(process.cwd(), CO_LOGO) : null,
-        path.resolve(process.cwd(), "artifacts/api-server/assets/ucal-logo.png"),
-        path.resolve(process.cwd(), "artifacts/feeder-scanner/public/assets/ucal-logo.png"),
+        // Bundled defaults resolved from this module (dist/index.mjs), not
+        // process.cwd(): the server runs from artifacts/api-server, so the old
+        // cwd-relative repo paths never resolved and the logo silently vanished.
+        path.resolve(__dirname, "../assets/ucal-logo.png"),
+        path.resolve(__dirname, "../../feeder-scanner/public/assets/ucal-logo.png"),
       ].filter((candidate): candidate is string => Boolean(candidate));
 
       for (const candidate of candidates) {
@@ -2888,11 +2937,19 @@ router.get("/sessions/:sessionId/report/pdf", requireRole("qa", "supervisor", "a
         { label: "Line", value: String(reportSession.line ?? "—"), category: "equip" },
         { label: "Mode", value: `${String(reportSession.verificationMode ?? baseSession?.verificationMode ?? "AUTO").toUpperCase()} — STRICT`, category: "equip" },
         { label: "Feeders", value: `${reportRows.length} total`, category: "equip" },
-        { label: "Splices", value: `${rawSplices.length} recorded`, category: "equip" },
-      ];
+        ...(rawSplices.length > 0
+          ? [{ label: "Splices", value: `${rawSplices.length} recorded`, category: "equip" }]
+          : []),
+      ]
+        // Drop cards with no real value ("—"/"N/A") so the grid isn't padded out
+        // with empty placeholders — it reflows to only the fields carrying data.
+        .filter((card) => {
+          const v = String(card.value ?? "").trim();
+          return v !== "" && v !== "—" && v.toUpperCase() !== "N/A";
+        });
 
       const cols = 6;
-      const rows = 4;
+      const rows = Math.max(1, Math.ceil(infoCards.length / cols));
       const gap = 4;
       const cardW = (usable - gap * (cols - 1)) / cols;
       const cardH = 26;
@@ -3189,32 +3246,11 @@ router.get("/sessions/:sessionId/report/pdf", requireRole("qa", "supervisor", "a
       y += 60;
     };
 
-    const drawFooter = () => {
-      const now = new Date();
-      const genDate = `${now.toLocaleDateString("en-GB")} ${now.toLocaleTimeString("en-US", { hour12: true })}`;
-      const footY = pageH - 24;
-
-      // Slate divider
-      doc.strokeColor(C.SLATE_300).lineWidth(0.5).moveTo(left, footY).lineTo(right, footY).stroke();
-      // Tiny amber tick on the left
-      doc.fillColor(C.AMBER_700).rect(left, footY, 18, 1.5).fill();
-
-      doc.fillColor(C.SLATE_700).font("Helvetica-Bold").fontSize(6).text(
-        `${SYS_TITLE}  •  Electronically Generated Report`,
-        left, footY + 3, { width: usable, align: "left" }
-      );
-      doc.fillColor(C.SLATE_500).font("Helvetica").fontSize(5.5).text(
-        `Changeover ${reportSessionId}  •  Generated ${genDate}  •  Operator ${reportSession.operatorName ?? baseSession?.operatorName ?? "—"}  •  Page ${_pageNum}`,
-        left, footY + 12, { width: usable, align: "right" }
-      );
-    };
-
     drawHeader();
     drawInfoGrid();
     drawTable();
     drawSpliceTable();
     drawApprovals();
-    drawFooter();
 
     doc.end();
   } catch (err) {

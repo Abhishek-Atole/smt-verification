@@ -15,6 +15,8 @@ export interface AdminTokenPayload {
   adminId: string;
   username: string;
   isAdmin: true;
+  /** First-login gate: true until the admin sets a NEW username AND password. */
+  mustChange: boolean;
   /** Absolute expiry (unix seconds) — sliding TTL cannot extend past this. */
   absExp: number;
 }
@@ -29,13 +31,14 @@ function getAdminSecret(): string {
   return secret;
 }
 
-export function signAdminToken(input: { adminId: string; username: string; absExp?: number }): string {
+export function signAdminToken(input: { adminId: string; username: string; mustChange: boolean; absExp?: number }): string {
   const now = Math.floor(Date.now() / 1000);
   const absExp = input.absExp ?? now + ADMIN_ABSOLUTE_TTL_SEC;
   const payload: AdminTokenPayload = {
     adminId: input.adminId,
     username: input.username,
     isAdmin: true,
+    mustChange: input.mustChange,
     absExp,
   };
   return jwt.sign(payload, getAdminSecret(), { expiresIn: ADMIN_SLIDING_TTL_SEC });
@@ -59,6 +62,7 @@ export function verifyAdminToken(token: string): AdminTokenPayload | null {
       adminId: decoded.adminId,
       username: decoded.username,
       isAdmin: true,
+      mustChange: decoded.mustChange === true,
       absExp: decoded.absExp,
     };
   } catch (err) {
@@ -119,9 +123,26 @@ export function slideAdminCookie(req: AdminAuthRequest, res: Response, next: Nex
     const refreshed = signAdminToken({
       adminId: req.admin.adminId,
       username: req.admin.username,
+      mustChange: req.admin.mustChange,
       absExp: req.admin.absExp,
     });
     res.cookie(ADMIN_TOKEN_COOKIE, refreshed, getAdminCookieOptions(req));
+  }
+  next();
+}
+
+/**
+ * Hard gate for the first-login admin. Until the seeded admin sets a NEW
+ * username AND a NEW password (POST /auth/change-credentials), every admin
+ * route guarded by this returns 409 must_change_credentials. Only login,
+ * logout, me, and change-credentials stay reachable. Runs after
+ * requireAdminAuth (needs req.admin populated). 409 (not 401) lets the SPA
+ * tell "must set up account" apart from "not logged in".
+ */
+export function requireCredentialsChanged(req: AdminAuthRequest, res: Response, next: NextFunction): void {
+  if (req.admin?.mustChange) {
+    res.status(409).json({ error: "must_change_credentials", message: "Set a new admin username and password before continuing." });
+    return;
   }
   next();
 }

@@ -1,8 +1,8 @@
 import { useState, useRef } from "react";
-import { adminApi, ApiError } from "../api";
+import { adminApi, ApiError, type AdminMe } from "../api";
 
 interface Props {
-  onSuccess: () => void;
+  onSuccess: (me: AdminMe) => void;
 }
 
 export default function AdminLogin({ onSuccess }: Props) {
@@ -27,8 +27,8 @@ export default function AdminLogin({ onSuccess }: Props) {
     setBusy(true);
     setMsg("");
     try {
-      await adminApi.login(username.trim(), password);
-      onSuccess();
+      const me = await adminApi.login(username.trim(), password);
+      onSuccess(me);
     } catch (e) {
       // Backend surfaces 401 "Invalid credentials" and 429 rate-limit here.
       setMsg(e instanceof ApiError ? e.message : "Login failed");

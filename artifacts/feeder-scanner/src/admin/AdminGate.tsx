@@ -3,6 +3,7 @@ import { useLocation } from "wouter";
 import { ADMIN_ROUTE } from "./config";
 import { adminApi } from "./api";
 import AdminLogin from "./pages/AdminLogin";
+import AdminFirstRun from "./pages/AdminFirstRun";
 import { AdminProvider } from "./admin-context";
 import AdminShell from "./components/AdminShell";
 import Overview from "./pages/Overview";
@@ -19,12 +20,13 @@ import LicensePage from "./pages/License";
 
 export function AdminGate() {
   const [authed, setAuthed] = useState(false);
+  const [mustChange, setMustChange] = useState(false);
   const [checking, setChecking] = useState(true);
 
   useEffect(() => {
     // Ask the backend whether the smt_admin_token cookie is still valid.
     adminApi.me()
-      .then(() => setAuthed(true))
+      .then((me) => { setAuthed(true); setMustChange(me.mustChange === true); })
       .catch(() => setAuthed(false))
       .finally(() => setChecking(false));
   }, []);
@@ -34,6 +36,7 @@ export function AdminGate() {
       await adminApi.logout();
     } finally {
       setAuthed(false);
+      setMustChange(false);
     }
   }
 
@@ -48,7 +51,15 @@ export function AdminGate() {
     );
   }
 
-  if (!authed) return <AdminLogin onSuccess={() => setAuthed(true)} />;
+  if (!authed) {
+    return <AdminLogin onSuccess={(me) => { setAuthed(true); setMustChange(me.mustChange === true); }} />;
+  }
+
+  // First-login hard gate: the seeded admin must set a new username + password
+  // before any Control Panel route works (server also 409s every other route).
+  if (mustChange) {
+    return <AdminFirstRun onDone={() => setMustChange(false)} onLogout={handleLogout} />;
+  }
 
   return (
     <AdminProvider>

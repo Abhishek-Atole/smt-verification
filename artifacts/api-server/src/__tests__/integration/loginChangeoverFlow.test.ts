@@ -11,12 +11,22 @@ describe.runIf(runIntegration)("login + changeover integration", () => {
       import bcrypt from 'bcryptjs';
       import { randomUUID } from 'crypto';
       import { eq } from 'drizzle-orm';
+      import { fileURLToPath as __furl } from 'node:url';
+      import { dirname as __dir } from 'node:path';
+
+      // This script is piped to \`tsx -\` (stdin), which loads app.ts as ESM
+      // WITHOUT the esbuild banner that the prod build injects — so __dirname
+      // (used at app.ts static-root resolution) is undefined here. Mirror the
+      // banner before importing the app. (Prod is unaffected: build.mjs defines
+      // globalThis.__dirname.)
+      globalThis.__filename = __furl(import.meta.url);
+      globalThis.__dirname = __dir(globalThis.__filename);
 
       const { default: app } = await import('./src/app.ts');
       const { db } = await import('@workspace/db');
       const { usersTable, bomsTable, changeoverSessionsTable } = await import('@workspace/db/schema');
 
-      const username = 'it-login-operator-' + Date.now();
+      const employeeId = 'EMP' + Date.now();
       const password = 'testpass';
       const hashedPassword = await bcrypt.hash(password, 12);
 
@@ -24,12 +34,11 @@ describe.runIf(runIntegration)("login + changeover integration", () => {
         .insert(usersTable)
         .values({
           id: randomUUID(),
-          username,
-          password: hashedPassword,
-          displayName: 'Integration Operator',
           name: 'Integration Operator',
           role: 'operator',
-          employee_id: 'EMP-' + Date.now(),
+          employee_id: employeeId,
+          password_hash: hashedPassword,
+          must_change_password: false,
         })
         .returning({ id: usersTable.id });
 
@@ -44,7 +53,8 @@ describe.runIf(runIntegration)("login + changeover integration", () => {
       try {
         const loginRes = await request(app)
           .post('/api/auth/login')
-          .send({ username, password, role: 'operator' });
+          .set('X-Requested-With', 'XMLHttpRequest')
+          .send({ username: employeeId, password, role: 'operator' });
 
         const authCookie = Array.isArray(loginRes.headers['set-cookie'])
           ? (loginRes.headers['set-cookie'][0] ?? '').split(';')[0]
@@ -54,6 +64,7 @@ describe.runIf(runIntegration)("login + changeover integration", () => {
         const sessionRes = await request(app)
           .post('/api/verification/sessions')
           .set('Cookie', authCookie)
+          .set('X-Requested-With', 'XMLHttpRequest')
           .send({ operatorId: operator.id, bomId: bom.id });
 
         const mineRes = await request(app).get('/api/verification/sessions/mine').set('Cookie', authCookie);
@@ -81,7 +92,7 @@ describe.runIf(runIntegration)("login + changeover integration", () => {
         ...process.env,
         DATABASE_URL: testDatabaseUrl,
         DATABASE_URL_TEST: testDatabaseUrl,
-        JWT_SECRET: process.env.JWT_SECRET ?? "integration-test-secret",
+        JWT_SECRET: process.env.JWT_SECRET ?? "integration-test-secret-0123456789ABCDEF",
         ALLOWED_ORIGINS: process.env.ALLOWED_ORIGINS ?? "http://localhost:5173",
         LOG_LEVEL: "error",
       },
@@ -106,7 +117,10 @@ describe.runIf(runIntegration)("login + changeover integration", () => {
       loginBody: { username: string; role: string };
       meBody: { userId: string; username: string; role: string };
       sessionBody: { id: string; operatorId: string; bomId: number; status: string };
-      mineBody: Array<{ id: string; operatorId: string; bomId: number; status: string }>;
+      mineBody: {
+        data: Array<{ id: string; operatorId: string; bomId: number; status: string }>;
+        total: number;
+      };
     };
 
     expect(result.loginStatus).toBe(200);
@@ -117,7 +131,8 @@ describe.runIf(runIntegration)("login + changeover integration", () => {
     expect(result.sessionBody.id).toMatch(/^SMT_/);
     expect(result.sessionBody.status).toBe("active");
     expect(result.mineStatus).toBe(200);
-    expect(result.mineBody).toEqual(
+    // GET /verification/sessions/mine returns a paginated envelope { data, total, ... }.
+    expect(result.mineBody.data).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
           id: result.sessionBody.id,

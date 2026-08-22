@@ -54,7 +54,7 @@ const { signAdminToken } = await import("../middleware/adminAuth");
 app.set("trust proxy", 1);
 
 function adminCookie(): string {
-  const token = signAdminToken({ adminId: randomUUID(), username: "admin1" });
+  const token = signAdminToken({ adminId: randomUUID(), username: "admin1", mustChange: false });
   return `smt_admin_token=${token}`;
 }
 

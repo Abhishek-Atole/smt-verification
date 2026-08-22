@@ -74,10 +74,12 @@ export default function IntegrityCheckPage() {
               First break at row <strong style={{ color: "#ffaa00" }}>#{broken.id}</strong>
               {" "}({new Date(broken.createdAt).toLocaleString()}).
               <div style={{ fontSize: 12, color: "#64748b", marginTop: 6, lineHeight: 1.5 }}>
-                Note: the June 25, 2026 admin-portal backfill inserted legacy rows ahead of the
-                genesis hash, leaving a known pre-existing break near the start of the chain. A
-                break at this boundary reflects that migration, not live tampering. Investigate
-                only if the reported row is beyond the backfill boundary.
+                A break means this row's stored hash no longer matches the HMAC recomputed from
+                its contents and the prior row's hash. A break at the first (genesis) row usually
+                reflects a rotated AUDIT_HMAC_SECRET or seeded/imported rows rather than tampering —
+                editing a historical row breaks the chain at that row, not at the start. A break at
+                a later row means every row before it verified and something changed at or after it;
+                investigate that row.
               </div>
             </div>
           )}

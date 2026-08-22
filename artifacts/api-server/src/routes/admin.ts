@@ -14,6 +14,7 @@ import { auditLog, verifyAuditChain } from "../lib/auditLogger";
 import {
   requireAdminAuth,
   requireAdminIp,
+  requireCredentialsChanged,
   slideAdminCookie,
   signAdminToken,
   getAdminCookieOptions,
@@ -72,6 +73,7 @@ router.post("/auth/login", async (req, res) => {
     role: usersTable.role,
     employee_id: usersTable.employee_id,
     password_hash: usersTable.password_hash,
+    must_change_password: usersTable.must_change_password,
   })
     .from(usersTable)
     .where(and(eq(usersTable.role, "admin"), eq(usersTable.employee_id, username)))
@@ -102,11 +104,12 @@ router.post("/auth/login", async (req, res) => {
   }
 
   recordSuccess("admin-login", lockoutKey);
-  const token = signAdminToken({ adminId: user.id, username: user.name || username });
+  const mustChange = user.must_change_password === true;
+  const token = signAdminToken({ adminId: user.id, username: user.name || username, mustChange });
   res.cookie(ADMIN_TOKEN_COOKIE, token, getAdminCookieOptions(req));
   await recordLoginEvent({ userId: user.id, employeeId: username, ip: req.ip, ua: req.get("user-agent"), result: "success" });
   await auditLog({ event: "LOGIN_SUCCESS", operatorId: user.id, detail: "admin_portal", ip: req.ip });
-  res.status(200).json({ adminId: user.id, username: user.name || username });
+  res.status(200).json({ adminId: user.id, username: user.name || username, mustChange });
 });
 
 // ─── POST /api/admin/auth/logout ─────────────────────────────────────────
@@ -118,8 +121,103 @@ router.post("/auth/logout", requireAdminAuth, async (req: AdminAuthRequest, res:
 
 // ─── GET /api/admin/auth/me ──────────────────────────────────────────────
 router.get("/auth/me", requireAdminAuth, slideAdminCookie, (req: AdminAuthRequest, res: Response) => {
-  res.json({ adminId: req.admin!.adminId, username: req.admin!.username });
+  res.json({ adminId: req.admin!.adminId, username: req.admin!.username, mustChange: req.admin!.mustChange });
 });
+
+// ─── POST /api/admin/auth/change-credentials ─────────────────────────────
+// First-login setup: the seeded admin (must_change_password=true) is forced to
+// pick a NEW username AND a NEW password before anything else in the Control
+// Panel works (see requireCredentialsChanged hard gate below). Requires the
+// current (temporary) password. Deliberately NOT gated by
+// requireCredentialsChanged — this is the one route that clears the flag.
+router.post("/auth/change-credentials", requireAdminAuth, async (req: AdminAuthRequest, res: Response) => {
+  const body = req.body as { newUsername?: unknown; currentPassword?: unknown; newPassword?: unknown } | null;
+  const newUsername = typeof body?.newUsername === "string" ? body.newUsername.trim() : "";
+  const currentPassword = typeof body?.currentPassword === "string" ? body.currentPassword : "";
+  const newPassword = typeof body?.newPassword === "string" ? body.newPassword : "";
+  const adminId = req.admin!.adminId;
+
+  if (newUsername.length < 3 || newUsername.length > 255) {
+    res.status(400).json({ error: "invalid_username", message: "Username must be 3–255 characters." });
+    return;
+  }
+  if (newPassword.length < 12 || newPassword.length > 128) {
+    res.status(400).json({ error: "invalid_password", message: "Password must be 12–128 characters." });
+    return;
+  }
+
+  const [user] = await db.select({
+    id: usersTable.id,
+    name: usersTable.name,
+    employee_id: usersTable.employee_id,
+    password_hash: usersTable.password_hash,
+  })
+    .from(usersTable)
+    .where(and(eq(usersTable.id, adminId), eq(usersTable.role, "admin")))
+    .limit(1);
+  if (!user || !user.password_hash) {
+    res.status(401).json({ error: "Unauthorized" });
+    return;
+  }
+
+  const currentValid = await bcrypt.compare(currentPassword, user.password_hash);
+  if (!currentValid) {
+    res.status(401).json({ error: "invalid_current_password", message: "Current password is incorrect." });
+    return;
+  }
+
+  // Enforce that BOTH credentials actually change (the whole point of the gate).
+  if (newUsername.toLowerCase() === (user.employee_id ?? "").toLowerCase()) {
+    res.status(400).json({ error: "username_unchanged", message: "Pick a username different from the current one." });
+    return;
+  }
+  if (await bcrypt.compare(newPassword, user.password_hash)) {
+    res.status(400).json({ error: "password_unchanged", message: "Pick a password different from the current one." });
+    return;
+  }
+
+  // employee_id is NOT unique at the DB level on client installs (drizzle push +
+  // ops migrations don't add the constraint), so enforce uniqueness explicitly —
+  // otherwise the admin could silently claim another user's login id. Compared
+  // case-insensitively to avoid confusing near-duplicates.
+  const clash = await db.execute<{ id: string }>(
+    sql`SELECT id FROM users WHERE lower(employee_id) = lower(${newUsername}) AND id <> ${adminId} LIMIT 1`,
+  );
+  if (clash.rows.length > 0) {
+    res.status(409).json({ error: "username_taken", message: "That username is already in use." });
+    return;
+  }
+
+  const password_hash = await bcrypt.hash(newPassword, 12);
+  try {
+    const updated = await db.update(usersTable)
+      .set({ employee_id: newUsername, password_hash, must_change_password: false })
+      .where(eq(usersTable.id, adminId))
+      .returning({ id: usersTable.id });
+    if (updated.length === 0) {
+      res.status(404).json({ error: "User not found" });
+      return;
+    }
+  } catch (err) {
+    // employee_id is UNIQUE — a collision means the name is taken.
+    logger.warn({ err }, "admin change-credentials failed");
+    res.status(409).json({ error: "username_taken", message: "That username is already in use." });
+    return;
+  }
+  invalidateUserCache();
+
+  // Re-issue the cookie with the flag cleared so the gate lifts on this response.
+  const token = signAdminToken({ adminId, username: user.name || newUsername, mustChange: false });
+  res.cookie(ADMIN_TOKEN_COOKIE, token, getAdminCookieOptions(req));
+  await auditLog({ event: "ADMIN_CREDENTIALS_CHANGED", operatorId: adminId, detail: "first_login_setup", ip: req.ip });
+  res.status(200).json({ adminId, username: user.name || newUsername, mustChange: false });
+});
+
+// ─── Hard gate ───────────────────────────────────────────────────────────
+// Everything below requires a first-login admin to have completed setup. The
+// auth routes above (login/logout/me/change-credentials) are intentionally
+// declared before this line so they stay reachable while mustChange is true.
+router.use(requireAdminAuth, requireCredentialsChanged);
 
 // ─── User management ─────────────────────────────────────────────────────
 

@@ -220,7 +220,7 @@ Seeded logins (ALL forced to change password on first login):
   operator1 / operator2 : $SEED_OPERATOR_PASSWORD
   qa1                   : $SEED_QA_PASSWORD
   engineer1 (supervisor): $SEED_SUPERVISOR_PASSWORD
-  admin1                : $SEED_ADMIN_PASSWORD
+  admin1                : $SEED_ADMIN_PASSWORD   (Control Panel: must set a NEW username + password on first login)
   storekeeper1          : $SEED_STORE_PASSWORD
 
 DB: $DB_NAME / role $DB_USER (password in $APP_DIR/.env on the client only)

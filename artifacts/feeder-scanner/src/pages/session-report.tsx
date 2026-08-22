@@ -711,7 +711,14 @@ export default function SessionReport() {
             { label: "End", value: session.endTime ? formatTimeOnly(session.endTime) : (session.completedAt ? formatTimeOnly(session.completedAt) : "N/A") },
             { label: "Duration", value: formatDiffHHMMSS(session.startedAt || session.startTime, session.completedAt || session.endTime) },
             { label: "QA", value: session.qaName || "N/A" },
-          ].map(({ label, value }) => (
+          ]
+            // Hide cards with no real value so the grid isn't padded with
+            // empty placeholders — it reflows to only the fields with data.
+            .filter(({ value }) => {
+              const v = String(value ?? "").trim();
+              return v !== "" && v !== "—" && v.toUpperCase() !== "N/A";
+            })
+            .map(({ label, value }) => (
             <div key={label} className="min-w-0 rounded-sm border border-border bg-background px-3 py-2.5 shadow-sm">
               <div className="text-[10px] sm:text-xs font-bold text-muted-foreground uppercase tracking-wide truncate">
                 {label}
@@ -1036,8 +1043,8 @@ export default function SessionReport() {
         </div>
       </div>
 
-      {/* Splice Log */}
-      {showSplices && (
+      {/* Splice Log — only when there are splices to show */}
+      {showSplices && (splices ?? []).length > 0 && (
         <div className="bg-card border border-amber-200 dark:border-amber-800 rounded-sm overflow-hidden">
           <div className="bg-amber-50/70 dark:bg-amber-950/30 p-3 border-b border-amber-200 dark:border-amber-800 font-mono font-bold text-sm flex items-center gap-2">
             <Scissors className="w-4 h-4 text-amber-600" />
@@ -1058,14 +1065,7 @@ export default function SessionReport() {
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {(splices ?? []).length === 0 ? (
-                  <TableRow>
-                    <TableCell colSpan={8} className="py-6 text-center font-mono text-muted-foreground text-sm">
-                      No splicing records found.
-                    </TableCell>
-                  </TableRow>
-                ) : (
-                  (splices ?? []).map((sp: any) => (
+                {(splices ?? []).map((sp: any) => (
                     <TableRow key={sp.id} className="bg-amber-50/30 dark:bg-amber-950/10">
                       <TableCell className="font-mono text-muted-foreground text-sm">{format(new Date(sp.splicedAt), "HH:mm:ss")}</TableCell>
                       <TableCell className="font-mono font-bold">{sp.feederNumber}</TableCell>
@@ -1076,8 +1076,7 @@ export default function SessionReport() {
                       <TableCell className={`font-mono font-bold text-xs ${sp.status === "verified" ? "text-green-600" : sp.status === "alternate" ? "text-amber-600" : sp.status === "failed" ? "text-red-600" : ""}`}>{sp.status ? sp.status.toUpperCase() : "-"}</TableCell>
                       <TableCell className="font-mono text-amber-600 font-bold">{sp.durationSeconds != null ? `${sp.durationSeconds}s` : "-"}</TableCell>
                     </TableRow>
-                  ))
-                )}
+                  ))}
               </TableBody>
             </Table>
           </div>

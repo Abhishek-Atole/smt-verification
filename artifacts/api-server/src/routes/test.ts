@@ -142,6 +142,8 @@ router.get("/test/stats", async (req, res) => {
  * GET /api/test/seed-quick - Quick seed with minimal data (for testing)
  */
 router.get("/test/seed-quick", async (req, res) => {
+  if (productionGuard(req, res)) return;
+
   try {
     const result = await SeedDataService.seedDatabase({
       companiesCount: 1,
@@ -170,6 +172,8 @@ router.get("/test/seed-quick", async (req, res) => {
  * Populates 4 BOMs with realistic items, sessions, and scan records
  */
 router.post("/test/seed-boms-with-items", async (req, res) => {
+  if (productionGuard(req, res)) return;
+
   try {
 
     // Get existing BOMs or create them

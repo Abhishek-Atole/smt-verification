@@ -36,7 +36,9 @@ async function call<T>(method: string, path: string, body?: unknown): Promise<T>
 }
 
 // ─── Auth ────────────────────────────────────────────────────────────────
-export interface AdminMe { adminId: string; username: string; }
+// `mustChange` is true for the seeded admin until they set a new username +
+// password on first login (hard-gated server-side).
+export interface AdminMe { adminId: string; username: string; mustChange?: boolean; }
 
 export const adminApi = {
   login: (username: string, password: string) =>
@@ -45,6 +47,8 @@ export const adminApi = {
     call<{ success: true }>("POST", "/admin/auth/logout"),
   me: () =>
     call<AdminMe>("GET", "/admin/auth/me"),
+  changeCredentials: (input: { newUsername: string; currentPassword: string; newPassword: string }) =>
+    call<AdminMe>("POST", "/admin/auth/change-credentials", input),
 
   // ─── Users ─────────────────────────────────────────────────────────────
   listUsers: () =>

@@ -31,6 +31,7 @@ type AuditEvent =
   | "USER_UPDATED"
   | "USER_PASSWORD_RESET"
   | "USER_DELETED"
+  | "ADMIN_CREDENTIALS_CHANGED"
   | "SESSION_REVOKED";
 
 import crypto from "node:crypto";

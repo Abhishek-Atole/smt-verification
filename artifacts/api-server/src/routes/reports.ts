@@ -12,10 +12,14 @@ const router: IRouter = Router();
 // Protect all routes with role-based access control
 router.use(attachActor);
 // Reports expose plant-wide analytics (FPY/OEE/operator-performance/etc.) that
-// the UI restricts to supervisor/qa. Gate the whole router so no data endpoint
-// is left open to operator/storekeeper — the per-route export gates below are
-// now redundant but kept for clarity.
-router.use(requireRole("qa", "supervisor", "admin"));
+// the UI restricts to supervisor/qa. Gate every /reports route so no data
+// endpoint is left open to operator/storekeeper — the per-route export gates
+// below are now redundant but kept for clarity. NOTE: this MUST be path-scoped
+// to "/reports". A path-less router.use(requireRole(...)) runs for every request
+// reaching this router (mounted at "/"), and since reportsRouter is mounted
+// before verification/notifications/approvers/... in routes/index.ts, an
+// unscoped gate 403s operator/storekeeper on those later routers too.
+router.use("/reports", requireRole("qa", "supervisor", "admin"));
 
 /**
  * Middleware to validate date filters
