@@ -32,7 +32,7 @@ done
 RSYNC_RSH="ssh ${RSYNC_SSH_PORT:+-p $RSYNC_SSH_PORT} ${RSYNC_SSH_KEY:+-i $RSYNC_SSH_KEY}"
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-RELEASE_TAG="v2.1.1"
+RELEASE_TAG="v2.2.0"
 APP_DIR="/opt/smt-verification"
 APP_PORT=4000
 DB_NAME="smtverification"
@@ -54,6 +54,7 @@ echo "==> Client LAN IP: $LAN_IP"
 DB_PASS=$(openssl rand -hex 24)
 JWT_SECRET=$(openssl rand -hex 32)
 JWT_ADMIN_SECRET=$(openssl rand -hex 32)
+AUDIT_HMAC_SECRET=$(openssl rand -hex 32)
 SEED_OPERATOR_PASSWORD=$(openssl rand -base64 12 | tr -d '/+=' | cut -c1-12)
 SEED_QA_PASSWORD=$(openssl rand -base64 12 | tr -d '/+=' | cut -c1-12)
 SEED_SUPERVISOR_PASSWORD=$(openssl rand -base64 12 | tr -d '/+=' | cut -c1-12)
@@ -88,6 +89,7 @@ trap 'git -C "$REPO_ROOT" worktree remove --force "$WORKTREE" 2>/dev/null || tru
 run "sudo mkdir -p $APP_DIR && sudo chown \$(whoami) $APP_DIR"
 rsync -az --delete -e "$RSYNC_RSH" \
   --exclude node_modules --exclude .git --exclude dist \
+  --exclude .dev-docs --exclude docs --exclude .github \
   "$WORKTREE/" "$TARGET:$APP_DIR/"
 
 # Fresh production database (idempotent: re-runs update the password).
@@ -107,6 +109,7 @@ run "umask 077 && cat > $APP_DIR/.env" <<ENV
 DATABASE_URL='postgresql://$DB_USER:$DB_PASS@localhost:5432/$DB_NAME'
 JWT_SECRET='$JWT_SECRET'
 JWT_ADMIN_SECRET='$JWT_ADMIN_SECRET'
+AUDIT_HMAC_SECRET='$AUDIT_HMAC_SECRET'
 ALLOWED_ORIGINS='http://$LAN_IP:$APP_PORT'
 PORT=$APP_PORT
 NODE_ENV=production
@@ -114,6 +117,13 @@ COOKIE_SECURE=false
 ADMIN_IP_ALLOWLIST=127.0.0.1,::1
 STATIC_ROOT=$APP_DIR/artifacts/feeder-scanner/dist/public
 BACKUP_DIR=/var/backups/$DB_NAME
+# Module 10.5 — TLS in transit is OFF by default (direct LAN over HTTP).
+# To enable HTTPS: install a cert + key on the client, point these at them,
+# set COOKIE_SECURE=true, update ALLOWED_ORIGINS to https://…, open 443/tcp,
+# then restart the service. TRUST_PROXY only if a reverse proxy sits in front.
+# TLS_CERT_PATH=$APP_DIR/tls/fullchain.pem
+# TLS_KEY_PATH=$APP_DIR/tls/privkey.pem
+# TRUST_PROXY=false
 SEED_OPERATOR_PASSWORD='$SEED_OPERATOR_PASSWORD'
 SEED_QA_PASSWORD='$SEED_QA_PASSWORD'
 SEED_SUPERVISOR_PASSWORD='$SEED_SUPERVISOR_PASSWORD'
@@ -127,7 +137,7 @@ cd $APP_DIR
 export CI=true
 pnpm install --frozen-lockfile
 pnpm --filter @workspace/api-server run build
-pnpm --filter @workspace/feeder-scanner run build
+pnpm --filter infizent-technology-suite run build
 
 # Schema: drizzle push, then ops migrations, then indexes.
 set -a; source $APP_DIR/.env; set +a

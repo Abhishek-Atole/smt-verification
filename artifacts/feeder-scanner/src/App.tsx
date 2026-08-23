@@ -31,6 +31,8 @@ import { ErrorBoundary } from "@/components/ErrorBoundary";
 import { appConfig } from "@/lib/appConfig";
 import { AdminGate } from "@/admin/AdminGate";
 import { ADMIN_ROUTE } from "@/admin/config";
+import { StoreGate } from "@/store/StoreGate";
+import { STORE_ROUTE } from "@/store/config";
 import { LicenseProvider } from "@/licensing/license-context";
 import { TrialBanner } from "@/licensing/TrialBanner";
 import { ExpiredBanner } from "@/licensing/ExpiredBanner";
@@ -121,6 +123,10 @@ function Router() {
   // base, so sub-routes (/…/users, /…/audit) fell through to the catch-all and
   // bounced to /login. Rendering AdminGate directly (not via a wildcard Route)
   // also stops it remounting — and re-checking auth — between admin tabs.
+  if (location === STORE_ROUTE || location.startsWith(`${STORE_ROUTE}/`)) {
+    return <StoreGate />;
+  }
+
   if (location === ADMIN_ROUTE || location.startsWith(`${ADMIN_ROUTE}/`)) {
     return <AdminGate />;
   }

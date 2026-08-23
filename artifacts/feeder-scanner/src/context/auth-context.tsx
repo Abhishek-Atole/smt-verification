@@ -2,7 +2,7 @@ import { createContext, useContext, useEffect, useState, type ReactNode } from "
 import { logger } from "../lib/logger";
 import { recordDailyMetric, appendAuditEntry, loadActiveSessions, saveActiveSessions, nowFormatted } from "../admin/admin-storage";
 
-type Role = "supervisor" | "qa" | "operator" | "admin";
+type Role = "supervisor" | "qa" | "operator" | "admin" | "storekeeper";
 
 interface User {
   userId: number | string;
@@ -60,7 +60,7 @@ function normalizeAuthSession(payload: unknown): AuthSessionResponse | null {
     (typeof userId === "number" && Number.isFinite(userId))
     || (typeof userId === "string" && userId.trim().length > 0);
 
-  if (!hasValidUserId || !username || (role !== "supervisor" && role !== "qa" && role !== "operator" && role !== "admin")) {
+  if (!hasValidUserId || !username || (role !== "supervisor" && role !== "qa" && role !== "operator" && role !== "admin" && role !== "storekeeper")) {
     return null;
   }
 

@@ -9,6 +9,7 @@ const NAV_ITEMS = [
   { path: "data", label: "Data Management", icon: "\u25C9" },
   { path: "performance", label: "Performance", icon: "\u25C9" },
   { path: "security", label: "Security", icon: "\u25C9" },
+  { path: "access", label: "Access Control", icon: "\u25C9" },
   { path: "integrity", label: "Integrity", icon: "\u25C9" },
   { path: "notifications", label: "Notifications", icon: "\u25C9" },
   { path: "labels", label: "Print Labels", icon: "\u25C9" },

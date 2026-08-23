@@ -93,6 +93,26 @@ export const adminApi = {
     call<{ runs: BackupRunRow[] }>("GET", "/admin/backups"),
   runBackup: () =>
     call<BackupRunRow>("POST", "/admin/backups/run"),
+
+  // ─── Access Control (Module 10) ──────────────────────────────────────
+  listDevices: () =>
+    call<{ devices: Device[] }>("GET", "/admin/devices"),
+  createDevice: (input: { deviceType: DeviceType; deviceName: string; allowedIp: string; macAddress?: string; status?: DeviceStatus }) =>
+    call<Device>("POST", "/admin/devices", input),
+  updateDevice: (id: string, patch: { deviceType?: DeviceType; deviceName?: string; allowedIp?: string; macAddress?: string; status?: DeviceStatus }) =>
+    call<Device>("PATCH", `/admin/devices/${id}`, patch),
+  deleteDevice: (id: string) =>
+    call<{ id: string }>("DELETE", `/admin/devices/${id}`),
+
+  getSecuritySettings: () =>
+    call<{ settings: SecuritySettings | null }>("GET", "/admin/security-settings"),
+  updateSecuritySettings: (patch: { maintenanceMode?: boolean; failedAttemptThreshold?: number; sessionTimeoutEndDeviceSec?: number; sessionTimeoutStoreDeviceSec?: number; sessionTimeoutAdminDeviceSec?: number }) =>
+    call<{ settings: SecuritySettings }>("PATCH", "/admin/security-settings", patch),
+
+  activeSessions: () =>
+    call<{ sessions: ActiveSession[] }>("GET", "/admin/active-sessions"),
+  forceLogout: (userId: string) =>
+    call<{ userId: string; revoked: boolean }>("POST", `/admin/active-sessions/${userId}/logout`),
 };
 
 export type UserRole = "operator" | "qa" | "supervisor" | "admin" | "storekeeper";
@@ -152,4 +172,44 @@ export interface AuditLogRow {
   changedBy: string | null;
   description: string | null;
   createdAt: string;
+}
+
+// ─── Access Control (Module 10) ──────────────────────────────────────────
+export type DeviceType = "end_device" | "admin_device" | "store_device" | "server";
+export type DeviceStatus = "active" | "blocked" | "pending";
+
+export interface Device {
+  id: string;
+  deviceType: DeviceType;
+  deviceName: string;
+  allowedIp: string;
+  macAddress: string | null;
+  status: DeviceStatus;
+  createdBy: string | null;
+  createdAt: string;
+  lastModifiedBy: string | null;
+  lastModifiedAt: string;
+}
+
+export interface SecuritySettings {
+  id: boolean;
+  maintenanceMode: boolean;
+  failedAttemptThreshold: number;
+  sessionTimeoutEndDeviceSec: number;
+  sessionTimeoutStoreDeviceSec: number;
+  sessionTimeoutAdminDeviceSec: number;
+  updatedBy: string | null;
+  updatedAt: string;
+}
+
+export interface ActiveSession {
+  id: string;
+  userId: string;
+  userName: string;
+  role: string;
+  ip: string | null;
+  userAgent: string | null;
+  issuedAt: string;
+  expiresAt: string;
+  deviceType: string;
 }

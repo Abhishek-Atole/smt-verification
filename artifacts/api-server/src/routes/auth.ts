@@ -27,6 +27,32 @@ import { auditLog } from "../lib/auditLogger";
 import { logger } from "../lib/logger";
 import { checkLockout, recordFailure, recordSuccess } from "../lib/lockoutStore";
 import { unrevoke } from "../lib/tokenBlacklist";
+import type { DeviceRequest } from "../middleware/deviceGuard";
+import { getSecuritySettings } from "../lib/deviceStore";
+import type { DeviceType } from "@workspace/db/schema";
+
+// Module 10.4 — role ↔ device_type binding. A credential valid for one role is
+// rejected if presented from the wrong kind of device, even if correct.
+//   end_device  → shop-floor logins (operator / qa / supervisor)
+//   store_device→ storekeeper only
+//   admin_device→ admin only (via /api/admin/auth/login, not this route)
+//   server/undef→ loopback or bootstrap (no devices yet) → allow any role
+function roleAllowedOnDevice(role: UserRole, deviceType: DeviceType | undefined): boolean {
+  if (!deviceType || deviceType === "server") return true; // loopback / bootstrap
+  if (deviceType === "end_device") return role === "operator" || role === "qa" || role === "supervisor";
+  if (deviceType === "store_device") return role === "storekeeper";
+  return false; // admin_device: no regular-user login here
+}
+
+// Module 10.3 — access-token TTL (session timeout) per device type.
+async function sessionTtlForDevice(deviceType: DeviceType | undefined): Promise<number | undefined> {
+  if (!deviceType || deviceType === "server") return undefined; // use default
+  const s = await getSecuritySettings();
+  if (deviceType === "end_device") return s.sessionTimeoutEndDeviceSec;
+  if (deviceType === "store_device") return s.sessionTimeoutStoreDeviceSec;
+  if (deviceType === "admin_device") return s.sessionTimeoutAdminDeviceSec;
+  return undefined;
+}
 
 // ─── constants ──────────────────────────────────────────────────────────────
 const PASSWORD_MAX_LENGTH = 128;
@@ -247,6 +273,20 @@ router.post("/auth/login", async (req: Request, res: Response) => {
     return;
   }
 
+  // Module 10.4 — reject a valid credential presented from the wrong device
+  // type (e.g. a storekeeper logging in from a shop-floor terminal). The device
+  // type was resolved by the device guard from the request IP.
+  const deviceType = (req as DeviceRequest).deviceType;
+  if (!roleAllowedOnDevice(role, deviceType)) {
+    await recordLoginEvent({ userId: user.id, employeeId: username, ip: req.ip, ua: req.get("user-agent"), result: "failure", reason: "device_role_mismatch" });
+    await auditLog({ event: "SECURITY_LOGIN_DEVICE_MISMATCH", operatorId: user.id, detail: `role=${role} device_type=${deviceType ?? "none"}`, ip: req.ip });
+    res.status(403).json({
+      error: "device_role_mismatch",
+      message: "This account is not permitted to log in from this device.",
+    });
+    return;
+  }
+
   // U17 — a successful, credential-verified login clears any stale userId
   // revocation. revokeUser() (admin reset / force-logout) is keyed by userId to
   // kill EXISTING tokens on their next request; without this, the fresh token we
@@ -256,6 +296,7 @@ router.post("/auth/login", async (req: Request, res: Response) => {
   unrevoke(user.id);
 
   const fingerprint = computeFingerprint(req.get("user-agent"), req.ip);
+  const ttlSec      = await sessionTtlForDevice(deviceType);
   const refresh     = await issueRefresh({
     userId:    user.id,
     userAgent: req.get("user-agent"),
@@ -270,9 +311,9 @@ router.post("/auth/login", async (req: Request, res: Response) => {
     role:               user.role,
     mustChangePassword: user.must_change_password === true,
     jti:                refresh.id,
-  });
+  }, ttlSec);
 
-  res.cookie("smt_token",   access,         accessCookieOptions(req));
+  res.cookie("smt_token",   access,         { ...accessCookieOptions(req), ...(ttlSec ? { maxAge: ttlSec * 1000 } : {}) });
   res.cookie("smt_refresh", refresh.token,  refreshCookieOptions(req));
 
   recordSuccess("user-login", lockoutKey);

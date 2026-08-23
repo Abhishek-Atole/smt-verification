@@ -13,6 +13,7 @@ import SystemHealth from "./pages/SystemHealth";
 import DataManagement from "./pages/DataManagement";
 import PerformancePage from "./pages/Performance";
 import SecurityCenter from "./pages/SecurityCenter";
+import AccessControl from "./pages/AccessControl";
 import IntegrityCheckPage from "./pages/IntegrityCheck";
 import NotificationsPage from "./pages/Notifications";
 import PrintLabels from "./pages/PrintLabels";
@@ -90,6 +91,8 @@ function AdminRouter() {
       return <PerformancePage />;
     case "security":
       return <SecurityCenter />;
+    case "access":
+      return <AccessControl />;
     case "integrity":
       return <IntegrityCheckPage />;
     case "notifications":

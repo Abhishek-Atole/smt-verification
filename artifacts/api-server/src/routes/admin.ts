@@ -1,6 +1,6 @@
 import { Router, type IRouter, type Request, type Response } from "express";
 import bcrypt from "bcryptjs";
-import { and, desc, eq, sql } from "drizzle-orm";
+import { and, desc, eq, gt, isNull, sql } from "drizzle-orm";
 import { db, pool } from "@workspace/db";
 import {
   usersTable,
@@ -8,7 +8,11 @@ import {
   backupRunsTable,
   dbSizeLog,
   auditLogsTable,
+  devicesTable,
+  securitySettingsTable,
+  refreshTokensTable,
 } from "@workspace/db/schema";
+import type { DeviceType, DeviceStatus } from "@workspace/db/schema";
 import { logger } from "../lib/logger";
 import { auditLog, verifyAuditChain } from "../lib/auditLogger";
 import {
@@ -22,9 +26,15 @@ import {
   type AdminAuthRequest,
 } from "../middleware/adminAuth";
 import { revokeUser } from "../lib/tokenBlacklist";
+import { revokeAllForUser } from "../lib/refreshStore";
+import { invalidateDeviceCache, invalidateSecuritySettingsCache } from "../lib/deviceStore";
+import { isValidIpOrCidr } from "../lib/ipMatch";
 import { snapshot as metricsSnapshot, latest as metricsLatest } from "../lib/metricsRingBuffer";
 import { checkLockout, recordFailure, recordSuccess } from "../lib/lockoutStore";
 import { userCache, buildKey, getCached, invalidatePrefix, setCached, getCacheStats } from "../lib/cache";
+
+const DEVICE_TYPES: DeviceType[] = ["end_device", "admin_device", "store_device", "server"];
+const DEVICE_STATUSES: DeviceStatus[] = ["active", "blocked", "pending"];
 
 function invalidateUserCache(): void {
   invalidatePrefix(userCache, "user:");
@@ -51,6 +61,18 @@ router.post("/auth/login", async (req, res) => {
 
   if (!username || username.length > 255 || !password || password.length > 128) {
     res.status(400).json({ error: "Invalid login payload" });
+    return;
+  }
+
+  // Module 10.4 — admin may only authenticate from an admin_device (or the
+  // host itself over loopback → device_type "server"; or during bootstrap when
+  // no devices are registered yet → deviceType undefined). A valid admin
+  // credential presented from an end/store device is rejected.
+  const deviceType = (req as { deviceType?: DeviceType }).deviceType;
+  if (deviceType !== undefined && deviceType !== "admin_device" && deviceType !== "server") {
+    await auditLog({ event: "SECURITY_LOGIN_DEVICE_MISMATCH", detail: `admin_portal username=${username} device_type=${deviceType}`, ip: req.ip });
+    await recordLoginEvent({ employeeId: username, ip: req.ip, ua: req.get("user-agent"), result: "failure", reason: "device_role_mismatch" });
+    res.status(403).json({ error: "device_role_mismatch", message: "Admin login is not permitted from this device." });
     return;
   }
 
@@ -406,6 +428,195 @@ router.post("/backups/run", requireAdminAuth, slideAdminCookie, async (req: Admi
     logger.error({ err }, "backup run failed");
     res.status(500).json({ error: "backup_failed" });
   }
+});
+
+// ─── Module 10.2 — Device / IP allow-list management ────────────────────
+// CRUD over the devices table. Every mutation invalidates the deviceStore
+// cache (so the per-request guard sees the change within one request, not one
+// cache-TTL later) and writes an audit event. Block/unblock is a status PATCH.
+
+router.get("/devices", requireAdminAuth, slideAdminCookie, async (_req, res) => {
+  const rows = await db.select().from(devicesTable).orderBy(devicesTable.deviceType, devicesTable.deviceName);
+  res.json({ devices: rows });
+});
+
+router.post("/devices", requireAdminAuth, slideAdminCookie, async (req: AdminAuthRequest, res: Response) => {
+  const body = req.body as {
+    deviceType?: unknown; deviceName?: unknown; allowedIp?: unknown; macAddress?: unknown; status?: unknown;
+  } | null;
+  const deviceType = body?.deviceType;
+  const deviceName = typeof body?.deviceName === "string" ? body.deviceName.trim() : "";
+  const allowedIp = typeof body?.allowedIp === "string" ? body.allowedIp.trim() : "";
+  const macAddress = typeof body?.macAddress === "string" && body.macAddress.trim() ? body.macAddress.trim() : null;
+  const status = body?.status;
+
+  if (typeof deviceType !== "string" || !DEVICE_TYPES.includes(deviceType as DeviceType)) {
+    res.status(400).json({ error: "invalid_device_type" });
+    return;
+  }
+  if (!deviceName || deviceName.length > 120) {
+    res.status(400).json({ error: "invalid_device_name" });
+    return;
+  }
+  if (!isValidIpOrCidr(allowedIp)) {
+    res.status(400).json({ error: "invalid_allowed_ip", message: "allowedIp must be a valid IP or CIDR range." });
+    return;
+  }
+  const statusValue: DeviceStatus =
+    typeof status === "string" && DEVICE_STATUSES.includes(status as DeviceStatus) ? (status as DeviceStatus) : "pending";
+
+  const [created] = await db.insert(devicesTable).values({
+    deviceType: deviceType as DeviceType,
+    deviceName,
+    allowedIp,
+    macAddress,
+    status: statusValue,
+    createdBy: req.admin?.adminId ?? null,
+    lastModifiedBy: req.admin?.adminId ?? null,
+  }).returning();
+  invalidateDeviceCache();
+  await auditLog({ event: "DEVICE_CREATED", operatorId: req.admin?.adminId, detail: `device=${created.id} type=${created.deviceType} ip=${created.allowedIp} status=${created.status}`, ip: req.ip });
+  res.status(201).json(created);
+});
+
+router.patch("/devices/:id", requireAdminAuth, slideAdminCookie, async (req: AdminAuthRequest, res: Response) => {
+  const id = String(req.params.id);
+  const body = req.body as {
+    deviceType?: unknown; deviceName?: unknown; allowedIp?: unknown; macAddress?: unknown; status?: unknown;
+  } | null;
+  const patch: Partial<{
+    deviceType: DeviceType; deviceName: string; allowedIp: string; macAddress: string | null; status: DeviceStatus;
+    lastModifiedBy: string | null; lastModifiedAt: Date;
+  }> = {};
+
+  if (typeof body?.deviceType === "string") {
+    if (!DEVICE_TYPES.includes(body.deviceType as DeviceType)) { res.status(400).json({ error: "invalid_device_type" }); return; }
+    patch.deviceType = body.deviceType as DeviceType;
+  }
+  if (typeof body?.deviceName === "string") {
+    if (!body.deviceName.trim() || body.deviceName.trim().length > 120) { res.status(400).json({ error: "invalid_device_name" }); return; }
+    patch.deviceName = body.deviceName.trim();
+  }
+  if (typeof body?.allowedIp === "string") {
+    if (!isValidIpOrCidr(body.allowedIp.trim())) { res.status(400).json({ error: "invalid_allowed_ip" }); return; }
+    patch.allowedIp = body.allowedIp.trim();
+  }
+  if (body?.macAddress !== undefined) {
+    patch.macAddress = typeof body.macAddress === "string" && body.macAddress.trim() ? body.macAddress.trim() : null;
+  }
+  if (typeof body?.status === "string") {
+    if (!DEVICE_STATUSES.includes(body.status as DeviceStatus)) { res.status(400).json({ error: "invalid_status" }); return; }
+    patch.status = body.status as DeviceStatus;
+  }
+  if (Object.keys(patch).length === 0) { res.status(400).json({ error: "No valid fields to update" }); return; }
+
+  patch.lastModifiedBy = req.admin?.adminId ?? null;
+  patch.lastModifiedAt = new Date();
+  const [updated] = await db.update(devicesTable).set(patch).where(eq(devicesTable.id, id)).returning();
+  if (!updated) { res.status(404).json({ error: "Device not found" }); return; }
+  invalidateDeviceCache();
+  await auditLog({ event: "DEVICE_UPDATED", operatorId: req.admin?.adminId, detail: `device=${id} fields=${Object.keys(patch).join(",")} status=${updated.status}`, ip: req.ip });
+  res.json(updated);
+});
+
+router.delete("/devices/:id", requireAdminAuth, slideAdminCookie, async (req: AdminAuthRequest, res: Response) => {
+  const id = String(req.params.id);
+  const [deleted] = await db.delete(devicesTable).where(eq(devicesTable.id, id)).returning({ id: devicesTable.id });
+  if (!deleted) { res.status(404).json({ error: "Device not found" }); return; }
+  invalidateDeviceCache();
+  await auditLog({ event: "DEVICE_DELETED", operatorId: req.admin?.adminId, detail: `device=${id}`, ip: req.ip });
+  res.json({ id });
+});
+
+// ─── Module 10.3 — Security settings (single-row) ───────────────────────
+router.get("/security-settings", requireAdminAuth, slideAdminCookie, async (_req, res) => {
+  const [row] = await db.select().from(securitySettingsTable).where(eq(securitySettingsTable.id, true));
+  res.json({ settings: row ?? null });
+});
+
+router.patch("/security-settings", requireAdminAuth, slideAdminCookie, async (req: AdminAuthRequest, res: Response) => {
+  const body = req.body as {
+    maintenanceMode?: unknown; failedAttemptThreshold?: unknown;
+    sessionTimeoutEndDeviceSec?: unknown; sessionTimeoutStoreDeviceSec?: unknown; sessionTimeoutAdminDeviceSec?: unknown;
+  } | null;
+  const patch: Partial<{
+    maintenanceMode: boolean; failedAttemptThreshold: number;
+    sessionTimeoutEndDeviceSec: number; sessionTimeoutStoreDeviceSec: number; sessionTimeoutAdminDeviceSec: number;
+    updatedBy: string | null; updatedAt: Date;
+  }> = {};
+
+  if (typeof body?.maintenanceMode === "boolean") patch.maintenanceMode = body.maintenanceMode;
+  const intField = (v: unknown, min: number, max: number): number | null =>
+    typeof v === "number" && Number.isInteger(v) && v >= min && v <= max ? v : null;
+
+  if (body?.failedAttemptThreshold !== undefined) {
+    const n = intField(body.failedAttemptThreshold, 1, 50);
+    if (n === null) { res.status(400).json({ error: "invalid_failed_attempt_threshold", message: "1–50." }); return; }
+    patch.failedAttemptThreshold = n;
+  }
+  // Session timeouts: 60s (1 min) .. 86400s (24 h).
+  for (const [key, field] of [
+    ["sessionTimeoutEndDeviceSec", "sessionTimeoutEndDeviceSec"],
+    ["sessionTimeoutStoreDeviceSec", "sessionTimeoutStoreDeviceSec"],
+    ["sessionTimeoutAdminDeviceSec", "sessionTimeoutAdminDeviceSec"],
+  ] as const) {
+    if (body?.[key] !== undefined) {
+      const n = intField(body[key], 60, 86_400);
+      if (n === null) { res.status(400).json({ error: `invalid_${key}`, message: "60–86400 seconds." }); return; }
+      patch[field] = n;
+    }
+  }
+  if (Object.keys(patch).length === 0) { res.status(400).json({ error: "No valid fields to update" }); return; }
+
+  patch.updatedBy = req.admin?.adminId ?? null;
+  patch.updatedAt = new Date();
+  // Upsert the single row (id=true) — the seed migration inserts it, but guard
+  // against a fresh install where the row is missing.
+  const [updated] = await db.insert(securitySettingsTable)
+    .values({ id: true, ...patch })
+    .onConflictDoUpdate({ target: securitySettingsTable.id, set: patch })
+    .returning();
+  invalidateSecuritySettingsCache();
+  await auditLog({ event: "SECURITY_SETTINGS_UPDATED", operatorId: req.admin?.adminId, detail: `fields=${Object.keys(patch).filter((k) => k !== "updatedBy" && k !== "updatedAt").join(",")}`, ip: req.ip });
+  res.json({ settings: updated });
+});
+
+// ─── Module 10.3 — Active sessions + force logout ───────────────────────
+// Lists live (unrevoked, unexpired) refresh-token sessions joined to their
+// user so the admin can see who is logged in on which device_type and force
+// them off. device_type is inferred from role (there is no per-session device
+// column): storekeeper→store_device, admin→admin_device, else end_device.
+router.get("/active-sessions", requireAdminAuth, slideAdminCookie, async (_req, res) => {
+  const rows = await db.select({
+    id: refreshTokensTable.id,
+    userId: refreshTokensTable.userId,
+    userName: usersTable.name,
+    role: usersTable.role,
+    ip: refreshTokensTable.ip,
+    userAgent: refreshTokensTable.userAgent,
+    issuedAt: refreshTokensTable.issuedAt,
+    expiresAt: refreshTokensTable.expiresAt,
+  })
+    .from(refreshTokensTable)
+    .innerJoin(usersTable, eq(usersTable.id, refreshTokensTable.userId))
+    .where(and(isNull(refreshTokensTable.revokedAt), gt(refreshTokensTable.expiresAt, sql`now()`)))
+    .orderBy(desc(refreshTokensTable.issuedAt));
+
+  const sessions = rows.map((r) => ({
+    ...r,
+    deviceType: r.role === "storekeeper" ? "store_device" : r.role === "admin" ? "admin_device" : "end_device",
+  }));
+  res.json({ sessions });
+});
+
+// Force logout: revoke the in-memory access-token blacklist AND every refresh
+// token for the user, so the session can't be silently refreshed back.
+router.post("/active-sessions/:userId/logout", requireAdminAuth, slideAdminCookie, async (req: AdminAuthRequest, res: Response) => {
+  const userId = String(req.params.userId);
+  revokeUser(userId);
+  await revokeAllForUser(userId);
+  await auditLog({ event: "SESSION_REVOKED", operatorId: req.admin?.adminId, detail: `force_logout:${userId}`, ip: req.ip });
+  res.json({ userId, revoked: true });
 });
 
 // ─── helpers ─────────────────────────────────────────────────────────────

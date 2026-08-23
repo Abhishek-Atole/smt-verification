@@ -20,4 +20,5 @@ export * from "./daily_inspection_log";
 export * from "./bypass_log";
 export * from "./master_lists";
 export * from "./document_control";
+export * from "./devices";
 

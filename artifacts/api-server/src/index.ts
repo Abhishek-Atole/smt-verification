@@ -1,3 +1,6 @@
+import { readFileSync } from "node:fs";
+import http from "node:http";
+import https from "node:https";
 import app from "./app";
 import { logger } from "./lib/logger";
 import { startAdminBackgroundJobs } from "./services/admin-background-jobs";
@@ -21,13 +24,33 @@ if (Number.isNaN(port) || port <= 0) {
 // (single-machine / Electron embedded mode).
 const host = process.env["HOST"] || "::";
 
-app.listen(port, host, (err) => {
-  if (err) {
-    logger.error({ err }, "Error listening on port");
-    process.exit(1);
-  }
+// Module 10.5 — optional TLS/HTTPS in transit. When TLS_CERT_PATH and
+// TLS_KEY_PATH are both set the server terminates HTTPS itself; otherwise it
+// stays on plain HTTP (correct for a direct LAN deploy, or when a reverse
+// proxy terminates TLS upstream — see TRUST_PROXY in app.ts). Set
+// COOKIE_SECURE=true whenever traffic is HTTPS end-to-end.
+const tlsCertPath = process.env["TLS_CERT_PATH"];
+const tlsKeyPath = process.env["TLS_KEY_PATH"];
+const tlsEnabled = Boolean(tlsCertPath && tlsKeyPath);
 
-  logger.info({ host, port }, `Server listening on http://${host}:${port}`);
+const server = tlsEnabled
+  ? https.createServer(
+      {
+        cert: readFileSync(tlsCertPath as string),
+        key: readFileSync(tlsKeyPath as string),
+      },
+      app,
+    )
+  : http.createServer(app);
+
+server.on("error", (err) => {
+  logger.error({ err }, "Error listening on port");
+  process.exit(1);
+});
+
+server.listen(port, host, () => {
+  const scheme = tlsEnabled ? "https" : "http";
+  logger.info({ host, port, tls: tlsEnabled }, `Server listening on ${scheme}://${host}:${port}`);
 
   // Start the admin metrics sampler + daily db-size/backup jobs once the server
   // is bound. Regression guard: this call was dropped in 49f3118, which left

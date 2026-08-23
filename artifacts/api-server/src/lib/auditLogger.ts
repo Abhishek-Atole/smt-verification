@@ -32,7 +32,15 @@ type AuditEvent =
   | "USER_PASSWORD_RESET"
   | "USER_DELETED"
   | "ADMIN_CREDENTIALS_CHANGED"
-  | "SESSION_REVOKED";
+  | "SESSION_REVOKED"
+  // Module 10 — device / IP restriction & security settings
+  | "SECURITY_DEVICE_BLOCKED"
+  | "SECURITY_MAINTENANCE_BLOCK"
+  | "SECURITY_LOGIN_DEVICE_MISMATCH"
+  | "DEVICE_CREATED"
+  | "DEVICE_UPDATED"
+  | "DEVICE_DELETED"
+  | "SECURITY_SETTINGS_UPDATED";
 
 import crypto from "node:crypto";
 import { desc } from "drizzle-orm";

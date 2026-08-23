@@ -64,8 +64,9 @@ export function verifyReauthToken(token: string): string | null {
   }
 }
 
-export function signAccessToken(payload: AccessTokenPayload): string {
-  return jwt.sign(payload, getJwtSecret(), { expiresIn: getAccessTtlSec() });
+export function signAccessToken(payload: AccessTokenPayload, ttlSec?: number): string {
+  const expiresIn = Number.isFinite(ttlSec) && (ttlSec as number) > 0 ? (ttlSec as number) : getAccessTtlSec();
+  return jwt.sign(payload, getJwtSecret(), { expiresIn });
 }
 
 export function verifyAccessToken(token: string): AccessTokenPayload | null {

@@ -15,10 +15,23 @@ import { scanLimiter } from "./middleware/rateLimiters";
 import { db } from "@workspace/db";
 import { sql } from "drizzle-orm";
 import adminRouter from "./routes/admin";
+import { deviceGuard } from "./middleware/deviceGuard";
 
 validateEnv();
 
 const app: Express = express();
+
+// Module 10.2 / 10.5 — when the app runs behind a TLS-terminating reverse
+// proxy, req.ip must reflect the real client (via X-Forwarded-For), not the
+// proxy, or the device allow-list and audit IPs are meaningless. TRUST_PROXY:
+//   unset/"false" → no proxy (req.ip is the socket IP; correct for direct LAN)
+//   "true"        → trust all proxies
+//   a number      → trust N hops
+//   otherwise     → passed through to Express (IP/subnet/"loopback")
+const trustProxy = process.env.TRUST_PROXY;
+if (trustProxy && trustProxy !== "false") {
+  app.set("trust proxy", /^\d+$/.test(trustProxy) ? Number(trustProxy) : trustProxy === "true" ? true : trustProxy);
+}
 
 const cspDirectives = [
   "default-src 'self'",
@@ -167,6 +180,11 @@ app.use("/api/auth/verify-override", loginLimiter);
 app.use("/api/auth/verify-password", loginLimiter);
 app.use("/api/verification/scan", scanLimiter);
 app.use("/api/", apiLimiter);
+
+// Module 10.2 — per-request device/IP enforcement. Runs after the rate limiters
+// (so flood traffic is capped first) but BEFORE any auth or route handler, so an
+// unregistered/blocked device never reaches a credential check.
+app.use("/api/", deviceGuard);
 
 // Diagnostic endpoint - disabled in production
 if (process.env.NODE_ENV !== "production") {
