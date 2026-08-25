@@ -1099,6 +1099,8 @@ router.get(
           qaVerifiedAt: changeoverSessionsTable.qaVerifiedAt,
           qaDiscrepancyFound: changeoverSessionsTable.qaDiscrepancyFound,
           qaLockExpiresAt: changeoverSessionsTable.qaLockExpiresAt,
+          // Changeover sessions never enter splicing_pending_qa (splicing is legacy-only).
+          splicingSubmittedAt: sql<Date | null>`NULL`,
           bomId: changeoverSessionsTable.bomId,
           bomName: bomsTable.name,
           verificationMode: changeoverSessionsTable.verificationMode,
@@ -1124,6 +1126,7 @@ router.get(
           qaVerifiedAt: sql<Date | null>`NULL`,
           qaDiscrepancyFound: sql<boolean | null>`NULL`,
           qaLockExpiresAt: sql<Date | null>`NULL`,
+          splicingSubmittedAt: sessionsTable.splicingSubmittedAt,
           bomId: sessionsTable.bomId,
           bomName: bomsTable.name,
           verificationMode: sessionsTable.verificationMode,

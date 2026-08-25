@@ -1652,7 +1652,10 @@ router.post("/sessions/:sessionId/submit-splicing-qa", requireRole("operator", "
     }
 
     if (session.status === "qa_confirmed") {
-      await db.update(sessionsTable).set({ status: "splicing_pending_qa" }).where(eq(sessionsTable.id, sessionId));
+      // Stamp the submit time only on the first transition — the 2h QA-confirmation
+      // clock starts here. Repeat calls (already splicing_pending_qa) skip this block,
+      // so the original deadline is preserved.
+      await db.update(sessionsTable).set({ status: "splicing_pending_qa", splicingSubmittedAt: new Date() }).where(eq(sessionsTable.id, sessionId));
     }
 
     await pushNotification({

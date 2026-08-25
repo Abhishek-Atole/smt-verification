@@ -1,0 +1,314 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Infizent License Issuer</title>
+<style>
+  :root {
+    --bg: #0f141b; --panel: #171e28; --panel2: #1e2735; --line: #2b3646;
+    --text: #e6edf3; --muted: #93a1b0; --accent: #3b82f6; --accent2: #2563eb;
+    --ok: #22c55e; --warn: #f59e0b; --err: #ef4444;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font: 15px/1.5 system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+    padding: 28px 16px 64px;
+  }
+  .wrap { max-width: 760px; margin: 0 auto; }
+  h1 { font-size: 22px; margin: 0 0 2px; }
+  .sub { color: var(--muted); margin: 0 0 20px; font-size: 13.5px; }
+  .banner {
+    background: #3a2a12; border: 1px solid #6b4f1e; color: #f5d48a;
+    border-radius: 8px; padding: 10px 14px; font-size: 13px; margin-bottom: 20px;
+  }
+  .card {
+    background: var(--panel); border: 1px solid var(--line);
+    border-radius: 12px; padding: 20px 20px 22px; margin-bottom: 18px;
+  }
+  label { display: block; font-size: 13px; color: var(--muted); margin: 0 0 5px; }
+  .row { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+  .field { margin-bottom: 16px; }
+  input[type=text], input[type=password], input[type=number], select {
+    width: 100%; background: var(--panel2); border: 1px solid var(--line);
+    color: var(--text); border-radius: 8px; padding: 9px 11px; font-size: 14px;
+  }
+  input:focus, select:focus { outline: none; border-color: var(--accent); }
+  .hint { font-size: 12px; color: var(--muted); margin-top: 5px; }
+  .periods { display: flex; flex-wrap: wrap; gap: 10px 18px; align-items: center; }
+  .periods label { display: inline-flex; align-items: center; gap: 6px; color: var(--text); margin: 0; cursor: pointer; font-size: 14px; }
+  #customDays { width: 90px; }
+  button {
+    background: var(--accent2); color: #fff; border: 0; border-radius: 8px;
+    padding: 11px 20px; font-size: 15px; font-weight: 600; cursor: pointer;
+  }
+  button:hover { background: var(--accent); }
+  button.ghost { background: var(--panel2); border: 1px solid var(--line); color: var(--text); font-weight: 500; padding: 7px 14px; font-size: 13px; }
+  button.ghost:hover { border-color: var(--accent); background: var(--panel); }
+  .chk { display: inline-flex; align-items: center; gap: 8px; color: var(--muted); font-size: 13px; margin-top: 10px; cursor: pointer; }
+  #out { display: none; }
+  .summary { width: 100%; border-collapse: collapse; margin: 4px 0 16px; font-size: 13.5px; }
+  .summary td { padding: 6px 8px; border-bottom: 1px solid var(--line); }
+  .summary td:first-child { color: var(--muted); width: 130px; }
+  .badge { display: inline-block; padding: 3px 10px; border-radius: 999px; font-size: 12.5px; font-weight: 600; }
+  .badge.ok { background: rgba(34,197,94,.15); color: var(--ok); border: 1px solid rgba(34,197,94,.4); }
+  .badge.err { background: rgba(239,68,68,.15); color: var(--err); border: 1px solid rgba(239,68,68,.4); }
+  .outblock { margin-bottom: 16px; }
+  .outblock .top { display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px; }
+  .outblock .top label { margin: 0; }
+  textarea {
+    width: 100%; background: #0b0f15; border: 1px solid var(--line); color: #cfe3ff;
+    border-radius: 8px; padding: 10px 12px; font: 12.5px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace;
+    resize: vertical; word-break: break-all;
+  }
+  #err { color: var(--err); font-size: 13.5px; margin-top: 12px; display: none; }
+  .foot { color: var(--muted); font-size: 12.5px; margin-top: 6px; }
+  .foot code { background: var(--panel2); padding: 1px 5px; border-radius: 4px; color: #cfe3ff; }
+  hr { border: 0; border-top: 1px solid var(--line); margin: 18px 0; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>Infizent License Issuer</h1>
+  <p class="sub">Generate a signed activation string for the SMT Verification app. Runs entirely in this browser — nothing is uploaded.</p>
+
+  <div class="banner">
+    <strong>Vendor tool — keep private.</strong> Do not copy this file onto a client PC. The signing key is never stored in this file; you paste it below and it stays in memory only.
+  </div>
+
+  <div class="card">
+    <div class="row">
+      <div class="field">
+        <label for="customerName">Customer name</label>
+        <input type="text" id="customerName" value="UCAL Electronics Pvt. Ltd." />
+      </div>
+      <div class="field">
+        <label for="customerId">Customer ID</label>
+        <input type="text" id="customerId" value="ucal" />
+        <div class="hint">Short slug. Auto-filled from the name; edit if needed.</div>
+      </div>
+    </div>
+
+    <div class="field">
+      <label for="machineId">Machine ID</label>
+      <input type="text" id="machineId" value="dev-mode-no-machine-binding" />
+      <div class="hint">Leave as-is for browser / LAN installs. For an Electron desktop build, paste the target's Machine ID from its <em>Admin &rsaquo; License</em> page.</div>
+    </div>
+
+    <div class="row">
+      <div class="field">
+        <label for="type">License type</label>
+        <select id="type">
+          <option value="professional" selected>Professional — all features, unlimited lines</option>
+          <option value="standard">Standard — 2 lines, 200 sessions</option>
+          <option value="trial">Trial — 1 line, 50 sessions</option>
+        </select>
+      </div>
+      <div class="field">
+        <label>Period</label>
+        <div class="periods">
+          <label><input type="radio" name="period" value="90" /> 3 months</label>
+          <label><input type="radio" name="period" value="180" /> 6 months</label>
+          <label><input type="radio" name="period" value="365" checked /> 1 year</label>
+          <label><input type="radio" name="period" value="custom" /> custom
+            <input type="number" id="customDays" min="1" max="3650" placeholder="days" /></label>
+        </div>
+      </div>
+    </div>
+
+    <hr />
+
+    <div class="field">
+      <label for="hmacKey">Signing key (VITE_LICENSE_HMAC_KEY)</label>
+      <input type="password" id="hmacKey" autocomplete="off" placeholder="paste from the repo .env" />
+      <div class="hint">Used only in this browser to sign the license. Never uploaded, never written to disk.</div>
+      <label class="chk"><input type="checkbox" id="remember" /> Remember for this browser tab only (cleared when the tab closes)</label>
+    </div>
+
+    <button id="gen">Generate license</button>
+    <div id="err"></div>
+  </div>
+
+  <div class="card" id="out">
+    <table class="summary">
+      <tr><td>Status</td><td id="s-verify"></td></tr>
+      <tr><td>Type</td><td id="s-type"></td></tr>
+      <tr><td>Customer</td><td id="s-cust"></td></tr>
+      <tr><td>Machine</td><td id="s-machine"></td></tr>
+      <tr><td>Activated</td><td id="s-act"></td></tr>
+      <tr><td>Expires</td><td id="s-exp"></td></tr>
+      <tr><td>License key</td><td id="s-key"></td></tr>
+    </table>
+
+    <div class="outblock">
+      <div class="top">
+        <label>Activation string — paste into <em>Admin &rsaquo; License &rsaquo; Activate</em></label>
+        <button class="ghost" data-copy="actstr">Copy</button>
+      </div>
+      <textarea id="actstr" rows="5" readonly></textarea>
+      <div class="foot">Best done <strong>before</strong> the current license expires — while the app is still active, so nothing is blocked.</div>
+    </div>
+
+    <div class="outblock">
+      <div class="top">
+        <label>Already-expired machine? Paste this in the app's browser console (F12)</label>
+        <button class="ghost" data-copy="console">Copy</button>
+      </div>
+      <textarea id="console" rows="3" readonly></textarea>
+      <div class="foot">The expired overlay covers the whole app (incl. the admin portal), so the Activate box is unreachable. This injects the license directly and reloads.</div>
+    </div>
+  </div>
+</div>
+
+<script>
+"use strict";
+
+// Feature sets — copied verbatim from artifacts/feeder-scanner/src/licensing/types.ts
+const FEATURES = {
+  trial:        { maxLines: 1,  feederModule: true, locationVerification: true, adminDashboard: true, exportPDF: true, exportXLSX: true, exportCSV: true, exportJSON: true, finalReport: true, spliceTracking: true, qaSignOff: true, maxSessionHistory: 50 },
+  standard:     { maxLines: 2,  feederModule: true, locationVerification: true, adminDashboard: true, exportPDF: true, exportXLSX: true, exportCSV: true, exportJSON: true, finalReport: true, spliceTracking: true, qaSignOff: true, maxSessionHistory: 200 },
+  professional: { maxLines: -1, feederModule: true, locationVerification: true, adminDashboard: true, exportPDF: true, exportXLSX: true, exportCSV: true, exportJSON: true, finalReport: true, spliceTracking: true, qaSignOff: true, maxSessionHistory: -1 },
+};
+const SCHEMA_VERSION = 2;
+const $ = (id) => document.getElementById(id);
+
+// Prefill the key if it was remembered for this tab.
+try {
+  const k = sessionStorage.getItem('issuer_hmac');
+  if (k) { $('hmacKey').value = k; $('remember').checked = true; }
+} catch (e) {}
+
+// Auto-slug customer id from the name until the id field is edited by hand.
+let idEdited = false;
+$('customerId').addEventListener('input', () => { idEdited = true; });
+$('customerName').addEventListener('input', () => {
+  if (!idEdited) $('customerId').value = $('customerName').value.trim().toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
+});
+
+function licenseKey() {
+  const b = new Uint8Array(16);
+  crypto.getRandomValues(b);
+  return Array.from(b).map((x) => x.toString(16).padStart(2, '0')).join('').toUpperCase().match(/.{4}/g).join('-');
+}
+
+// Same field order the app validates — licenseGuard.ts buildPayload()
+function buildPayload(info) {
+  return [
+    info.licenseKey, info.licenseType, info.customerId,
+    info.activatedAt, info.expiresAt, info.issuedBy,
+    info.machineId || '', info.schemaVersion,
+  ].join('|');
+}
+
+async function hmacHex(keyStr, msg) {
+  const enc = new TextEncoder();
+  const key = await crypto.subtle.importKey('raw', enc.encode(keyStr), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
+  const sig = await crypto.subtle.sign('HMAC', key, enc.encode(msg));
+  return Array.from(new Uint8Array(sig)).map((b) => b.toString(16).padStart(2, '0')).join('');
+}
+
+// Match Node's Buffer.from(json).toString('base64') for arbitrary UTF-8.
+function toBase64Utf8(str) {
+  const bytes = new TextEncoder().encode(str);
+  let bin = '';
+  const chunk = 0x8000;
+  for (let i = 0; i < bytes.length; i += chunk) {
+    bin += String.fromCharCode.apply(null, bytes.subarray(i, i + chunk));
+  }
+  return btoa(bin);
+}
+
+function showErr(msg) {
+  const el = $('err');
+  el.textContent = msg;
+  el.style.display = 'block';
+  $('out').style.display = 'none';
+}
+
+function getDays() {
+  const sel = document.querySelector('input[name=period]:checked').value;
+  if (sel === 'custom') {
+    const d = parseInt($('customDays').value, 10);
+    return Number.isFinite(d) && d > 0 ? d : null;
+  }
+  return parseInt(sel, 10);
+}
+
+$('gen').addEventListener('click', async () => {
+  $('err').style.display = 'none';
+
+  if (!window.crypto || !window.crypto.subtle) {
+    return showErr('Web Crypto unavailable. Open this file in Chrome/Firefox/Edge, or serve it with:  python3 -m http.server');
+  }
+  const hmacKey = $('hmacKey').value.trim();
+  if (!hmacKey) return showErr('Paste the signing key (VITE_LICENSE_HMAC_KEY from the repo .env).');
+  const customerName = $('customerName').value.trim();
+  if (!customerName) return showErr('Customer name is required.');
+  const customerId = $('customerId').value.trim() || customerName.toLowerCase().replace(/[^a-z0-9]+/g, '-');
+  const days = getDays();
+  if (!days) return showErr('Enter a valid number of days for the custom period.');
+  const type = $('type').value;
+
+  const now = new Date();
+  const info = {
+    licenseKey: licenseKey(),
+    licenseType: type,
+    status: 'active',
+    customerId,
+    customerName,
+    activatedAt: now.toISOString(),
+    expiresAt: new Date(now.getTime() + days * 86400000).toISOString(),
+    daysRemaining: days,
+    features: FEATURES[type],
+    issuedBy: 'Infizent Technology',
+    issuedTo: customerName,
+    machineId: $('machineId').value.trim(),
+    schemaVersion: SCHEMA_VERSION,
+  };
+  info.signature = await hmacHex(hmacKey, buildPayload(info));
+
+  const activation = toBase64Utf8(JSON.stringify(info));
+
+  // Self-check — reproduce exactly what the app does on activate.
+  let verified = false;
+  try {
+    const round = JSON.parse(decodeURIComponent(escape(atob(activation))));
+    const expSig = await hmacHex(hmacKey, buildPayload(round));
+    verified = round.signature === expSig
+      && new Date(round.expiresAt) > new Date()
+      && round.status === 'active';
+  } catch (e) { verified = false; }
+
+  // Remember key for the tab if asked.
+  try {
+    if ($('remember').checked) sessionStorage.setItem('issuer_hmac', hmacKey);
+    else sessionStorage.removeItem('issuer_hmac');
+  } catch (e) {}
+
+  $('s-verify').innerHTML = verified
+    ? '<span class="badge ok">&#10003; validates as active</span>'
+    : '<span class="badge err">&#10007; verification failed — check the key</span>';
+  $('s-type').textContent = type + (type === 'professional' ? ' (all features)' : '');
+  $('s-cust').textContent = customerName + '  (' + customerId + ')';
+  $('s-machine').textContent = info.machineId || '(unbound — any machine)';
+  $('s-act').textContent = info.activatedAt.slice(0, 10);
+  $('s-exp').textContent = info.expiresAt.slice(0, 10) + '   (+' + days + ' days)';
+  $('s-key').textContent = info.licenseKey;
+
+  $('actstr').value = activation;
+  $('console').value = "localStorage.setItem('lic_info', atob('" + activation + "')); location.reload();";
+  $('out').style.display = 'block';
+});
+
+document.querySelectorAll('[data-copy]').forEach((btn) => {
+  btn.addEventListener('click', async () => {
+    const ta = $(btn.getAttribute('data-copy'));
+    const done = () => { const t = btn.textContent; btn.textContent = 'Copied'; setTimeout(() => { btn.textContent = t; }, 1200); };
+    try { await navigator.clipboard.writeText(ta.value); done(); }
+    catch (e) { ta.focus(); ta.select(); try { document.execCommand('copy'); done(); } catch (e2) {} }
+  });
+});
+</script>
+</body>
+</html>

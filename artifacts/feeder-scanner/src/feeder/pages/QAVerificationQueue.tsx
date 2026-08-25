@@ -20,6 +20,7 @@ interface QASession {
   qaVerifiedAt: string | null;
   qaDiscrepancyFound: boolean | null;
   qaLockExpiresAt: string | null;
+  splicingSubmittedAt: string | null;
   bomId: number;
   bomName: string | null;
   verificationMode: string | null;
@@ -41,6 +42,33 @@ function PriorityIndicator({ startedAt }: { startedAt: string }) {
     return <span className="inline-flex items-center gap-1 px-2 py-1 rounded-sm bg-amber-50 dark:bg-amber-950/30 text-amber-700 dark:text-amber-400 text-xs font-mono font-semibold"><Clock className="w-3 h-3" />{mins}m</span>;
   }
   return <span className="inline-flex items-center gap-1 px-2 py-1 rounded-sm bg-slate-50 dark:bg-slate-900 text-slate-500 dark:text-slate-400 text-xs font-mono">{mins}m</span>;
+}
+
+// 2-hour QA-confirmation countdown for a splicing submission. Display-only:
+// shows time remaining, warns under 30m, and flags OVERDUE past the deadline.
+// It never changes the session status — QA still confirms manually.
+function SplicingCountdown({ submittedAt }: { submittedAt: string }) {
+  const [now, setNow] = useState(Date.now());
+  useEffect(() => {
+    const t = setInterval(() => setNow(Date.now()), 30000);
+    return () => clearInterval(t);
+  }, []);
+  const msLeft = new Date(submittedAt).getTime() + 2 * 60 * 60 * 1000 - now;
+  const absMin = Math.floor(Math.abs(msLeft) / 60000);
+  const label = absMin >= 60 ? `${Math.floor(absMin / 60)}h ${absMin % 60}m` : `${absMin}m`;
+  if (msLeft < 0) {
+    return (
+      <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-sm bg-red-100 text-red-800 dark:bg-red-900/40 dark:text-red-300 text-[10px] font-mono font-bold uppercase tracking-wider">
+        <AlertCircle className="w-3 h-3" /> Overdue +{label}
+      </span>
+    );
+  }
+  const warn = msLeft < 30 * 60 * 1000;
+  return (
+    <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-sm text-[10px] font-mono font-semibold ${warn ? "bg-amber-100 text-amber-800 dark:bg-amber-900/30 dark:text-amber-300" : "bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-300"}`}>
+      <Clock className="w-3 h-3" /> QA due in {label}
+    </span>
+  );
 }
 
 function StatusBadge({ status, discrepancyFound }: { status: string; discrepancyFound?: boolean | null }) {
@@ -144,6 +172,9 @@ export default function QAVerificationQueue() {
               </TableCell>
               <TableCell>
                 <StatusBadge status={session.status} discrepancyFound={session.qaDiscrepancyFound} />
+                {session.status === "splicing_pending_qa" && session.splicingSubmittedAt && (
+                  <div className="mt-1"><SplicingCountdown submittedAt={session.splicingSubmittedAt} /></div>
+                )}
               </TableCell>
               <TableCell>
                 <ChevronRight className="w-4 h-4 text-muted-foreground" />

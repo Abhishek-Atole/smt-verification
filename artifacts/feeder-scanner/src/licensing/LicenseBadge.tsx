@@ -1,12 +1,14 @@
 import { useLicenseContext } from './license-context';
+import { getExpiryWarning } from './licenseGuard';
 
 export function LicenseBadge() {
   const { license, status } = useLicenseContext();
+  const warn = status === 'active' && license ? getExpiryWarning(license) : { show: false, days: 0 };
 
   const label =
     status === 'expired' ? 'EXPIRED' :
     status === 'trial_active' ? `TRIAL ${license.daysRemaining}d` :
-    status === 'active' ? 'Licensed' :
+    status === 'active' ? (warn.show ? `Licensed · ${warn.days}d` : 'Licensed') :
     status === 'invalid_schema' ? 'UPDATE REQUIRED' :
     status === 'wrong_machine' ? 'WRONG MACHINE' :
     status === 'invalid_signature' ? 'INVALID' :
@@ -15,7 +17,7 @@ export function LicenseBadge() {
   const colorClass =
     status === 'expired' ? 'bg-red-900/60 text-red-300 border-red-700' :
     status === 'trial_active' ? 'bg-amber-900/60 text-amber-300 border-amber-700' :
-    status === 'active' ? 'bg-emerald-900/60 text-emerald-300 border-emerald-700' :
+    status === 'active' ? (warn.show ? 'bg-amber-900/60 text-amber-300 border-amber-700' : 'bg-emerald-900/60 text-emerald-300 border-emerald-700') :
     status === 'invalid_schema' ? 'bg-purple-900/60 text-purple-300 border-purple-700' :
     status === 'wrong_machine' ? 'bg-orange-900/60 text-orange-300 border-orange-700' :
     status === 'invalid_signature' ? 'bg-red-900/60 text-red-300 border-red-700' :

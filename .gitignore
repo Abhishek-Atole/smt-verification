@@ -158,6 +158,10 @@ backup-*.sql
 *.backup.sql
 *-backup*.sql
 dump-*.sql
+# DB snapshots & deploy handovers — may contain seed data / secrets, never commit (repo is public)
+*pre-fresh*.sql
+smtverification-*.sql
+deploy-handover-*.txt
 
 # Business documents
 *.docx

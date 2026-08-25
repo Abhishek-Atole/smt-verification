@@ -45,6 +45,10 @@ export const sessionsTable = pgTable("sessions", {
   status: text("status").notNull().default("active"),
   startTime: timestamp("start_time").defaultNow().notNull(),
   endTime: timestamp("end_time"),
+  // Splicing 200% QA deadline. Stamped when the operator submits splicing to QA
+  // (qa_confirmed -> splicing_pending_qa). QA must confirm within 2h; the queue
+  // renders a countdown and flags overdue rows. Display-only — never auto-closes.
+  splicingSubmittedAt: timestamp("splicing_submitted_at"),
   machineName: text("machine_name"),
   lineName: text("line_name"),
   // Module 1: BOM verification skip + single-approver gate. When skipped, either

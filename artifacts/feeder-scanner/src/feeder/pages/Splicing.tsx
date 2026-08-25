@@ -807,7 +807,10 @@ export default function SplicingPage() {
 
   const { inputRef, value, setValue, reset, handleKeyDown } = useScanner({
     onSubmit: handleWorkflowScan,
-    autoFocus: true,
+    // autoFocus:false — the hook's unconditional 1.2s refocus interval steals focus
+    // from any button/field the operator clicks. We refocus in the effect below, but
+    // only when focus is "loose", so other controls stay usable.
+    autoFocus: false,
     resetAfterMs: 10000,
   });
 
@@ -819,6 +822,29 @@ export default function SplicingPage() {
     // manual entry (typed value + Enter, or the "Capture Lot Code" button).
     enabled: !workflowLocked && step !== "confirm" && step !== "newLot",
   });
+
+  // Keep the live scan input focused so scanner-gun keystrokes always land in the
+  // box — but ONLY when focus is "loose" (on <body> or nothing). This never steals
+  // focus from a button or field the operator just clicked, so other controls stay
+  // usable. Replaces useScanner's unconditional 1.2s interval (disabled via
+  // autoFocus:false above): focuses immediately when the input appears / on unlock /
+  // on each step change, then keeps a guarded 1.2s refocus for idle recovery.
+  useEffect(() => {
+    if (sessionLoading || bomQuery.isLoading) return;
+    if (!bomLoaded && !bomBypass) return;
+    if (workflowLocked || step === "confirm") return;
+    const focusIfLoose = () => {
+      const el = inputRef.current;
+      if (!el) return;
+      const active = document.activeElement;
+      if (active === null || active === document.body || active === el) {
+        el.focus();
+      }
+    };
+    focusIfLoose();
+    const t = setInterval(focusIfLoose, 1200);
+    return () => clearInterval(t);
+  }, [step, workflowLocked, sessionLoading, bomQuery.isLoading, bomLoaded, bomBypass]);
 
   // ─── Loading state ────────────────────────────────────────────────────────────
   if (sessionLoading || bomQuery.isLoading) {

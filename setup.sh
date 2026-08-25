@@ -150,6 +150,23 @@ ENV
 chmod 600 "$APP_DIR/.env"
 info "Generated .env with fresh secrets"
 
+# Issue a full 365-day license so the app doesn't lapse to the license overlay
+# when the auto-started 14-day trial ends. The web (non-Electron) build reports
+# a constant machine ID, so the license binds to that known value; it is signed
+# with the same LICENSE_HMAC_KEY baked into the frontend bundle. Override the
+# customer name with:  CUSTOMER="ACME Ltd" sudo -E ./setup.sh
+CUSTOMER="${CUSTOMER:-Infizent Client}"
+LICENSE_ACTIVATION=$(
+  LICENSE_HMAC_KEY="$LICENSE_HMAC_KEY" node "$APP_DIR/artifacts/license-issuer/generate-license.js" \
+    --customer "$CUSTOMER" --type professional --machine dev-mode-no-machine-binding --days 365 \
+    2>/dev/null | awk '/ACTIVATION STRING/{getline; print; exit}'
+)
+if [ -n "$LICENSE_ACTIVATION" ]; then
+  info "Generated 365-day license for \"$CUSTOMER\""
+else
+  warn "License generation failed — app will run on a 14-day trial until activated manually"
+fi
+
 # Save credentials for hand-over
 cat > "$APP_DIR/CREDENTIALS.txt" <<CREDS
 SMT Verification — Initial Credentials
@@ -171,6 +188,16 @@ DB User: $DB_USER
 DB Password: $DB_PASS
 
 Backups: /var/backups/$DB_NAME (runs daily at 02:00)
+
+LICENSE ACTIVATION (a 14-day trial auto-starts on first load):
+  To install the full 365-day license ($CUSTOMER), open the App URL, go to
+  the Admin Portal > License > Activate, and paste this activation string:
+
+    $LICENSE_ACTIVATION
+
+  Fallback (if the trial already lapsed and the License page is locked):
+  open the App URL, press F12 > Console, paste this line and press Enter:
+    localStorage.setItem('lic_info', atob('$LICENSE_ACTIVATION')); location.reload()
 
 ⚠ SECURITY:
 - Change all user passwords immediately after first login
@@ -347,7 +374,8 @@ echo
 warn "NEXT STEPS:"
 warn "1. Read CREDENTIALS.txt (in this directory) for login passwords"
 warn "2. Open http://$LAN_IP:$PORT in a browser"
-warn "3. Change all user passwords on first login"
-warn "4. Set a STATIC IP for this machine"
-warn "5. Copy daily backups from /var/backups/$DB_NAME to a NAS"
+warn "3. Activate the full license: Admin Portal > License > Activate (string in CREDENTIALS.txt)"
+warn "4. Change all user passwords on first login"
+warn "5. Set a STATIC IP for this machine"
+warn "6. Copy daily backups from /var/backups/$DB_NAME to a NAS"
 echo

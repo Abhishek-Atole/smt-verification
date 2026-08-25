@@ -1,12 +1,13 @@
-import { useEffect, useState, useRef } from "react";
+import { useEffect, useState } from "react";
 import { useRoute, useLocation } from "wouter";
 import { useAuth } from "@/context/auth-context";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
-import { Loader2, ArrowLeft, CheckCircle2, XCircle, AlertTriangle, ScanLine, FileText, ThumbsUp, ThumbsDown } from "lucide-react";
+import { Loader2, ArrowLeft, CheckCircle2, XCircle, AlertTriangle, ScanLine, FileText, ThumbsUp, ThumbsDown, Keyboard } from "lucide-react";
 import { format } from "date-fns";
 import { useNotification } from "@/components/NotificationSystem";
+import { useScanner } from "@/hooks/useScanner";
 
 type QaResult = "pass" | "fail" | "alternate_accepted" | "pending" | null;
 
@@ -87,7 +88,6 @@ export default function QAVerificationDetail() {
   const sessionId = params?.sessionId ?? "";
   const { user } = useAuth();
   const [, setLocation] = useLocation();
-  const scanInputRef = useRef<HTMLInputElement>(null);
   const { success, error } = useNotification();
 
   const [session, setSession] = useState<SessionData | null>(null);
@@ -96,9 +96,13 @@ export default function QAVerificationDetail() {
   const [loading, setLoading] = useState(true);
   const [locking, setLocking] = useState(false);
   const [scanning, setScanning] = useState(false);
+  const [confirming, setConfirming] = useState(false);
+  const [completing, setCompleting] = useState(false);
+  const [busySpliceId, setBusySpliceId] = useState<string | null>(null);
   const [isLocked, setIsLocked] = useState(false);
-  const [qaNotes, setQaNotes] = useState("");
-  const [currentFeeder, setCurrentFeeder] = useState("");
+  const [verifyMode, setVerifyMode] = useState<"scan" | "manual">("scan");
+  const [qaScanStep, setQaScanStep] = useState<"feeder" | "mpn">("feeder");
+  const [activeFeeder, setActiveFeeder] = useState("");
   const [scanResult, setScanResult] = useState<{ feederNumber: string; qaResult: string; message: string } | null>(null);
 
   const fetchDetail = async () => {
@@ -129,7 +133,6 @@ export default function QAVerificationDetail() {
       if (res.ok) {
         setIsLocked(true);
         fetchDetail();
-        setTimeout(() => scanInputRef.current?.focus(), 100);
       }
     } finally {
       setLocking(false);
@@ -138,24 +141,30 @@ export default function QAVerificationDetail() {
 
   const handleManualConfirm = async () => {
     if (!window.confirm(`You are confirming all ${scans.length} feeder slots as manually verified. This cannot be undone.`)) return;
+    setConfirming(true);
     try {
       const res = await fetch(`/api/verification/qa-queue/${sessionId}/manual-confirm`, {
         method: "POST", credentials: "include",
       });
       if (res.ok) {
-        success("Manually Confirmed", "All feeders marked as manually verified");
-        fetchDetail();
-      } else {
-        const data = await res.json();
-        error("Failed to Confirm", data.error || "Unknown error");
+        success("Manually Confirmed", "All feeders verified — QA confirmed");
+        // manual-confirm finalizes the session (status qa_confirmed, lock released),
+        // so this IS the completion — go straight to the queue, no extra Complete step.
+        setTimeout(() => setLocation("/feeder/qa-queue"), 1400);
+        return;
       }
+      const data = await res.json();
+      error("Failed to Confirm", data.error || "Unknown error");
+      setConfirming(false);
     } catch {
       error("Failed to Confirm", "Network error occurred");
+      setConfirming(false);
     }
   };
 
   const handleRejectSplice = async (spliceId: string) => {
     if (!window.confirm("Reject this splice? This will mark it as failed.")) return;
+    setBusySpliceId(spliceId);
     try {
       const res = await fetch(`/api/verification/splices/${spliceId}/reject`, {
         method: "POST", credentials: "include",
@@ -168,10 +177,13 @@ export default function QAVerificationDetail() {
       }
     } catch {
       error("Failed to Reject", "Network error occurred");
+    } finally {
+      setBusySpliceId(null);
     }
   };
 
   const handleApproveSplice = async (spliceId: string) => {
+    setBusySpliceId(spliceId);
     try {
       const res = await fetch(`/api/verification/splices/${spliceId}/approve`, {
         method: "POST", credentials: "include",
@@ -184,9 +196,20 @@ export default function QAVerificationDetail() {
       }
     } catch {
       error("Failed to Approve", "Network error occurred");
+    } finally {
+      setBusySpliceId(null);
     }
   };
-  const handleRescan = async (feederNumber: string, scannedValue?: string) => {
+  const rescanMessage = (fn: string, qaResult: string) => {
+    switch (qaResult) {
+      case "pass": return `Feeder ${fn} — PASS (exact match)`;
+      case "alternate_accepted": return `Feeder ${fn} — ALTERNATE ACCEPTED`;
+      case "fail": return `Feeder ${fn} — FAIL (does not match expected)`;
+      default: return `Feeder ${fn}: ${qaResult}`;
+    }
+  };
+
+  const handleRescan = async (feederNumber: string, scannedValue: string) => {
     setScanning(true);
     setScanResult(null);
     try {
@@ -194,14 +217,12 @@ export default function QAVerificationDetail() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         credentials: "include",
-        body: JSON.stringify({ feederNumber, scannedValue: scannedValue ?? currentFeeder, notes: qaNotes || undefined }),
+        body: JSON.stringify({ feederNumber, scannedValue }),
       });
       const data = await res.json();
       if (res.ok) {
-        setScanResult({ feederNumber, qaResult: data.qaResult, message: `Feeder ${feederNumber}: ${data.qaResult}` });
+        setScanResult({ feederNumber, qaResult: data.qaResult, message: rescanMessage(feederNumber, data.qaResult) });
         fetchDetail();
-        setCurrentFeeder("");
-        setQaNotes("");
       } else {
         setScanResult({ feederNumber, qaResult: "error", message: data.error ?? "Scan failed" });
       }
@@ -209,79 +230,107 @@ export default function QAVerificationDetail() {
       setScanResult({ feederNumber, qaResult: "error", message: "Network error" });
     } finally {
       setScanning(false);
-      setTimeout(() => scanInputRef.current?.focus(), 100);
+      setQaScanStep("feeder");
+      setActiveFeeder("");
     }
   };
 
   const handleComplete = async () => {
+    setCompleting(true);
     try {
       const res = await fetch(`/api/verification/qa-queue/${sessionId}/complete`, {
         method: "POST", credentials: "include",
       });
       const data = await res.json().catch(() => ({}));
       if (res.ok) {
-        // Splicing 200% close returns status "completed": the changeover is done,
-        // so QA returns to the queue to pick up the next changeover. Normal 200%
-        // ends in "qa_confirmed" and stays here as before.
+        // Both the splicing 200% close ("completed") and a normal 200% ("qa_confirmed")
+        // return QA to the queue to pick up the next changeover. /complete already
+        // releases the QA lock (qaLockExpiresAt: null), so no separate unlock is needed.
         if (data.status === "completed") {
           success("Changeover Completed", "Splicing verified — changeover closed");
-          setLocation("/feeder/qa-queue");
-          return;
+        } else {
+          success("QA Review Completed", "Session has been marked as QA confirmed");
         }
-        success("QA Review Completed", "Session has been marked as QA confirmed");
-        fetchDetail();
-      } else {
-        error("Failed to Complete", data.error || "Unknown error");
-      }
-    } catch {
-      error("Failed to Complete", "Network error occurred");
-    }
-  };
-
-  const handleReleaseLock = async () => {
-    await fetch(`/api/verification/qa-queue/${sessionId}/unlock`, {
-      method: "POST", credentials: "include",
-    });
-    setIsLocked(false);
-    setLocation("/feeder/qa-queue");
-  };
-
-  const handleScanSubmit = (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!currentFeeder.trim()) return;
-    // Expect input format: "feederNumber scannedValue" or just a barcode scan
-    const parts = currentFeeder.trim().split(/\s+/);
-    if (parts.length >= 2) {
-      const fn = parts[0];
-      const sv = parts.slice(1).join(" ");
-      handleRescan(fn, sv);
-    } else {
-      const value = parts[0];
-      // First try: match as feeder number
-      const feederMatch = scans.find((s) => s.feederNumber === value);
-      if (feederMatch) {
-        handleRescan(value);
+        // Hold the full-screen "Completing…" overlay ~1.4s so QA sees the result land,
+        // then go to the queue. Leave `completing` true — the component unmounts on nav.
+        setTimeout(() => setLocation("/feeder/qa-queue"), 1400);
         return;
       }
-      // Second try: match scanned value against expected MPN fields (bare MPN barcode)
-      const upper = value.toUpperCase();
-      const mpnMatch = scans.find((s) => {
-        const e = s.expected;
-        if (!e) return false;
-        return (
-          e.mpn1?.toUpperCase() === upper ||
-          e.mpn2?.toUpperCase() === upper ||
-          e.mpn3?.toUpperCase() === upper ||
-          e.internalPartNumber?.toUpperCase() === upper
-        );
-      });
-      if (mpnMatch) {
-        handleRescan(mpnMatch.feederNumber, value);
-      } else {
-        setScanResult({ feederNumber: value, qaResult: "error", message: `Feeder ${value} not found in session` });
-      }
+      error("Failed to Complete", data.error || "Unknown error");
+      setCompleting(false);
+    } catch {
+      error("Failed to Complete", "Network error occurred");
+      setCompleting(false);
     }
   };
+
+  // "At once" path: approve every pending splice, then close the changeover in one click.
+  // The individual Approve/Reject buttons remain for the one-by-one path.
+  const handleApproveAllAndComplete = async () => {
+    const pending = splices.filter((s) => !s.qaResult || s.qaResult === "pending");
+    if (!window.confirm(`Approve all ${pending.length} pending splice(s) and close this changeover? This cannot be undone.`)) return;
+    setCompleting(true);
+    try {
+      // Approve sequentially, not in parallel: the audit_logs chain is HMAC-linked,
+      // so concurrent writes can corrupt it. One /approve = one audit row. Each is
+      // idempotent, so an already-passed splice is a safe no-op.
+      for (const splice of pending) {
+        const res = await fetch(`/api/verification/splices/${splice.id}/approve`, {
+          method: "POST", credentials: "include",
+        });
+        if (!res.ok) {
+          const data = await res.json().catch(() => ({}));
+          error("Failed to Approve", data.error || `Could not approve splice for feeder ${splice.feederNumber ?? splice.id}`);
+          setCompleting(false);
+          fetchDetail();
+          return;
+        }
+      }
+      // All pending splices approved — /complete now clears the countUnverifiedSplices gate.
+      const res = await fetch(`/api/verification/qa-queue/${sessionId}/complete`, {
+        method: "POST", credentials: "include",
+      });
+      const data = await res.json().catch(() => ({}));
+      if (res.ok) {
+        success("Changeover Completed", "All splices approved — changeover closed");
+        setTimeout(() => setLocation("/feeder/qa-queue"), 1400);
+        return;
+      }
+      error("Failed to Complete", data.error || "Unknown error");
+      setCompleting(false);
+      fetchDetail();
+    } catch {
+      error("Failed to Complete", "Network error occurred");
+      setCompleting(false);
+    }
+  };
+
+  // Guided cross-verify: feeder step finds the slot, MPN step verifies via /rescan.
+  const handleQaScan = (rawValue: string) => {
+    const value = rawValue.trim();
+    if (!value) return;
+    if (qaScanStep === "feeder") {
+      const match = scans.find((s) => s.feederNumber.toUpperCase() === value.toUpperCase());
+      if (!match) {
+        setScanResult({ feederNumber: value, qaResult: "error", message: `Feeder "${value}" not found in this session` });
+        return;
+      }
+      setActiveFeeder(match.feederNumber);
+      setQaScanStep("mpn");
+      setScanResult(null);
+      return;
+    }
+    // MPN step — verify the scanned component against the active feeder's BOM row
+    handleRescan(activeFeeder, value);
+  };
+
+  const {
+    inputRef,
+    value: scanValue,
+    setValue: setScanValue,
+    handleKeyDown: handleScanKeyDown,
+    reset: resetScanner,
+  } = useScanner({ onSubmit: handleQaScan, autoFocus: isLocked && verifyMode === "scan" });
 
   const pendingCount = scans.filter((s) => !s.qaResult || s.qaResult === "pending").length;
   const passedCount = scans.filter((s) => s.qaResult === "pass").length;
@@ -289,6 +338,14 @@ export default function QAVerificationDetail() {
   const failedCount = scans.filter((s) => s.qaResult === "fail").length;
   const manualConfirmedCount = scans.filter((s) => s.qaResult && s.qaResult !== "pending").length;
   const allDone = pendingCount === 0;
+  // Splices still awaiting a QA decision (pending/unset). Drives the one-click
+  // "Approve All & Complete" shortcut and hides the plain Complete button while any remain.
+  const pendingSplices = splices.filter((s) => !s.qaResult || s.qaResult === "pending");
+
+  const activeExpectedMpn = scans.find((s) => s.feederNumber === activeFeeder)?.expected?.mpn1 ?? null;
+  const qaStepLabel = qaScanStep === "feeder"
+    ? "STEP 1 — Scan FEEDER NUMBER"
+    : `STEP 2 — Scan MPN / INTERNAL ID  ·  Feeder ${activeFeeder}${activeExpectedMpn ? `, expected ${activeExpectedMpn}` : ""}`;
 
   if (loading) {
     return <div className="flex-1 flex items-center justify-center"><Loader2 className="w-8 h-8 animate-spin text-muted-foreground" /></div>;
@@ -300,6 +357,12 @@ export default function QAVerificationDetail() {
 
   return (
     <div className="w-full space-y-4 sm:space-y-6 mt-6 sm:mt-8">
+      {(completing || confirming) && (
+        <div className="fixed inset-0 z-50 flex flex-col items-center justify-center gap-4 bg-background/85 backdrop-blur-sm">
+          <Loader2 className="w-12 h-12 animate-spin text-primary" />
+          <p className="font-mono text-sm text-muted-foreground">Completing QA review…</p>
+        </div>
+      )}
       <div className="px-4 sm:px-6 lg:px-8 flex flex-col gap-4">
         {/* Header */}
         <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3 border-b border-border pb-4">
@@ -313,7 +376,7 @@ export default function QAVerificationDetail() {
               </h1>
               {session.status === "splicing_pending_qa" && (
                 <Badge className="mt-1 font-mono text-[10px] bg-orange-100 text-orange-800 dark:bg-orange-900/30 dark:text-orange-300 border-0">
-                  SPLICING QA (200%) — approve every splice, then Complete QA Review to close the changeover
+                  SPLICING QA (200%) — approve each splice, or use Approve All &amp; Complete to close the changeover
                 </Badge>
               )}
               <p className="text-xs text-muted-foreground font-mono mt-0.5">
@@ -325,18 +388,14 @@ export default function QAVerificationDetail() {
           <div className="flex items-center gap-2">
             {!isLocked && session.status !== "qa_confirmed" && (
               <Button onClick={acquireLock} disabled={locking} className="font-mono text-xs rounded-sm">
-                {locking ? "Locking..." : "Start Review"}
+                {locking && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+                {locking ? "Starting…" : "Start Review"}
               </Button>
             )}
-            {isLocked && allDone && (
-              <Button onClick={handleComplete} className="font-mono text-xs rounded-sm">
-                <FileText className="w-4 h-4 mr-1.5" />
-                Complete QA Review
-              </Button>
-            )}
-            {isLocked && (
-              <Button variant="outline" onClick={handleReleaseLock} className="font-mono text-xs rounded-sm">
-                Release &amp; Go Back
+            {isLocked && allDone && pendingSplices.length === 0 && (
+              <Button onClick={handleComplete} disabled={completing} className="font-mono text-xs rounded-sm">
+                {completing ? <Loader2 className="w-4 h-4 mr-1.5 animate-spin" /> : <FileText className="w-4 h-4 mr-1.5" />}
+                {completing ? "Completing…" : "Complete QA Review"}
               </Button>
             )}
           </div>
@@ -352,36 +411,75 @@ export default function QAVerificationDetail() {
           <span className="text-muted-foreground">/ {scans.length} total</span>
         </div>
 
-        {/* Action buttons when reviewing */}
+        {/* Verify mode + actions when reviewing */}
         {isLocked && (
-          <div className="flex flex-wrap gap-3">
-            <Button onClick={handleManualConfirm} className="font-mono text-xs rounded-sm" variant="outline">
-              <CheckCircle2 className="w-4 h-4 mr-1.5" />
-              Confirm All — Manually Verified
-            </Button>
-          </div>
-        )}
-
-        {/* Re-scan input when reviewing */}
-        {isLocked && (
-          <form onSubmit={handleScanSubmit} className="flex flex-wrap gap-3 items-end">
-            <div className="flex-1 min-w-[200px]">
-              <label className="text-xs font-mono text-muted-foreground mb-1 block">Re-scan feeder (feederNumber scannedValue or barcode)</label>
-              <Input
-                ref={scanInputRef}
-                value={currentFeeder}
-                onChange={(e) => setCurrentFeeder(e.target.value)}
-                placeholder="F01 MM1Z5V1  or  scan barcode..."
-                className="font-mono text-sm rounded-sm bg-background border-border"
-                disabled={scanning}
-                autoFocus
-              />
+          <div className="space-y-3">
+            {/* Mode toggle — QA chooses how to 200% verify */}
+            <div className="inline-flex rounded-sm border border-border overflow-hidden font-mono text-xs">
+              <button
+                type="button"
+                onClick={() => setVerifyMode("scan")}
+                className={`flex items-center gap-1.5 px-3 py-2 transition-colors ${verifyMode === "scan" ? "bg-primary text-primary-foreground" : "bg-background text-muted-foreground hover:bg-secondary/50"}`}
+              >
+                <ScanLine className="w-4 h-4" /> Cross-verify by scanning
+              </button>
+              <button
+                type="button"
+                onClick={() => setVerifyMode("manual")}
+                className={`flex items-center gap-1.5 px-3 py-2 border-l border-border transition-colors ${verifyMode === "manual" ? "bg-primary text-primary-foreground" : "bg-background text-muted-foreground hover:bg-secondary/50"}`}
+              >
+                <Keyboard className="w-4 h-4" /> Confirm all manually
+              </button>
             </div>
-            <Button type="submit" disabled={scanning || !currentFeeder.trim()} className="font-mono text-xs rounded-sm">
-              <ScanLine className="w-4 h-4 mr-1.5" />
-              {scanning ? "Verifying..." : "Re-scan"}
-            </Button>
-          </form>
+
+            {verifyMode === "manual" ? (
+              <div className="flex flex-wrap gap-3 items-center">
+                <Button onClick={handleManualConfirm} disabled={confirming} className="font-mono text-xs rounded-sm" variant="outline">
+                  {confirming ? <Loader2 className="w-4 h-4 mr-1.5 animate-spin" /> : <CheckCircle2 className="w-4 h-4 mr-1.5" />}
+                  {confirming ? "Confirming…" : "Confirm All — Manually Verified"}
+                </Button>
+                <span className="text-xs font-mono text-muted-foreground">
+                  Marks every pending slot as verified without scanning — use only after a physical 200% check by hand.
+                </span>
+              </div>
+            ) : (
+              <div className="border border-border rounded-sm p-3 space-y-3 bg-secondary/20">
+                {/* Guided step banner — mirrors the operator scanner */}
+                <div className="flex items-center justify-between gap-2">
+                  <div className={`text-xs font-mono font-bold px-2.5 py-1.5 rounded-sm ${qaScanStep === "feeder" ? "bg-slate-100 text-slate-800 dark:bg-slate-800 dark:text-slate-100" : "bg-amber-100 text-amber-800 dark:bg-amber-900/30 dark:text-amber-300"}`}>
+                    {qaStepLabel}
+                  </div>
+                  {qaScanStep === "mpn" && !scanning && (
+                    <button
+                      type="button"
+                      onClick={() => { setQaScanStep("feeder"); setActiveFeeder(""); resetScanner(); }}
+                      className="text-xs font-mono text-muted-foreground hover:text-foreground underline"
+                    >
+                      ↺ change feeder
+                    </button>
+                  )}
+                </div>
+
+                <Input
+                  ref={inputRef}
+                  value={scanValue}
+                  onChange={(e) => setScanValue(e.target.value)}
+                  onKeyDown={handleScanKeyDown}
+                  placeholder={qaScanStep === "feeder" ? "Scan FEEDER NUMBER…" : "Scan MPN / INTERNAL ID…"}
+                  className="font-mono text-sm rounded-sm bg-background border-border"
+                  disabled={scanning}
+                  autoFocus
+                />
+
+                {scanning && (
+                  <div className="flex items-center gap-2 text-xs font-mono text-muted-foreground">
+                    <Loader2 className="w-4 h-4 animate-spin" />
+                    Verifying feeder {activeFeeder}…
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
         )}
 
         {scanResult && (
@@ -418,7 +516,7 @@ export default function QAVerificationDetail() {
               </thead>
               <tbody>
                 {scans.map((scan) => (
-                  <tr key={scan.id} className="border-b border-border last:border-0 hover:bg-secondary/30 transition-colors">
+                  <tr key={scan.id} className={`border-b border-border last:border-0 transition-colors ${scan.feederNumber === activeFeeder ? "bg-amber-50 dark:bg-amber-950/20" : "hover:bg-secondary/30"}`}>
                     <td className="p-3 font-bold text-xs">{scan.feederNumber}</td>
                     <td className="p-3 text-xs">
                       <div>{scan.expected?.mpn1 ?? "—"}</div>
@@ -454,7 +552,19 @@ export default function QAVerificationDetail() {
         {/* Splice records */}
         {splices.length > 0 && (
           <div>
-            <h3 className="text-sm font-mono font-bold mb-2">Splice Records — QA Approval Required</h3>
+            <div className="flex items-center justify-between gap-2 flex-wrap mb-2">
+              <h3 className="text-sm font-mono font-bold">Splice Records — QA Approval Required</h3>
+              {isLocked && pendingSplices.length > 0 && (
+                <Button
+                  onClick={handleApproveAllAndComplete}
+                  disabled={completing || busySpliceId !== null}
+                  className="font-mono text-xs rounded-sm"
+                >
+                  {completing ? <Loader2 className="w-4 h-4 mr-1.5 animate-spin" /> : <CheckCircle2 className="w-4 h-4 mr-1.5" />}
+                  {completing ? "Completing…" : `Approve All & Complete (${pendingSplices.length})`}
+                </Button>
+              )}
+            </div>
             <div className="border border-border rounded-sm overflow-hidden">
               <table className="w-full text-sm font-mono">
                 <thead>
@@ -475,11 +585,16 @@ export default function QAVerificationDetail() {
                       </td>
                       {isLocked && (
                         <td className="p-3">
-                          {splice.qaResult === "pending" || !splice.qaResult ? (
+                          {busySpliceId === splice.id ? (
+                            <div className="flex items-center gap-1.5 text-xs font-mono text-muted-foreground">
+                              <Loader2 className="w-3.5 h-3.5 animate-spin" /> Working…
+                            </div>
+                          ) : splice.qaResult === "pending" || !splice.qaResult ? (
                             <div className="flex gap-1">
                               <Button
                                 size="sm"
                                 variant="outline"
+                                disabled={busySpliceId !== null}
                                 className="h-7 px-2 text-xs rounded-sm text-green-700 border-green-300 hover:bg-green-50 dark:text-green-400 dark:border-green-700"
                                 onClick={() => handleApproveSplice(splice.id)}
                               >
@@ -488,6 +603,7 @@ export default function QAVerificationDetail() {
                               <Button
                                 size="sm"
                                 variant="outline"
+                                disabled={busySpliceId !== null}
                                 className="h-7 px-2 text-xs rounded-sm text-red-700 border-red-300 hover:bg-red-50 dark:text-red-400 dark:border-red-700"
                                 onClick={() => handleRejectSplice(splice.id)}
                               >

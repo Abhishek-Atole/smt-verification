@@ -36,6 +36,7 @@ import { STORE_ROUTE } from "@/store/config";
 import { LicenseProvider } from "@/licensing/license-context";
 import { TrialBanner } from "@/licensing/TrialBanner";
 import { ExpiredBanner } from "@/licensing/ExpiredBanner";
+import { ExpiringBanner } from "@/licensing/ExpiringBanner";
 import { FeederSessionProvider } from "@/feeder/session-context";
 import { LicenseGuard } from "@/licensing/LicenseGuard";
 import FeederNewSession from "@/feeder/pages/NewSession";
@@ -299,6 +300,7 @@ function App() {
                   <SessionProvider>
                     <LicenseProvider>
                       <TrialBanner />
+                      <ExpiringBanner />
                       <ExpiredBanner />
                       <Router />
                     </LicenseProvider>

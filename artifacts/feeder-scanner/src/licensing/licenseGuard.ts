@@ -88,3 +88,18 @@ export function generateUUID(): string {
 export async function computeSignature(info: Omit<LicenseInfo, 'signature'> | Partial<LicenseInfo>): Promise<string> {
   return computeLicenseSignature(info);
 }
+
+/**
+ * Display-only expiry warning for paid (active) licenses. Does NOT affect
+ * validation or when the license expires — it only drives the banner/badge.
+ * Window: total validity > 15 days → warn at ≤10 days left; else ≤3 days left
+ * (so a short license doesn't warn from almost day one).
+ */
+export function getExpiryWarning(info: LicenseInfo): { show: boolean; days: number } {
+  const days = info.daysRemaining;
+  const totalValidityDays = Math.ceil(
+    (new Date(info.expiresAt).getTime() - new Date(info.activatedAt).getTime()) / (1000 * 60 * 60 * 24)
+  );
+  const threshold = totalValidityDays > 15 ? 10 : 3;
+  return { show: days > 0 && days <= threshold, days };
+}

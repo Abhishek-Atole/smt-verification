@@ -1721,13 +1721,9 @@ export default function SessionActive() {
                   {submittingSplicingQa && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
                   {(splices?.length ?? 0) > 0 ? "SUBMIT TO QA" : "END SESSION"}
                 </Button>
-                <Button
-                  variant="outline"
-                  className="font-bold tracking-widest border-destructive text-destructive hover:bg-destructive hover:text-destructive-foreground text-xs sm:text-sm py-1 sm:py-2 px-2 sm:px-3 h-auto"
-                  onClick={handleCancelSession}
-                >
-                  <X className="w-3 h-3 sm:w-4 sm:h-4" />
-                </Button>
+                {/* No cancel-session (✕) in the splicing phase: once splicing is
+                    underway the only forward action is submitting to QA. The cancel
+                    option stays in the loading phase only. */}
               </div>
             ) : (
               <div className="flex gap-2">
@@ -2485,9 +2481,11 @@ export default function SessionActive() {
               <Label htmlFor="closure-qty">Total Production Quantity *</Label>
               <Input
                 id="closure-qty"
-                type="number"
-                min={0}
-                step={1}
+                // type=text (not number): a background refetch re-render wipes a
+                // partially-typed value from a controlled number input. Text holds
+                // the raw string; confirmClosure still validates via Number(...).
+                type="text"
+                inputMode="numeric"
                 value={closureQty}
                 onChange={(e) => setClosureQty(e.target.value)}
                 placeholder="e.g. 1200"
@@ -2497,9 +2495,10 @@ export default function SessionActive() {
               <Label htmlFor="closure-cycle">Current Cycle Time (seconds) *</Label>
               <Input
                 id="closure-cycle"
-                type="number"
-                min={0}
-                step="any"
+                // type=text (not number): see closure-qty above — protects the
+                // partially-typed value from background-refetch re-renders.
+                type="text"
+                inputMode="decimal"
                 value={closureCycle}
                 onChange={(e) => setClosureCycle(e.target.value)}
                 placeholder="e.g. 12.5"

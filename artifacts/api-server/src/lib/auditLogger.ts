@@ -43,7 +43,7 @@ type AuditEvent =
   | "SECURITY_SETTINGS_UPDATED";
 
 import crypto from "node:crypto";
-import { desc } from "drizzle-orm";
+import { desc, isNotNull } from "drizzle-orm";
 import { db } from "@workspace/db";
 import { auditLogsTable } from "@workspace/db/schema";
 import { logger } from "./logger";
@@ -58,7 +58,8 @@ let chainPromise: Promise<string> = (async () => {
   try {
     const [last] = await db.select({ chainHash: auditLogsTable.chainHash })
       .from(auditLogsTable)
-      .orderBy(desc(auditLogsTable.createdAt))
+      .where(isNotNull(auditLogsTable.chainHash))
+      .orderBy(desc(auditLogsTable.id))
       .limit(1);
     return last?.chainHash ?? GENESIS_PREV;
   } catch {

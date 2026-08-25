@@ -11,7 +11,7 @@ import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { format } from "date-fns";
-import { CheckCircle2, ChevronDown, Loader2, ScanLine, Search, Upload } from "lucide-react";
+import { ChevronDown, Loader2, ScanLine, Search, Upload } from "lucide-react";
 import { appConfig } from "@/lib/appConfig";
 import { AppLogo } from "@/components/AppLogo";
 
@@ -99,6 +99,7 @@ export default function SessionNew() {
   const [supervisorNames, setSupervisorNames] = useState<string[]>([]);
   const [qaNames, setQaNames] = useState<string[]>([]);
   const [lineNames, setLineNames] = useState<string[]>([]);
+  const [machineNames, setMachineNames] = useState<string[]>([]);
   const [lineName, setLineName] = useState("");
   const [bomVerificationSkipped, setBomVerificationSkipped] = useState(false);
   const [verificationMode, setVerificationMode] = useState<"AUTO" | "MANUAL" | "AUTO_LEGACY">("AUTO");
@@ -135,6 +136,19 @@ export default function SessionNew() {
         // Leave lists empty on failure; "Other" still allows manual entry.
       }
     })();
+    // Machine names come from the shared QA master list (/api/masters) — the same
+    // list managed on Manage Approvers and the QA In-house Rejection screen.
+    void (async () => {
+      try {
+        const res = await fetch("/api/masters", { credentials: "include" });
+        if (!res.ok) return;
+        const data = (await res.json()) as { machines?: { value: string }[] };
+        if (!active) return;
+        setMachineNames(Array.isArray(data.machines) ? data.machines.map((m) => m.value) : []);
+      } catch {
+        // Leave empty on failure; scan + "Other" still allow entry.
+      }
+    })();
     return () => {
       active = false;
     };
@@ -156,11 +170,12 @@ export default function SessionNew() {
     if (freeScanMode && !freeScanPcbName.trim()) return alert("Please enter the PCB name");
     const resolvedSupervisor = supervisorName === "__other__" ? "" : supervisorName;
     const resolvedQa = qaName === "__other__" ? "" : qaName;
+    const resolvedMachine = machineName === "__other__" ? "" : machineName;
     if (!operatorName) return alert("Operator not identified — please sign in again");
     if (!lineName) return alert("Please select the line number");
     if (!resolvedSupervisor) return alert("Please select the supervisor");
     if (!resolvedQa) return alert("Please select the QA");
-    if (!machineName) return alert("Please scan the machine QR");
+    if (!resolvedMachine) return alert("Please select or scan the machine");
     if (bomVerificationSkipped) {
       const resolvedApprover = skipApproverName === "__other__" ? "" : skipApproverName;
       if (skipApproverRole !== "qa" && skipApproverRole !== "supervisor")
@@ -183,7 +198,7 @@ export default function SessionNew() {
         qaName: resolvedQa,
         shiftName,
         shiftDate,
-        machineName,
+        machineName: resolvedMachine,
         lineName,
         logoUrl: defaultLogoUrl,
         verificationMode,
@@ -230,7 +245,7 @@ export default function SessionNew() {
     Boolean(lineName) &&
     Boolean(supervisorName) && supervisorName !== "__other__" &&
     Boolean(qaName) && qaName !== "__other__" &&
-    Boolean(machineName) &&
+    Boolean(machineName) && machineName !== "__other__" &&
     (!bomVerificationSkipped || ((skipApproverRole === "qa" || skipApproverRole === "supervisor") && Boolean(skipApproverName) && skipApproverName !== "__other__"));
 
   return (
@@ -429,38 +444,27 @@ export default function SessionNew() {
           <span className="font-bold text-foreground">{shiftDate}</span>
         </div>
 
-        {/* Step 3: Machine scan */}
+        {/* Step 3: Machine — pick from the shared machine list (/api/masters) or scan its QR */}
         <div className="space-y-3">
-          <h2 className="text-base sm:text-lg font-bold text-primary border-b border-border pb-2 tracking-wide">3 · SCAN MACHINE QR</h2>
-          {machineName ? (
-            <div className="flex items-center justify-between gap-3 rounded-sm border border-green-500/50 bg-green-50 dark:bg-green-950/20 px-4 py-3">
-              <span className="flex items-center gap-2 text-sm font-bold text-green-700 dark:text-green-400">
-                <CheckCircle2 className="h-4 w-4 shrink-0" />
-                {machineName}
-              </span>
-              <Button
-                type="button"
-                variant="outline"
-                className="h-8 rounded-sm text-xs"
-                onClick={() => { setMachineName(""); machineScanner.reset(); machineScanner.inputRef.current?.focus(); }}
-              >
-                Re-scan
-              </Button>
-            </div>
-          ) : (
-            <div className="flex items-center gap-2 rounded-sm border border-primary bg-background px-3 py-2">
-              <ScanLine className="h-4 w-4 shrink-0 opacity-50" />
-              <Input
-                ref={machineScanner.inputRef}
-                value={machineScanner.value}
-                onChange={(e) => machineScanner.setValue(e.target.value)}
-                onKeyDown={machineScanner.handleKeyDown}
-                placeholder="Click here, then scan the machine QR..."
-                className="h-auto border-0 bg-transparent p-0 shadow-none focus-visible:ring-0 text-sm"
-                autoComplete="off"
-              />
-            </div>
-          )}
+          <h2 className="text-base sm:text-lg font-bold text-primary border-b border-border pb-2 tracking-wide">3 · MACHINE</h2>
+          <NameSelect label="Machine" names={machineNames} value={machineName} onChange={setMachineName} required />
+          <div className="flex items-center gap-3 text-xs text-muted-foreground">
+            <span className="h-px flex-1 bg-border" />
+            or scan
+            <span className="h-px flex-1 bg-border" />
+          </div>
+          <div className="flex items-center gap-2 rounded-sm border border-primary bg-background px-3 py-2">
+            <ScanLine className="h-4 w-4 shrink-0 opacity-50" />
+            <Input
+              ref={machineScanner.inputRef}
+              value={machineScanner.value}
+              onChange={(e) => machineScanner.setValue(e.target.value)}
+              onKeyDown={machineScanner.handleKeyDown}
+              placeholder="Click here, then scan the machine QR..."
+              className="h-auto border-0 bg-transparent p-0 shadow-none focus-visible:ring-0 text-sm"
+              autoComplete="off"
+            />
+          </div>
         </div>
 
         {/* Submit */}

@@ -24,19 +24,26 @@ OUT="$REPO/smt-verification-${TAG}.tar.gz"
 
 echo "Packaging release $TAG → $OUT"
 
-# Export clean tree at the tag (.env is gitignored so never included)
-git -C "$REPO" archive \
-  --format=tar.gz \
-  --prefix="smt-verification/" \
-  "$TAG" \
-  -o "$OUT"
+# Export the tagged tree into a staging dir (.env is gitignored so never
+# included), prune dev-only files (client-deploy hygiene), then re-pack. Sample
+# CSVs under docs/samples are kept — clients use them as BOM import examples.
+STAGE="$(mktemp -d)"
+trap 'rm -rf "$STAGE"' EXIT
+git -C "$REPO" archive --format=tar --prefix="smt-verification/" "$TAG" | tar -x -C "$STAGE"
+
+ROOT="$STAGE/smt-verification"
+rm -rf "$ROOT/.dev-docs" \
+       "$ROOT/.github" \
+       "$ROOT/docs/reports" \
+       "$ROOT/docs/internal" \
+       "$ROOT/README.md"
+
+tar -czf "$OUT" -C "$STAGE" smt-verification
 
 echo "Done: $OUT ($(du -sh "$OUT" | cut -f1))"
-echo
-echo "Hand to client along with:"
-echo "  - docs/internal/CLIENT_DEPLOYMENT_GUIDE.md"
 echo
 echo "Client runs:"
 echo "  tar -xzf $(basename "$OUT")"
 echo "  cd smt-verification"
 echo "  sudo ./setup.sh"
+echo "  # then follow CREDENTIALS.txt (login passwords + license activation)"
