@@ -6,6 +6,63 @@ Dev-only; excluded from client deployments.
 
 ---
 
+## 2026-08-26 — Trial (skip-BOM) sessions: supervisor-only, no QA approval, separate view
+
+**Context:** "Skip-BOM" changeovers exist for **data collection** — the user calls them
+*trial sessions*. Previously starting one required a QA/skip-approver sub-form (role + name +
+remarks) and the resulting session was visible to everyone, including operators who then hit a
+403 when trying to open one they didn't own. Two intertwined concerns were addressed together:
+**(B1)** the legacy Active-Sessions list was unscoped, and **(B2)** the trial-session model
+itself (who starts them, who sees them, how they're presented).
+
+**Decisions & why:**
+
+1. **`bomVerificationSkipped = true` *is* the trial marker — no new table, no migration.**
+   The boolean column already exists (`lib/db/src/schema/sessions.ts:56`, NOT NULL default
+   false), so `= true` cleanly means "trial" and `= false` means "production". *Rejected:* a
+   dedicated `sessionType` enum or a separate trials table — both are migrations for a
+   distinction an existing column already encodes.
+
+2. **Trial creation is supervisor-only, with NO QA approval step.** Verbatim requirement:
+   trials are for data collection, *"only the supervisor can start this type of changeover"* and
+   *"no QA approval is required."* Dropped the entire skip-approver sub-form + its server-side
+   approver validation; replaced it with a supervisor-only 403 gate at `POST /sessions`
+   (`sessions.ts`). For provenance the creating supervisor is still recorded in the existing
+   `bomSkipApproverRole/Name/At` columns at insert (`role: "supervisor"`, name = creator), and
+   the audit action string stays `bom_skip_approved` (description reworded) so existing audit
+   consumers don't break. *Rejected:* keeping the approver workflow (explicitly unwanted);
+   inventing a new audit action (would silently drop from any consumer filtering on the old one).
+
+3. **Visibility — operators never see trials; supervisor + qa (+ admin superuser) do.**
+   `GET /verification/sessions/active` now excludes `bomVerificationSkipped = true` rows for
+   operators and returns the flag on every row so the client can bucket. *Rejected:* filtering
+   client-side only (operators would still receive trial data over the wire).
+
+4. **(B1) Operator Active-Sessions list scoped to own sessions.** The legacy list query was
+   unscoped, so operators saw sessions they couldn't open — the list contradicted the
+   `requireLegacySessionOwnership` IDOR guard (`sessions.ts:32-76`). The list SQL now **mirrors
+   that guard exactly**: an operator sees a session only if `operatorName === actor.name` OR they
+   are co-owned via `changeoverOperatorsTable` for `actor.id`. qa/supervisor/admin still see all.
+   *Why mirror, not re-invent:* "listed" must equal "openable," or we just move the 403 around.
+
+5. **Display — a separate "Trial / Data Collection" section on the same Active Sessions page.**
+   The supervisor/qa view splits `filtered` into `productionSessions` / `trialSessions`; the
+   trial section (amber heading) renders only when non-empty. Shared `renderSessionList(rows)`
+   helper so both sections use identical table/card markup. *Rejected:* a separate page (user
+   chose same page); a mere badge (user wanted the two kept visually separate).
+
+**Touches:** `artifacts/api-server/src/routes/sessions.ts` (supervisor gate + insert provenance
++ audit wording), `artifacts/api-server/src/routes/verification.ts` (operator scoping + trial
+exclusion + `bomVerificationSkipped` on each row), `artifacts/feeder-scanner/src/feeder/pages/NewSession.tsx`
+(supervisor-only "Trial Session" checkbox, approver sub-form removed), `artifacts/feeder-scanner/src/feeder/pages/ActiveSessions.tsx`
+(interface field + Production/Trial section split). No schema or migration. API bundle rebuilt
+clean (`node build.mjs`, exit 0); frontend rebuild is the user's responsibility.
+
+**Quiz gate:** passed — Q1 only a supervisor may start a trial; Q2 operators see their own
+production sessions only; Q3 trials in a separate section on the Active Sessions page.
+
+---
+
 ## 2026-08-22 — Final report cleanup (logo, de-clutter, splice-when-empty)
 
 **Context:** The "final report" was congested, its logo was missing, and it still showed a
@@ -286,3 +343,127 @@ lock anyone out. Recovery if locked out: work from the server box, or `DELETE FR
 
 **Git:** committed on branch `release/v2.2.0` (main left at v2.1.1); local tag `v2.2.0`. Not pushed
 — deploy reads the tag from the local repo worktree, so no push is required to deploy.
+
+---
+
+## 2026-08-25 — Fix: QA-approved splices render FAILED / "-" in the session report
+
+**Context:** Two splices in session `SMT_20260825_000036` (feeder YSM-001, new spool
+`C0603C472K5RACAUTO`) showed `STATUS=FAILED`, `MATCHED AS=-` in the SPLICE LOG even though they
+matched MPN 1 and passed QA. Reported as "passed but shows failed."
+
+**Root cause (read-path display bug — the data was always correct):** `splice_records` has no
+`status`/`matchedAs` column; the report reconstructs those on read in `GET /sessions/:id/splices`
+(sessions.ts) from a `feeder_splice` audit log via `buildSpliceResponse` / `parseSpliceAuditPayload`.
+Three actions write to the **same** audit key (`entityType="feeder_splice"`,
+`entityId="splice_<id>"`): `splice_recorded` (sessions.ts:2463 — carries `status`/`matchedAs`), and
+the QA `splice_approved` / `splice_rejected` (verification.ts:2520/2582 — payload is only
+`{qaResult,...}`, no `status`/`matchedAs`). The read loaded **all** of them into a `Map` keyed by
+`entityId` with **no action filter and no ordering** (sessions.ts:2112), so the newer QA log
+clobbered the good snapshot; `parseSpliceAuditPayload` then coerced the missing `status` → `"failed"`
+and `matchedAs` → `""`. Hit **every** approved/rejected splice; a not-yet-QA'd splice displayed fine.
+
+**Fix & why (one line, sessions.ts read query):** added `eq(auditLogsTable.action,
+"splice_recorded")` to the audit-fetch `and(...)`. Only that action carries the match snapshot, so
+QA logs can no longer overwrite it. Chosen over touching the write path or schema because it's the
+single read site that reconstructs status (grep-confirmed), needs **no data backfill** (the good
+`splice_recorded` logs still exist), and leaves QA semantics / `qaResult` untouched.
+
+**Verification (read-only DB; API not yet restarted):** for the two splice ids —
+`new_spool_matched_field=mpn1`, `qa_result=pass`; the audit table holds both a `splice_recorded`
+(`status=verified`, `matchedAs="MPN 1 (KEMET)"`) and a `splice_approved` (empty) row per splice; the
+fixed query (`action='splice_recorded'`) returns exactly one good row per splice. api-server
+re-bundles clean (`node build.mjs`, exit 0). Effect after API restart: both rows render `VERIFIED` /
+`MPN 1 (KEMET)`.
+
+**Git:** uncommitted (commit-only-when-asked). Needs API rebuild + restart to take effect; not yet
+deployed to client.
+
+---
+
+## 2026-08-26 — Live splicing → QA → report workflow (explicit `active_splicing` status)
+
+**Context:** The splicing checkpoint was batch-oriented: the operator recorded all splices then
+clicked one **SUBMIT TO QA** button; QA saw the session as a single row and had to click **Refresh**
+manually; QA could not verify a splice until after submit; the operator could keep adding splices
+after submitting (no status lock, backend accepted inserts regardless); and the loading→splicing /
+splicing→report auto-redirects were unreliable. User's 6 requirements: (1) each completed splice
+auto-submits to the QA queue one-by-one, visible live (~5s poll, no refresh); (2) after the operator
+finishes, splicing input closes to a "waiting for confirmation" state; (3) after QA verifies
+splicing, auto-redirect operator to the report; (4) after QA verifies loading, redirect operator to
+splicing; (5) the waiting UI shows for **operator logins only**; (6) both `qa` and `supervisor` can
+close/accept. Two surfaces: the operator session/splicing pages and the QA queue/detail pages
+(`feeder-scanner`), plus the legacy sessions + verification routes (`api-server`).
+
+**Decisions & why:**
+
+1. **Add an explicit `active_splicing` session status (Option A), chosen over keeping `qa_confirmed`
+   throughout (Option B).** Presented both to the user via AskUserQuestion; the user picked Option A
+   twice for unambiguous queue/DB semantics — "being spliced right now" becomes its own status,
+   distinct from a loading-confirmed session that hasn't started splicing. Lifecycle: first recorded
+   splice flips `qa_confirmed → active_splicing` (in `POST /splices`); **Finish Splicing** flips
+   `active_splicing → splicing_pending_qa`; QA close flips `→ completed`. Legacy
+   `sessionsTable.status` is free-text `text` (schema line 45), so **no DB migration** — the cost is
+   purely that every consumer listing `qa_confirmed` had to gain `active_splicing`. The
+   must-not-miss site is the **session-context validator** (`context/session-context.tsx` union
+   line 11 + `normalizeActiveSession` 52-61): miss it and the operator is bounced off the splicing
+   page mid-work (normalize returns null → redirect to `/sessions`). Both options deliver the
+   identical live-QA experience; A was chosen for clarity, not behavior.
+   *Rejected:* Option B (no new status) — indistinguishable live experience but the queue could not
+   tell "confirmed, not yet splicing" from "actively splicing," which the user wanted visible.
+
+2. **Reliable redirects = `refetchIntervalInBackground: true` on the operator's session poll, not a
+   new mechanism.** Root cause of the "broken redirect" bug was react-query pausing `refetchInterval`
+   when the operator's tab is backgrounded, so QA's confirmation was never observed until refocus.
+   The redirect effects themselves (`ActiveSession.tsx`) were already correct; the one-line query-
+   option change makes the 5s poll survive backgrounding, so the redirect fires within ~5s of QA's
+   action regardless of focus. Blast radius: one query. Also gated both redirect effects on
+   `user?.role === "operator"` so a QA/supervisor viewing the same session isn't yanked away (req #5).
+   *Rejected:* websockets (user explicitly said "without refresh" = polling is fine; ws is a much
+   larger change for no additional benefit here).
+
+3. **Complete-button gate uses `session.status !== "active_splicing"`, NOT `=== "splicing_pending_qa"`
+   as the plan prose literally said — deliberate deviation.** The plan text said gate BOTH the
+   **Complete QA Review** and **Approve All & Complete** buttons to `=== "splicing_pending_qa"`.
+   Reading `handleComplete` (`QAVerificationDetail.tsx`) against the backend `/complete`
+   (`verification.ts:2185`) showed the **Complete QA Review** button is shared by *two* flows: loading
+   QA (scan-mode, `qa_in_review → qa_confirmed`) and splicing QA (`splicing_pending_qa → completed`).
+   Gating it to `=== "splicing_pending_qa"` would have **hidden the Complete button for loading-QA
+   scan-mode sessions** — a regression. Fix: gate the Complete button with
+   `&& session.status !== "active_splicing"` — this blocks only the dangerous live-splice window
+   (where `/complete` would fall into the non-splicing branch and wrongly revert `active_splicing →
+   qa_confirmed`) while preserving both loading-QA (`qa_in_review`) and splicing-QA
+   (`splicing_pending_qa`) completion. The **Approve All & Complete** button kept
+   `=== "splicing_pending_qa"` because it only renders when `pendingSplices.length > 0`, which is a
+   splicing-only condition anyway. The two `splicing_pending_qa` completion paths are mutually
+   exclusive (Complete needs `pendingSplices === 0`; Approve-All needs `> 0`).
+   *Why safe if ever hit directly via API:* the `active_splicing → qa_confirmed` revert is
+   self-healing — the operator's next splice re-flips it to `active_splicing` and splice records
+   persist; no backend `/complete` guard was added (kept within the plan boundary), since frontend
+   button gating prevents QA reaching it through the UI.
+
+4. **Finish Splicing reuses the existing submit-splicing-qa chain (relabel, not rebuild).** The
+   `qa_confirmed|active_splicing → splicing_pending_qa` transition already existed as
+   `handleSubmitSplicingQa` → `POST /submit-splicing-qa`; it just gained `active_splicing` as a valid
+   pre-Finish status and was relabeled **SUBMIT TO QA → FINISH SPLICING** (button shows "END SESSION"
+   when zero splices). Operator lockout is enforced on **both** layers: backend `POST /splices` 409
+   guard (blacklist `splicing_pending_qa|completed|cancelled`, so `active|qa_confirmed|active_splicing`
+   keep accepting inserts) and a frontend `splicingClosed` gate in `Splicing.tsx`.
+   *Rejected:* auto-close on the last approval (no explicit Complete click) — would add an audit write
+   inside `/approve` concurrent with the approval's own row (HMAC-chain risk) and leaves session-level
+   `qaVerifiedById` attribution ambiguous when multiple QA users approved different splices. Kept QA's
+   explicit Complete as the closure gesture.
+
+**Ripple (status consumers that gained `active_splicing`):** `sessions.ts` (`ALLOWED_STATUSES`,
+submit-splicing-qa guard/transition, `POST /splices` first-splice transition + 409 finish-lock);
+`verification.ts` (`legacyQaStatuses`, `statusRank` rank 0, `pendingQa` special-case);
+`session-context.tsx` (union + validator); `ActiveSession.tsx` (`isSpliceEligible`,
+`verificationProgress.qaConfirmed`, background poll, role gates, relabel); `Splicing.tsx`
+(`splicingClosed` lock + waiting panel); `QAVerificationQueue.tsx` (`StatusBadge` + Pending bucket +
+silent 5s poll); `QAVerificationDetail.tsx` (complete-gating + 5s poll, skip while mutation in
+flight); `ActiveSessions.tsx` (status badge). The changeover-enum `active_splicing`
+(`verification.ts:2870`) is an **unrelated** handover state — deliberately left untouched.
+
+**Verification:** all 8 edited source files type-clean via IDE diagnostics (empty results each). API
+rebuild (`node build.mjs`) + restart with `.env` loaded, then two-browser (operator + QA) manual
+verification is required to confirm live behavior. **Git:** uncommitted (commit-only-when-asked).

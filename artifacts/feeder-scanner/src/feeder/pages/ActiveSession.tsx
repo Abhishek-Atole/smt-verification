@@ -236,6 +236,10 @@ export default function SessionActive() {
         const s = String((query.state.data as { status?: string } | undefined)?.status ?? "");
         return s === "pending_qa" || s === "qa_in_review" || s === "splicing_pending_qa" ? 5000 : false;
       },
+      // Keep polling even while the operator's tab is backgrounded, so QA's
+      // confirmation is observed and the auto-redirect fires without the operator
+      // having to refocus the tab (the root cause of the "broken redirect" report).
+      refetchIntervalInBackground: true,
     },
   });
   const bomId = session?.bomId;
@@ -408,7 +412,8 @@ export default function SessionActive() {
 
   // Splicing is unlocked only after QA has verified the changeover. Until then
   // the operator completes loading and hands off for QA quality confirmation.
-  const isSpliceEligible = String(session?.status) === "qa_confirmed";
+  // It stays unlocked once the operator starts splicing (active_splicing).
+  const isSpliceEligible = String(session?.status) === "qa_confirmed" || String(session?.status) === "active_splicing";
   // Once the operator submits splicing for QA the session enters the 200%
   // splicing checkpoint — splicing stays visible (read-only) while QA reviews.
   const isSplicingPendingQa = String(session?.status) === "splicing_pending_qa";
@@ -484,8 +489,10 @@ export default function SessionActive() {
   const scannedFeeders = useVerificationStore((state) => state.scannedFeeders);
   const verificationScans = useMemo(() => Array.from(scannedFeeders.values()), [scannedFeeders]);
   const verificationProgress = useMemo(() => {
-    // After QA confirmation, verification is already complete — enable splicing.
-    const qaConfirmed = String(session?.status) === "qa_confirmed";
+    // After QA confirmation, loading verification is already complete — enable
+    // splicing. Stays true through the splicing phase (active_splicing /
+    // splicing_pending_qa) so the splicing tab never re-disables mid-work.
+    const qaConfirmed = ["qa_confirmed", "active_splicing", "splicing_pending_qa"].includes(String(session?.status));
     // Use bomItemCount from API if available, otherwise fall back to BOM entries
     const totalRequired = session?.bomItemCount ?? verificationBomEntries.length;
     const verifiedCount = scannedFeeders.size;
@@ -1435,25 +1442,27 @@ export default function SessionActive() {
   };
 
   // Once QA confirms (status → qa_confirmed), auto-redirect the operator straight
-  // into splicing. Runs once per confirmation via the ref guard.
+  // into splicing. Operator-only (a QA/supervisor viewing the session stays put).
+  // Runs once per confirmation via the ref guard.
   useEffect(() => {
-    if (String(session?.status) === "qa_confirmed" && !qaConfirmedRedirectedRef.current) {
+    if (user?.role === "operator" && String(session?.status) === "qa_confirmed" && !qaConfirmedRedirectedRef.current) {
       qaConfirmedRedirectedRef.current = true;
       setShowCompletionOverlay(false);
       setActiveTab("splicing");
       showSuccessAlert("QA verified the changeover — proceeding to splicing");
     }
-  }, [session?.status]);
+  }, [session?.status, user?.role]);
 
   // When QA verifies splicing and closes the changeover (status → completed from
   // the splicing checkpoint), auto-redirect the operator to the report.
+  // Operator-only — a QA/supervisor viewing the same session isn't yanked away.
   useEffect(() => {
-    if (String(session?.status) === "completed" && !splicingCompletedRedirectedRef.current) {
+    if (user?.role === "operator" && String(session?.status) === "completed" && !splicingCompletedRedirectedRef.current) {
       splicingCompletedRedirectedRef.current = true;
       showSuccessAlert("QA verified the splicing — changeover closed");
       setLocation(`/session/${sessionId}/report`);
     }
-  }, [session?.status]);
+  }, [session?.status, user?.role]);
 
   if (sessionLoading || (session?.bomId && bomLoading) || !session) {
     return <div className="flex-1 flex items-center justify-center"><Loader2 className="w-8 h-8 animate-spin" /></div>;
@@ -1719,7 +1728,7 @@ export default function SessionActive() {
                   onClick={handleEndSession}
                 >
                   {submittingSplicingQa && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
-                  {(splices?.length ?? 0) > 0 ? "SUBMIT TO QA" : "END SESSION"}
+                  {(splices?.length ?? 0) > 0 ? "FINISH SPLICING" : "END SESSION"}
                 </Button>
                 {/* No cancel-session (✕) in the splicing phase: once splicing is
                     underway the only forward action is submitting to QA. The cancel
@@ -2214,15 +2223,15 @@ export default function SessionActive() {
               <SplicingPage />
 
               {/* 200% QA checkpoint. The submit action lives in the top header
-                  (SUBMIT TO QA); this strip just tells the operator what's next. */}
+                  (FINISH SPLICING); this strip just tells the operator what's next. */}
               {isSpliceEligible && splicingRecords.length > 0 && (
                 <div className="border-t border-border bg-card p-4 text-sm text-muted-foreground">
                   <span className="font-bold text-foreground">{splicingRecords.length}</span> splice(s) recorded.
-                  Use <span className="font-bold text-foreground">SUBMIT TO QA</span> at the top to send them for the 200% verification — QA and the supervisor are notified, and the changeover closes once every splice is verified.
+                  Use <span className="font-bold text-foreground">FINISH SPLICING</span> at the top to send them for the 200% verification — QA and the supervisor are notified, and the changeover closes once every splice is verified.
                 </div>
               )}
 
-              {isSplicingPendingQa && (
+              {isSplicingPendingQa && user?.role === "operator" && (
                 <div className="border-t border-border bg-amber-50 dark:bg-amber-900/20 p-4 flex items-center gap-3">
                   <Loader2 className="w-5 h-5 animate-spin text-amber-600 dark:text-amber-400 shrink-0" />
                   <div className="text-sm text-amber-800 dark:text-amber-300">
@@ -2397,7 +2406,7 @@ export default function SessionActive() {
         }}
       />
 
-      {showCompletionOverlay && (String(session.status) === "active" || String(session.status) === "pending_qa") && (
+      {showCompletionOverlay && user?.role === "operator" && (String(session.status) === "active" || String(session.status) === "pending_qa") && (
         <div className="fixed inset-0 z-[10000] bg-black/70 backdrop-blur-sm flex items-center justify-center p-4">
           <div className="w-full max-w-2xl rounded-xl border border-amber-400/50 bg-card p-8 sm:p-10 shadow-2xl text-center">
             <div className="mx-auto mb-4 flex h-16 w-16 items-center justify-center rounded-full bg-amber-100 dark:bg-amber-900/40">

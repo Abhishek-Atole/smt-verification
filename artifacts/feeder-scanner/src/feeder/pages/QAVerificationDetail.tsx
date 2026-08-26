@@ -8,6 +8,7 @@ import { Loader2, ArrowLeft, CheckCircle2, XCircle, AlertTriangle, ScanLine, Fil
 import { format } from "date-fns";
 import { useNotification } from "@/components/NotificationSystem";
 import { useScanner } from "@/hooks/useScanner";
+import { parseSpoolLabel } from "@/lib/spoolLabel";
 
 type QaResult = "pass" | "fail" | "alternate_accepted" | "pending" | null;
 
@@ -104,24 +105,39 @@ export default function QAVerificationDetail() {
   const [qaScanStep, setQaScanStep] = useState<"feeder" | "mpn">("feeder");
   const [activeFeeder, setActiveFeeder] = useState("");
   const [scanResult, setScanResult] = useState<{ feederNumber: string; qaResult: string; message: string } | null>(null);
+  const [activeSpliceId, setActiveSpliceId] = useState<string | null>(null);
 
-  const fetchDetail = async () => {
+  const fetchDetail = async (silent = false) => {
     if (!sessionId) return;
     try {
       const res = await fetch(`/api/verification/qa-queue/${sessionId}`, { credentials: "include" });
-      if (!res.ok) { setLocation("/feeder/qa-queue"); return; }
+      // Silent (polling) refreshes must not navigate away on a transient blip —
+      // only the initial/explicit load bounces to the queue on failure.
+      if (!res.ok) { if (!silent) setLocation("/feeder/qa-queue"); return; }
       const data = await res.json();
       setSession(data.session);
       setScans(data.scans ?? []);
       setSplices(data.splices ?? []);
     } catch {
-      setLocation("/feeder/qa-queue");
+      if (!silent) setLocation("/feeder/qa-queue");
     } finally {
-      setLoading(false);
+      if (!silent) setLoading(false);
     }
   };
 
   useEffect(() => { fetchDetail(); }, [sessionId]);
+
+  // Live detail: silently refresh every 5s so splices the operator records during
+  // active_splicing appear without a manual reload. Skip a tick while a mutation is
+  // in flight (it would clobber optimistic state) and stop once the changeover closes.
+  useEffect(() => {
+    if (session?.status === "completed") return;
+    const t = setInterval(() => {
+      if (busySpliceId !== null || completing) return;
+      fetchDetail(true);
+    }, 5000);
+    return () => clearInterval(t);
+  }, [session?.status, busySpliceId, completing]);
 
   const acquireLock = async () => {
     if (!sessionId) return;
@@ -305,10 +321,99 @@ export default function QAVerificationDetail() {
     }
   };
 
-  // Guided cross-verify: feeder step finds the slot, MPN step verifies via /rescan.
+  // Splice scan-verify (splicing phase): STEP 1 locates a pending splice by feeder,
+  // STEP 2 matches the scanned new spool. Match = feeder + newSpoolMpn only (lot
+  // ignored); on match we approve via the existing route, on mismatch we banner and
+  // reset. The manual Approve/Reject buttons stay available throughout. useScanner
+  // auto-clears its input after each submit, so no manual reset is needed here.
+  const approveSpliceByScan = async (spliceId: string, feeder: string) => {
+    setBusySpliceId(spliceId);
+    setScanning(true);
+    try {
+      const res = await fetch(`/api/verification/splices/${spliceId}/approve`, {
+        method: "POST", credentials: "include",
+      });
+      if (res.ok) {
+        setScanResult({ feederNumber: feeder, qaResult: "pass", message: `Feeder ${feeder} — splice verified & approved` });
+        await fetchDetail(true);
+      } else {
+        setScanResult({ feederNumber: feeder, qaResult: "error", message: `Feeder ${feeder} — approve failed` });
+      }
+    } catch {
+      setScanResult({ feederNumber: feeder, qaResult: "error", message: `Feeder ${feeder} — network error` });
+    } finally {
+      setBusySpliceId(null);
+      setScanning(false);
+      setQaScanStep("feeder");
+      setActiveFeeder("");
+      setActiveSpliceId(null);
+    }
+  };
+
+  const handleSpliceScan = (value: string) => {
+    if (qaScanStep === "feeder") {
+      const match = splices.find(
+        (s) => (s.feederNumber ?? "").toUpperCase() === value.toUpperCase() && (!s.qaResult || s.qaResult === "pending"),
+      );
+      if (!match) {
+        setScanResult({ feederNumber: value, qaResult: "error", message: `No pending splice for feeder "${value}"` });
+        return;
+      }
+      setActiveFeeder(match.feederNumber ?? "");
+      setActiveSpliceId(match.id);
+      setQaScanStep("mpn");
+      setScanResult(null);
+      return;
+    }
+    // new-spool step — match the parsed label against the recorded splice (lot ignored)
+    const splice = splices.find((s) => s.id === activeSpliceId);
+    if (!splice) {
+      setQaScanStep("feeder");
+      setActiveFeeder("");
+      setActiveSpliceId(null);
+      return;
+    }
+    // Strict match: accept ONLY the feeder's BOM identifiers — an MPN alternate
+    // (mpn1/2/3) or the internal part number as ONE whole value (e.g.
+    // "RDSCAP0353 RDSCAP0312 YAGEO"). The internal PN is deliberately NOT split into
+    // tokens, so a lone code or a maker name does not pass. The operator's recorded
+    // spool value is NOT a shortcut — QA must scan a real BOM identifier. Lot ignored.
+    const norm = (v: string) => v.trim().replace(/\s+/g, " ").toUpperCase();
+    const bom = scans.find(
+      (s) => s.feederNumber.toUpperCase() === (splice.feederNumber ?? "").toUpperCase(),
+    )?.expected;
+    const accepted = new Set(
+      [bom?.mpn1, bom?.mpn2, bom?.mpn3, bom?.internalPartNumber]
+        .filter((v): v is string => Boolean(v && v.trim()))
+        .map(norm),
+    );
+    const parsed = parseSpoolLabel(value);
+    const candidates = [parsed.mpn1, parsed.mpn2, parsed.mpn3, parsed.internalId, parsed.raw]
+      .filter((v): v is string => Boolean(v))
+      .map(norm);
+    if (accepted.size > 0 && candidates.some((c) => accepted.has(c))) {
+      approveSpliceByScan(splice.id, activeFeeder);
+    } else {
+      setScanResult({
+        feederNumber: activeFeeder,
+        qaResult: "fail",
+        message: `New spool does not match feeder ${activeFeeder} — expected ${bom?.mpn1 ?? bom?.internalPartNumber ?? splice.newSpoolMpn ?? "?"} (a BOM MPN or the full internal part number)`,
+      });
+      setQaScanStep("feeder");
+      setActiveFeeder("");
+      setActiveSpliceId(null);
+    }
+  };
+
+  // Guided cross-verify: feeder step finds the slot, MPN step verifies. During the
+  // splicing phase the same scanner approves splices (feeder → new spool) instead.
   const handleQaScan = (rawValue: string) => {
     const value = rawValue.trim();
     if (!value) return;
+    if (session?.status === "active_splicing" || session?.status === "splicing_pending_qa") {
+      handleSpliceScan(value);
+      return;
+    }
     if (qaScanStep === "feeder") {
       const match = scans.find((s) => s.feederNumber.toUpperCase() === value.toUpperCase());
       if (!match) {
@@ -342,10 +447,14 @@ export default function QAVerificationDetail() {
   // "Approve All & Complete" shortcut and hides the plain Complete button while any remain.
   const pendingSplices = splices.filter((s) => !s.qaResult || s.qaResult === "pending");
 
+  const isSplicingPhase = session?.status === "active_splicing" || session?.status === "splicing_pending_qa";
   const activeExpectedMpn = scans.find((s) => s.feederNumber === activeFeeder)?.expected?.mpn1 ?? null;
+  const activeSpliceMpn = splices.find((s) => s.id === activeSpliceId)?.newSpoolMpn ?? null;
   const qaStepLabel = qaScanStep === "feeder"
     ? "STEP 1 — Scan FEEDER NUMBER"
-    : `STEP 2 — Scan MPN / INTERNAL ID  ·  Feeder ${activeFeeder}${activeExpectedMpn ? `, expected ${activeExpectedMpn}` : ""}`;
+    : isSplicingPhase
+      ? `STEP 2 — Scan NEW SPOOL  ·  Feeder ${activeFeeder}${activeSpliceMpn ? `, expected ${activeSpliceMpn}` : ""}`
+      : `STEP 2 — Scan MPN / INTERNAL ID  ·  Feeder ${activeFeeder}${activeExpectedMpn ? `, expected ${activeExpectedMpn}` : ""}`;
 
   if (loading) {
     return <div className="flex-1 flex items-center justify-center"><Loader2 className="w-8 h-8 animate-spin text-muted-foreground" /></div>;
@@ -392,7 +501,7 @@ export default function QAVerificationDetail() {
                 {locking ? "Starting…" : "Start Review"}
               </Button>
             )}
-            {isLocked && allDone && pendingSplices.length === 0 && (
+            {isLocked && allDone && pendingSplices.length === 0 && session.status !== "active_splicing" && (
               <Button onClick={handleComplete} disabled={completing} className="font-mono text-xs rounded-sm">
                 {completing ? <Loader2 className="w-4 h-4 mr-1.5 animate-spin" /> : <FileText className="w-4 h-4 mr-1.5" />}
                 {completing ? "Completing…" : "Complete QA Review"}
@@ -433,15 +542,21 @@ export default function QAVerificationDetail() {
             </div>
 
             {verifyMode === "manual" ? (
-              <div className="flex flex-wrap gap-3 items-center">
-                <Button onClick={handleManualConfirm} disabled={confirming} className="font-mono text-xs rounded-sm" variant="outline">
-                  {confirming ? <Loader2 className="w-4 h-4 mr-1.5 animate-spin" /> : <CheckCircle2 className="w-4 h-4 mr-1.5" />}
-                  {confirming ? "Confirming…" : "Confirm All — Manually Verified"}
-                </Button>
-                <span className="text-xs font-mono text-muted-foreground">
-                  Marks every pending slot as verified without scanning — use only after a physical 200% check by hand.
-                </span>
-              </div>
+              isSplicingPhase ? (
+                <div className="text-xs font-mono text-muted-foreground">
+                  Approve or reject each splice with the buttons in the Splice Records table below, or use &ldquo;Approve All &amp; Complete&rdquo;.
+                </div>
+              ) : (
+                <div className="flex flex-wrap gap-3 items-center">
+                  <Button onClick={handleManualConfirm} disabled={confirming} className="font-mono text-xs rounded-sm" variant="outline">
+                    {confirming ? <Loader2 className="w-4 h-4 mr-1.5 animate-spin" /> : <CheckCircle2 className="w-4 h-4 mr-1.5" />}
+                    {confirming ? "Confirming…" : "Confirm All — Manually Verified"}
+                  </Button>
+                  <span className="text-xs font-mono text-muted-foreground">
+                    Marks every pending slot as verified without scanning — use only after a physical 200% check by hand.
+                  </span>
+                </div>
+              )
             ) : (
               <div className="border border-border rounded-sm p-3 space-y-3 bg-secondary/20">
                 {/* Guided step banner — mirrors the operator scanner */}
@@ -465,7 +580,7 @@ export default function QAVerificationDetail() {
                   value={scanValue}
                   onChange={(e) => setScanValue(e.target.value)}
                   onKeyDown={handleScanKeyDown}
-                  placeholder={qaScanStep === "feeder" ? "Scan FEEDER NUMBER…" : "Scan MPN / INTERNAL ID…"}
+                  placeholder={qaScanStep === "feeder" ? "Scan FEEDER NUMBER…" : isSplicingPhase ? "Scan NEW SPOOL…" : "Scan MPN / INTERNAL ID…"}
                   className="font-mono text-sm rounded-sm bg-background border-border"
                   disabled={scanning}
                   autoFocus
@@ -554,7 +669,7 @@ export default function QAVerificationDetail() {
           <div>
             <div className="flex items-center justify-between gap-2 flex-wrap mb-2">
               <h3 className="text-sm font-mono font-bold">Splice Records — QA Approval Required</h3>
-              {isLocked && pendingSplices.length > 0 && (
+              {isLocked && pendingSplices.length > 0 && session.status === "splicing_pending_qa" && (
                 <Button
                   onClick={handleApproveAllAndComplete}
                   disabled={completing || busySpliceId !== null}

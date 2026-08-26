@@ -14,6 +14,7 @@ import { ScanNotification } from "@/components/notifications/ScanNotification";
 import { LogPanel } from "@/components/LogPanel";
 import { AppLogo } from "@/components/AppLogo";
 import { appConfig } from "@/lib/appConfig";
+import { parseSpoolLabel, type SpoolLabel } from "@/lib/spoolLabel";
 import { useAuth } from "@/context/auth-context";
 import { useSession } from "@/context/session-context";
 import { logger } from "@/lib/logger";
@@ -33,17 +34,6 @@ type BomLine = {
   description: string | null;
   refDes: string | null;
   quantity: string | null;
-  supplier: string | null;
-};
-
-type SpoolLabel = {
-  raw: string;
-  mpn1: string | null;
-  mpn2: string | null;
-  mpn3: string | null;
-  internalId: string | null;
-  lotNo: string | null;
-  qty: string | null;
   supplier: string | null;
 };
 
@@ -108,72 +98,6 @@ function normalizeValue(value: string | null | undefined): string {
     return "";
   }
   return normalized;
-}
-
-function parseLabelValue(source: string, keyPatterns: string[]): string | null {
-  for (const pattern of keyPatterns) {
-    const regex = new RegExp(`${pattern}\\s*[:=]\\s*([^\\n;|,]+)`, "i");
-    const match = source.match(regex);
-    if (match?.[1]) {
-      const value = match[1].trim();
-      if (value) return value;
-    }
-  }
-  return null;
-}
-
-function parseSpoolLabel(raw: string): SpoolLabel {
-  const trimmed = raw.trim();
-  const fallback = trimmed || "";
-
-  const fromJson = (() => {
-    if (!trimmed.startsWith("{") && !trimmed.startsWith("[")) return null;
-    try {
-      return JSON.parse(trimmed) as Record<string, unknown>;
-    } catch {
-      return null;
-    }
-  })();
-
-  const lookup = (keys: string[]) => {
-    if (fromJson && typeof fromJson === "object") {
-      const entries = Object.entries(fromJson).reduce<Record<string, unknown>>((acc, [key, value]) => {
-        acc[key.toLowerCase().replace(/[^a-z0-9]/g, "")] = value;
-        return acc;
-      }, {});
-      for (const key of keys) {
-        const normalizedKey = key.toLowerCase().replace(/[^a-z0-9]/g, "");
-        const value = entries[normalizedKey];
-        if (typeof value === "string" && value.trim()) {
-          return value.trim();
-        }
-        if (typeof value === "number" && Number.isFinite(value)) {
-          return String(value);
-        }
-      }
-    }
-
-    return parseLabelValue(trimmed, keys);
-  };
-
-  const mpn1 = lookup(["mpn1", "mpn_1", "mpn one", "mpn 1"]);
-  const mpn2 = lookup(["mpn2", "mpn_2", "mpn two", "mpn 2"]);
-  const mpn3 = lookup(["mpn3", "mpn_3", "mpn three", "mpn 3"]);
-  const internalId = lookup(["internalid", "internal_id", "internal id", "internal"]);
-  const lotNo = lookup(["lotno", "lot_no", "lot number", "lot"]);
-  const qty = lookup(["qty", "quantity", "remaining qty", "remaining quantity"]);
-  const supplier = lookup(["supplier", "vendor", "make"]);
-
-  return {
-    raw: fallback,
-    mpn1: mpn1 || (fallback && !mpn2 && !mpn3 && !internalId ? fallback : null),
-    mpn2: mpn2 || null,
-    mpn3: mpn3 || null,
-    internalId: internalId || (fallback && !mpn1 && !mpn2 && !mpn3 ? fallback : null),
-    lotNo: lotNo || null,
-    qty: qty || null,
-    supplier: supplier || null,
-  };
 }
 
 function normalizeBomLine(item: any): BomLine {
@@ -310,6 +234,13 @@ export default function SplicingPage() {
     query: { enabled: !!sessionId, queryKey: getListSplicesQueryKey(sessionId) },
   });
   const recordSpliceMutation = useRecordSplice();
+
+  // Finish Splicing (→ splicing_pending_qa) or a closed session locks the operator
+  // out of recording further splices — a one-way gate matching the backend 409.
+  // active_splicing is deliberately absent: the operator keeps splicing until Finish.
+  const splicingClosed = ["splicing_pending_qa", "completed", "cancelled"].includes(
+    String(sessionQuery.data?.status),
+  );
 
   const [step, setStep] = useState<WorkflowStep>("feeder");
   const [feederNumber, setFeederNumber] = useState("");
@@ -820,7 +751,7 @@ export default function SplicingPage() {
     minLength: 1,
     // Auto-scan is disabled for the lot-code step — that field requires
     // manual entry (typed value + Enter, or the "Capture Lot Code" button).
-    enabled: !workflowLocked && step !== "confirm" && step !== "newLot",
+    enabled: !workflowLocked && step !== "confirm" && step !== "newLot" && !splicingClosed,
   });
 
   // Keep the live scan input focused so scanner-gun keystrokes always land in the
@@ -832,7 +763,7 @@ export default function SplicingPage() {
   useEffect(() => {
     if (sessionLoading || bomQuery.isLoading) return;
     if (!bomLoaded && !bomBypass) return;
-    if (workflowLocked || step === "confirm") return;
+    if (workflowLocked || step === "confirm" || splicingClosed) return;
     const focusIfLoose = () => {
       const el = inputRef.current;
       if (!el) return;
@@ -844,7 +775,7 @@ export default function SplicingPage() {
     focusIfLoose();
     const t = setInterval(focusIfLoose, 1200);
     return () => clearInterval(t);
-  }, [step, workflowLocked, sessionLoading, bomQuery.isLoading, bomLoaded, bomBypass]);
+  }, [step, workflowLocked, sessionLoading, bomQuery.isLoading, bomLoaded, bomBypass, splicingClosed]);
 
   // ─── Loading state ────────────────────────────────────────────────────────────
   if (sessionLoading || bomQuery.isLoading) {
@@ -1093,7 +1024,7 @@ export default function SplicingPage() {
               </div>
 
               {/* Right col: scan input box + action buttons */}
-              {step !== "confirm" && !workflowLocked ? (
+              {step !== "confirm" && !workflowLocked && !splicingClosed ? (
                 <div className="flex flex-col gap-3 md:col-span-2">
                   <div className="rounded-2xl border border-border/70 bg-background/90 p-4 shadow-sm md:p-6">
                     <div className="mb-2 flex items-center justify-between gap-2 text-[11px] font-bold uppercase tracking-[0.22em] text-muted-foreground">
@@ -1138,15 +1069,19 @@ export default function SplicingPage() {
                   </div>
                 </div>
               ) : (
-                /* Placeholder when scan input is hidden (confirm step or locked) */
+                /* Placeholder when scan input is hidden (splicing finished, confirm step, or locked) */
                 <div className="flex items-center justify-center rounded-2xl border border-dashed border-border/70 bg-muted/10 p-6 text-sm text-muted-foreground">
-                  {workflowLocked ? "Enter supervisor/QA password in the panel on the left to unlock." : "Review the summary below before submitting."}
+                  {splicingClosed
+                    ? "Splicing finished — waiting for QA confirmation. This screen will advance to the report automatically."
+                    : workflowLocked
+                    ? "Enter supervisor/QA password in the panel on the left to unlock."
+                    : "Review the summary below before submitting."}
                 </div>
               )}
             </div>
 
             {/* Confirm & submit review — full width within the card */}
-            {step === "confirm" && summary && (
+            {step === "confirm" && summary && !splicingClosed && (
               <div className="space-y-4 rounded-3xl border border-emerald-200 bg-gradient-to-br from-emerald-50 via-background to-emerald-100/50 p-4 shadow-[0_16px_40px_rgba(16,185,129,0.12)] dark:border-emerald-900/40 dark:from-emerald-950/30 dark:via-background dark:to-emerald-900/10">
                 <div className="flex flex-wrap items-center justify-between gap-2">
                   <div className="flex flex-wrap items-center gap-3">

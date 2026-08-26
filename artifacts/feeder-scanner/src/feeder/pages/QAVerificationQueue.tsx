@@ -26,6 +26,9 @@ interface QASession {
   verificationMode: string | null;
   totalScans: number;
   pendingQa: number;
+  spliceCount: number;
+  unverifiedSplices: number;
+  hasPendingSplices: boolean;
 }
 
 function PriorityIndicator({ startedAt }: { startedAt: string }) {
@@ -75,6 +78,7 @@ function StatusBadge({ status, discrepancyFound }: { status: string; discrepancy
   const map: Record<string, { label: string; className: string }> = {
     pending_qa: { label: "Pending QA", className: "bg-amber-100 text-amber-800 dark:bg-amber-900/30 dark:text-amber-300" },
     qa_in_review: { label: "QA In Review", className: "bg-purple-100 text-purple-800 dark:bg-purple-900/30 dark:text-purple-300" },
+    active_splicing: { label: "Splicing — Live", className: "bg-blue-100 text-blue-800 dark:bg-blue-900/30 dark:text-blue-300" },
     splicing_pending_qa: { label: "Splicing QA (200%)", className: "bg-orange-100 text-orange-800 dark:bg-orange-900/30 dark:text-orange-300" },
     qa_confirmed: { label: discrepancyFound ? "QA Confirmed (Disc.)" : "QA Confirmed", className: "bg-green-100 text-green-800 dark:bg-green-900/30 dark:text-green-300" },
     incomplete: { label: "Incomplete", className: "bg-yellow-100 text-yellow-800 dark:bg-yellow-900/30 dark:text-yellow-300" },
@@ -96,8 +100,8 @@ export default function QAVerificationQueue() {
   const [page, setPage] = useState(1);
   const [pages, setPages] = useState(1);
 
-  const fetchQueue = (p = 1) => {
-    setLoading(true);
+  const loadQueue = (p: number, silent: boolean) => {
+    if (!silent) setLoading(true);
     fetch(`/api/verification/qa-queue?page=${p}&limit=50`, { credentials: "include" })
       .then((r) => r.json())
       .then((data) => {
@@ -105,11 +109,21 @@ export default function QAVerificationQueue() {
         setPage(data.page ?? 1);
         setPages(data.pages ?? 1);
       })
-      .catch(() => setSessions([]))
-      .finally(() => setLoading(false));
+      .catch(() => { if (!silent) setSessions([]); })
+      .finally(() => { if (!silent) setLoading(false); });
   };
 
+  const fetchQueue = (p = 1) => loadQueue(p, false);
+
   useEffect(() => { fetchQueue(1); }, []);
+
+  // Live queue: silently refresh the current page every 5s so splices submitted
+  // one-by-one during active_splicing surface without a manual Refresh. Silent =
+  // no spinner and no blanking of the list on a transient fetch error.
+  useEffect(() => {
+    const t = setInterval(() => loadQueue(page, true), 5000);
+    return () => clearInterval(t);
+  }, [page]);
 
   const sessionsWithCode = useMemo(
     () => sessions.map((s) => ({ ...s, sessionCode: formatSmtSessionCode(s.startedAt, s.id) })),
@@ -127,7 +141,7 @@ export default function QAVerificationQueue() {
   });
 
   const pendingSessions = filtered.filter(
-    (s) => s.status === "pending_qa" || s.status === "qa_in_review" || s.status === "splicing_pending_qa",
+    (s) => s.status === "pending_qa" || s.status === "qa_in_review" || s.status === "active_splicing" || s.status === "splicing_pending_qa",
   );
   const completedSessions = filtered.filter((s) => s.status === "qa_confirmed");
 

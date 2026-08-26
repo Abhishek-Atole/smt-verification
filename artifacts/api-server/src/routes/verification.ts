@@ -3,6 +3,7 @@ import { db } from "@workspace/db";
 import {
   bomsTable,
   changeoverSessionsTable,
+  changeoverOperatorsTable,
   feederScansTable,
   scanRecordsTable,
   sessionsTable,
@@ -351,7 +352,33 @@ router.get("/verification/sessions/active", requireAuth, async (req: AuthRequest
       id: string; bomId: number | null; operatorId: string | null;
       operatorName: string | null; status: string | null;
       startedAt: Date | null; bomName: string | null;
+      bomVerificationSkipped: boolean;
     }[] = [];
+
+    // Legacy sessions carry the production/trial split. Operators see only their
+    // OWN production sessions — mirror requireLegacySessionOwnership (operator_name
+    // match OR co-ownership) and hide trial (skip-BOM) sessions, which are
+    // supervisor/QA-only. supervisor/qa/admin see everything.
+    const legacyConditions = [
+      notInArray(sessionsTable.status, ["completed", "cancelled"]),
+      isNull(sessionsTable.endTime),
+      isNull(sessionsTable.deletedAt),
+    ];
+    if (isOperator) {
+      legacyConditions.push(
+        or(
+          eq(sessionsTable.operatorName, actor.name),
+          inArray(
+            sessionsTable.id,
+            db
+              .select({ sessionId: changeoverOperatorsTable.sessionId })
+              .from(changeoverOperatorsTable)
+              .where(eq(changeoverOperatorsTable.operatorId, actor.id)),
+          ),
+        )!,
+        eq(sessionsTable.bomVerificationSkipped, false),
+      );
+    }
 
     const legacyPromise = db
       .select({
@@ -361,14 +388,11 @@ router.get("/verification/sessions/active", requireAuth, async (req: AuthRequest
         status: sessionsTable.status,
         startedAt: sessionsTable.startTime,
         bomName: bomsTable.name,
+        bomVerificationSkipped: sessionsTable.bomVerificationSkipped,
       })
       .from(sessionsTable)
       .leftJoin(bomsTable, eq(sessionsTable.bomId, bomsTable.id))
-      .where(and(
-        notInArray(sessionsTable.status, ["completed", "cancelled"]),
-        isNull(sessionsTable.endTime),
-        isNull(sessionsTable.deletedAt),
-      ))
+      .where(and(...legacyConditions))
       .orderBy(desc(sessionsTable.startTime));
 
     // Both queries are independent — resolve them concurrently.
@@ -382,9 +406,13 @@ router.get("/verification/sessions/active", requireAuth, async (req: AuthRequest
       status: s.status,
       startedAt: s.startedAt,
       bomName: s.bomName,
+      bomVerificationSkipped: s.bomVerificationSkipped ?? false,
     }));
 
-    const merged = [...changeoverSessions, ...legacySessions].sort(
+    const merged = [
+      ...changeoverSessions.map((s) => ({ ...s, bomVerificationSkipped: false })),
+      ...legacySessions,
+    ].sort(
       (a, b) => new Date(b.startedAt ?? 0).getTime() - new Date(a.startedAt ?? 0).getTime()
     );
 
@@ -1061,9 +1089,10 @@ router.get(
     try {
       const pg = parsePagination(req);
       const qaStatuses = ["pending_qa", "qa_in_review", "qa_confirmed"] as const;
-      // Legacy sessions add splicing_pending_qa: the splicing-phase 200% review,
-      // which re-enters the queue after loading QA (qa_confirmed) is done.
-      const legacyQaStatuses = ["pending_qa", "qa_in_review", "qa_confirmed", "splicing_pending_qa"] as const;
+      // Legacy sessions add the splicing-phase states: active_splicing (being
+      // spliced live right now) and splicing_pending_qa (operator finished, 200%
+      // review) — both re-enter the queue after loading QA (qa_confirmed) is done.
+      const legacyQaStatuses = ["pending_qa", "qa_in_review", "qa_confirmed", "active_splicing", "splicing_pending_qa"] as const;
 
       // Count totals for pagination metadata
       const [{ totalCo }] = await db
@@ -1292,6 +1321,7 @@ router.get(
       // Status sort rank
       const statusRank: Record<string, number> = {
         pending_qa: 0,
+        active_splicing: 0,
         splicing_pending_qa: 0,
         qa_in_review: 1,
         qa_confirmed: 2,
@@ -1307,8 +1337,8 @@ router.get(
         if (isLegacy) {
           totalScans = legacyTotalMap.get(Number(sid)) ?? 0;
           // Loading feeders are already QA-confirmed once past qa_confirmed /
-          // splicing_pending_qa — the outstanding work there is splice review.
-          pendingQa = (s.status === "qa_confirmed" || s.status === "splicing_pending_qa") ? 0 : totalScans;
+          // active_splicing / splicing_pending_qa — the outstanding work there is splice review.
+          pendingQa = (s.status === "qa_confirmed" || s.status === "active_splicing" || s.status === "splicing_pending_qa") ? 0 : totalScans;
         } else {
           totalScans = totalScanMap.get(sid) ?? 0;
           pendingQa = pendingQaMap.get(sid) ?? 0;

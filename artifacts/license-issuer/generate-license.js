@@ -92,6 +92,12 @@ async function main() {
   console.log(activationString);
   console.log('\nDeliver the activation string above to the customer.');
   console.log('They paste it into Admin > License > Activate.');
+
+  console.log('\n=== FALLBACK: LICENSE PAGE LOCKED (trial/license already expired) ===');
+  console.log('The expiry overlay covers the whole app — including the Admin Portal —');
+  console.log('so an expired install cannot reach License > Activate. Have the customer');
+  console.log('open the app, press F12 > Console, paste this one line and press Enter:');
+  console.log(`\n  localStorage.setItem('lic_info', atob('${activationString}')); location.reload()`);
 }
 
 main().catch((err) => {

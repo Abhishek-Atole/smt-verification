@@ -18,6 +18,7 @@ interface ActiveSession {
   status: string;
   startedAt: string;
   bomName: string | null;
+  bomVerificationSkipped?: boolean;
 }
 
 function ElapsedBadge({ startedAt }: { startedAt: string }) {
@@ -42,6 +43,7 @@ function statusMeta(status: string): { label: string; className: string } {
     case "pending_qa":
       return { label: "pending qa", className: "bg-amber-500/15 text-amber-700 dark:text-amber-400" };
     case "qa_confirmed":
+    case "active_splicing":
       return { label: "splicing", className: "bg-blue-500/15 text-blue-700 dark:text-blue-400" };
     case "splicing_pending_qa":
       return { label: "splice qa", className: "bg-amber-500/15 text-amber-700 dark:text-amber-400" };
@@ -192,6 +194,124 @@ export default function ActiveSessions() {
     );
   });
 
+  // Trial (skip-BOM, data-collection) sessions get their own section, separate
+  // from production. Only supervisor/qa/admin receive trials from the API, so
+  // this split only ever has content for them.
+  const productionSessions = filtered.filter((s) => !s.bomVerificationSkipped);
+  const trialSessions = filtered.filter((s) => s.bomVerificationSkipped);
+
+  const renderSessionList = (rows: typeof filtered) => (
+    <>
+      {/* Desktop Table */}
+      <div className="hidden lg:block border border-border rounded-sm overflow-hidden">
+        <Table>
+          <TableHeader>
+            <TableRow className="border-border hover:bg-transparent">
+              <TableHead className="font-mono text-xs sm:text-sm">SESSION ID</TableHead>
+              <TableHead className="font-mono text-xs sm:text-sm">BOM</TableHead>
+              <TableHead className="font-mono text-xs sm:text-sm">OPERATOR</TableHead>
+              <TableHead className="font-mono text-xs sm:text-sm">DURATION</TableHead>
+              <TableHead className="font-mono text-xs sm:text-sm">STATUS</TableHead>
+              {canDelete && <TableHead className="w-10"></TableHead>}
+              <TableHead className="w-10"></TableHead>
+            </TableRow>
+          </TableHeader>
+          <TableBody>
+            {rows.map((session) => (
+              <TableRow
+                key={session.id}
+                className="border-border cursor-pointer hover:bg-secondary/50 transition-colors"
+                onClick={() => setLocation(`/feeder/sessions/${session.id}`)}
+              >
+                <TableCell>
+                  <span className="inline-block px-2 py-1 rounded-sm bg-slate-100 text-slate-900 dark:bg-slate-800 dark:text-slate-100 text-[11px] font-mono font-semibold tracking-wide">
+                    {session.sessionCode}
+                  </span>
+                </TableCell>
+                <TableCell className="font-mono text-xs sm:text-sm font-bold text-primary">
+                  {session.bomName ?? `BOM #${session.bomId}`}
+                </TableCell>
+                <TableCell className="font-mono text-xs sm:text-sm">
+                  {session.operatorName ?? session.operatorId.slice(0, 8)}
+                </TableCell>
+                <TableCell>
+                  <ElapsedBadge startedAt={session.startedAt} />
+                </TableCell>
+                <TableCell>
+                  <StatusBadge status={session.status} />
+                </TableCell>
+                {canDelete && (
+                  <TableCell>
+                    <button
+                      onClick={(e) => handleDelete(e, session.id)}
+                      className="p-1.5 rounded-sm text-muted-foreground hover:text-red-600 hover:bg-red-50 dark:hover:bg-red-950/30 transition-colors"
+                      title="Delete session"
+                    >
+                      <Trash2 className="w-4 h-4" />
+                    </button>
+                  </TableCell>
+                )}
+                <TableCell>
+                  <ChevronRight className="w-4 h-4 text-muted-foreground" />
+                </TableCell>
+              </TableRow>
+            ))}
+          </TableBody>
+        </Table>
+      </div>
+
+      {/* Mobile/Tablet Cards */}
+      <div className="lg:hidden grid gap-3">
+        {rows.map((session) => (
+          <div
+            key={session.id}
+            className="bg-card border border-border rounded-sm group"
+          >
+            <div
+              onClick={() => setLocation(`/feeder/sessions/${session.id}`)}
+              className="p-4 cursor-pointer hover:bg-secondary/50 transition-colors active:bg-secondary"
+            >
+              <div className="flex items-start justify-between mb-3">
+                <div className="flex-1 min-w-0">
+                  <span className="inline-block px-2 py-0.5 rounded-sm bg-slate-100 text-slate-900 dark:bg-slate-800 dark:text-slate-100 text-[11px] font-mono font-semibold tracking-wide">
+                    {session.sessionCode}
+                  </span>
+                </div>
+                <StatusBadge status={session.status} className="ml-2" />
+              </div>
+              <div className="mb-3">
+                <div className="text-xs text-muted-foreground font-mono">BOM</div>
+                <div className="font-mono font-bold text-primary text-sm truncate">
+                  {session.bomName ?? `BOM #${session.bomId}`}
+                </div>
+              </div>
+              <div className="flex items-center justify-between text-xs">
+                <span className="font-mono text-muted-foreground">
+                  {session.operatorName ?? session.operatorId.slice(0, 8)}
+                </span>
+                <div className="flex items-center gap-2">
+                  <ElapsedBadge startedAt={session.startedAt} />
+                  <ChevronRight className="w-4 h-4 text-muted-foreground" />
+                </div>
+              </div>
+            </div>
+            {canDelete && (
+              <div className="border-t border-border px-4 py-2 flex justify-end">
+                <button
+                  onClick={(e) => handleDelete(e, session.id)}
+                  className="flex items-center gap-1.5 text-xs font-mono text-muted-foreground hover:text-red-600 transition-colors"
+                >
+                  <Trash2 className="w-3.5 h-3.5" />
+                  Delete
+                </button>
+              </div>
+            )}
+          </div>
+        ))}
+      </div>
+    </>
+  );
+
   return (
     <div className="w-full space-y-4 sm:space-y-6 mt-6 sm:mt-8">
       <div className="px-4 sm:px-6 lg:px-8 flex flex-col gap-4 sm:gap-6">
@@ -224,113 +344,27 @@ export default function ActiveSessions() {
           </div>
         ) : (
           <>
-            {/* Desktop Table */}
-            <div className="hidden lg:block border border-border rounded-sm overflow-hidden">
-              <Table>
-                <TableHeader>
-                  <TableRow className="border-border hover:bg-transparent">
-                    <TableHead className="font-mono text-xs sm:text-sm">SESSION ID</TableHead>
-                    <TableHead className="font-mono text-xs sm:text-sm">BOM</TableHead>
-                    <TableHead className="font-mono text-xs sm:text-sm">OPERATOR</TableHead>
-                    <TableHead className="font-mono text-xs sm:text-sm">DURATION</TableHead>
-                    <TableHead className="font-mono text-xs sm:text-sm">STATUS</TableHead>
-                    {canDelete && <TableHead className="w-10"></TableHead>}
-                    <TableHead className="w-10"></TableHead>
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {filtered.map((session) => (
-                    <TableRow
-                      key={session.id}
-                      className="border-border cursor-pointer hover:bg-secondary/50 transition-colors"
-                      onClick={() => setLocation(`/feeder/sessions/${session.id}`)}
-                    >
-                      <TableCell>
-                        <span className="inline-block px-2 py-1 rounded-sm bg-slate-100 text-slate-900 dark:bg-slate-800 dark:text-slate-100 text-[11px] font-mono font-semibold tracking-wide">
-                          {session.sessionCode}
-                        </span>
-                      </TableCell>
-                      <TableCell className="font-mono text-xs sm:text-sm font-bold text-primary">
-                        {session.bomName ?? `BOM #${session.bomId}`}
-                      </TableCell>
-                      <TableCell className="font-mono text-xs sm:text-sm">
-                        {session.operatorName ?? session.operatorId.slice(0, 8)}
-                      </TableCell>
-                      <TableCell>
-                        <ElapsedBadge startedAt={session.startedAt} />
-                      </TableCell>
-                      <TableCell>
-                        <StatusBadge status={session.status} />
-                      </TableCell>
-                      {canDelete && (
-                        <TableCell>
-                          <button
-                            onClick={(e) => handleDelete(e, session.id)}
-                            className="p-1.5 rounded-sm text-muted-foreground hover:text-red-600 hover:bg-red-50 dark:hover:bg-red-950/30 transition-colors"
-                            title="Delete session"
-                          >
-                            <Trash2 className="w-4 h-4" />
-                          </button>
-                        </TableCell>
-                      )}
-                      <TableCell>
-                        <ChevronRight className="w-4 h-4 text-muted-foreground" />
-                      </TableCell>
-                    </TableRow>
-                  ))}
-                </TableBody>
-              </Table>
-            </div>
-
-            {/* Mobile/Tablet Cards */}
-            <div className="lg:hidden grid gap-3">
-              {filtered.map((session) => (
-                <div
-                  key={session.id}
-                  className="bg-card border border-border rounded-sm group"
-                >
-                  <div
-                    onClick={() => setLocation(`/feeder/sessions/${session.id}`)}
-                    className="p-4 cursor-pointer hover:bg-secondary/50 transition-colors active:bg-secondary"
-                  >
-                    <div className="flex items-start justify-between mb-3">
-                      <div className="flex-1 min-w-0">
-                        <span className="inline-block px-2 py-0.5 rounded-sm bg-slate-100 text-slate-900 dark:bg-slate-800 dark:text-slate-100 text-[11px] font-mono font-semibold tracking-wide">
-                          {session.sessionCode}
-                        </span>
-                      </div>
-                      <StatusBadge status={session.status} className="ml-2" />
-                    </div>
-                    <div className="mb-3">
-                      <div className="text-xs text-muted-foreground font-mono">BOM</div>
-                      <div className="font-mono font-bold text-primary text-sm truncate">
-                        {session.bomName ?? `BOM #${session.bomId}`}
-                      </div>
-                    </div>
-                    <div className="flex items-center justify-between text-xs">
-                      <span className="font-mono text-muted-foreground">
-                        {session.operatorName ?? session.operatorId.slice(0, 8)}
-                      </span>
-                      <div className="flex items-center gap-2">
-                        <ElapsedBadge startedAt={session.startedAt} />
-                        <ChevronRight className="w-4 h-4 text-muted-foreground" />
-                      </div>
-                    </div>
-                  </div>
-                  {canDelete && (
-                    <div className="border-t border-border px-4 py-2 flex justify-end">
-                      <button
-                        onClick={(e) => handleDelete(e, session.id)}
-                        className="flex items-center gap-1.5 text-xs font-mono text-muted-foreground hover:text-red-600 transition-colors"
-                      >
-                        <Trash2 className="w-3.5 h-3.5" />
-                        Delete
-                      </button>
-                    </div>
-                  )}
+            <section className="space-y-3">
+              <h2 className="text-sm font-mono font-bold uppercase tracking-wider text-muted-foreground">
+                Production ({productionSessions.length})
+              </h2>
+              {productionSessions.length === 0 ? (
+                <div className="border border-border rounded-sm p-8 text-center text-muted-foreground font-mono text-sm">
+                  No production sessions.
                 </div>
-              ))}
-            </div>
+              ) : (
+                renderSessionList(productionSessions)
+              )}
+            </section>
+
+            {trialSessions.length > 0 && (
+              <section className="space-y-3">
+                <h2 className="text-sm font-mono font-bold uppercase tracking-wider text-amber-700 dark:text-amber-400">
+                  Trial / Data Collection ({trialSessions.length})
+                </h2>
+                {renderSessionList(trialSessions)}
+              </section>
+            )}
           </>
         )}
       </div>

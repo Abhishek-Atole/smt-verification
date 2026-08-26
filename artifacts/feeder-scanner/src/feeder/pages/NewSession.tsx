@@ -103,15 +103,14 @@ export default function SessionNew() {
   const [lineName, setLineName] = useState("");
   const [bomVerificationSkipped, setBomVerificationSkipped] = useState(false);
   const [verificationMode, setVerificationMode] = useState<"AUTO" | "MANUAL" | "AUTO_LEGACY">("AUTO");
-  const [skipApproverRole, setSkipApproverRole] = useState<"qa" | "supervisor" | "">("");
-  const [skipApproverName, setSkipApproverName] = useState("");
-  const [skipRemarks, setSkipRemarks] = useState("");
 
   const operatorName = user?.name ?? "";
   // Free Scan Mode bypasses all BOM validation, so only supervisors may enable it.
   // Operators must run against a selected BOM. (The route only admits
   // supervisor/operator, so no qa branch is reachable here.)
   const canFreeScan = user?.role === "supervisor";
+  // Trial (skip-BOM, data-collection) sessions are supervisor-only, same as Free Scan.
+  const canStartTrial = user?.role === "supervisor";
   const defaultLogoUrl = appConfig.logoUrl ?? "";
   const { shiftName, shiftDate } = useMemo(() => computeShift(new Date()), []);
 
@@ -176,14 +175,7 @@ export default function SessionNew() {
     if (!resolvedSupervisor) return alert("Please select the supervisor");
     if (!resolvedQa) return alert("Please select the QA");
     if (!resolvedMachine) return alert("Please select or scan the machine");
-    if (bomVerificationSkipped) {
-      const resolvedApprover = skipApproverName === "__other__" ? "" : skipApproverName;
-      if (skipApproverRole !== "qa" && skipApproverRole !== "supervisor")
-        return alert("Skipping BOM verification requires a QA or Supervisor approval role");
-      if (!resolvedApprover) return alert("Please select the approver who authorized skipping BOM verification");
-    }
 
-    const resolvedSkipApprover = skipApproverName === "__other__" ? "" : skipApproverName;
     createSession.mutate({
       data: {
         bomId: freeScanMode ? 0 : Number(bomId),
@@ -203,9 +195,6 @@ export default function SessionNew() {
         logoUrl: defaultLogoUrl,
         verificationMode,
         bomVerificationSkipped,
-        bomSkipApproverRole: bomVerificationSkipped ? skipApproverRole : undefined,
-        bomSkipApproverName: bomVerificationSkipped ? resolvedSkipApprover : undefined,
-        bomSkipApprovalRemarks: bomVerificationSkipped && skipRemarks ? skipRemarks : undefined,
       },
     }, {
       onSuccess: (session) => setLocation(`/session/${session.id}`),
@@ -245,8 +234,7 @@ export default function SessionNew() {
     Boolean(lineName) &&
     Boolean(supervisorName) && supervisorName !== "__other__" &&
     Boolean(qaName) && qaName !== "__other__" &&
-    Boolean(machineName) && machineName !== "__other__" &&
-    (!bomVerificationSkipped || ((skipApproverRole === "qa" || skipApproverRole === "supervisor") && Boolean(skipApproverName) && skipApproverName !== "__other__"));
+    Boolean(machineName) && machineName !== "__other__";
 
   return (
     <div className="w-full space-y-4 sm:space-y-6 lg:space-y-8 px-4 sm:px-6 lg:px-8 py-4 sm:py-6 lg:py-8">
@@ -357,57 +345,21 @@ export default function SessionNew() {
               </div>
             </div>
           )}
-          {/* Module 1.2/1.3: Skip BOM verification requires a single QA or Supervisor approval. */}
-          <div className="flex items-center gap-2 pt-2">
-            <input
-              type="checkbox"
-              id="skip-bom"
-              checked={bomVerificationSkipped}
-              onChange={(e) => {
-                setBomVerificationSkipped(e.target.checked);
-                if (!e.target.checked) { setSkipApproverRole(""); setSkipApproverName(""); setSkipRemarks(""); }
-              }}
-              className="w-4 h-4 rounded cursor-pointer"
-            />
-            <label htmlFor="skip-bom" className="text-sm cursor-pointer">Skip BOM Verification (requires approval)</label>
-          </div>
-          {bomVerificationSkipped && (
-            <div className="space-y-3 border border-amber-300 dark:border-amber-800 bg-amber-50 dark:bg-amber-950/20 p-3 rounded-md">
-              <p className="text-sm font-bold text-amber-700 dark:text-amber-400">Approval required to skip BOM verification</p>
-              <div>
-                <label className="block text-sm mb-1">Approver Role</label>
-                <select
-                  value={skipApproverRole}
-                  onChange={(e) => {
-                    setSkipApproverRole(e.target.value as "qa" | "supervisor" | "");
-                    setSkipApproverName("");
-                  }}
-                  className="w-full rounded-sm border border-border bg-background px-3 py-2 text-sm"
-                >
-                  <option value="">Select role…</option>
-                  <option value="qa">QA</option>
-                  <option value="supervisor">Supervisor</option>
-                </select>
-              </div>
-              {skipApproverRole && (
-                <NameSelect
-                  label="Approver Name"
-                  names={skipApproverRole === "qa" ? qaNames : supervisorNames}
-                  value={skipApproverName}
-                  onChange={setSkipApproverName}
-                  required
-                />
-              )}
-              <div>
-                <label className="block text-sm mb-1">Remarks (optional)</label>
-                <input
-                  type="text"
-                  value={skipRemarks}
-                  onChange={(e) => setSkipRemarks(e.target.value)}
-                  placeholder="Reason for skipping"
-                  className="w-full rounded-sm border border-border bg-background px-3 py-2 text-sm"
-                />
-              </div>
+          {/* Trial Session: skip BOM verification for data collection. Supervisor-only;
+              no approval step — the supervisor starting it is the authority. */}
+          {canStartTrial && (
+            <div className="flex items-center gap-2 pt-2">
+              <input
+                type="checkbox"
+                id="skip-bom"
+                checked={bomVerificationSkipped}
+                onChange={(e) => setBomVerificationSkipped(e.target.checked)}
+                className="w-4 h-4 rounded cursor-pointer"
+              />
+              <label htmlFor="skip-bom" className="text-sm cursor-pointer flex items-center gap-2">
+                Trial Session — skip BOM
+                <span className="text-xs text-muted-foreground font-normal">(data collection · supervisor only)</span>
+              </label>
             </div>
           )}
 

@@ -1,6 +1,6 @@
 import { Router, type IRouter, type Request, type Response } from "express";
 import { db } from "@workspace/db";
-import { bomsTable, bomItemsTable, sessionsTable, scanRecordsTable } from "@workspace/db/schema";
+import { bomsTable, bomItemsTable, sessionsTable, changeoverSessionsTable, scanRecordsTable } from "@workspace/db/schema";
 import { eq, isNotNull, isNull, and, or, desc, asc, like, sql, gt, lt } from "drizzle-orm";
 import { attachActor, requireAuth, type AuthRequest } from "../middleware/auth";
 
@@ -225,13 +225,33 @@ router.delete("/trash/:type/:id", requireAuth, async (req: AuthRequest, res: Res
     const userId = req.actor?.username || "unknown";
 
     switch (typeParam) {
-      case "bom":
-        // Delete all related items first
-        await db
-          .delete(bomItemsTable)
-          .where(eq(bomItemsTable.bomId, parseInt(idParam)));
-        await db.delete(bomsTable).where(eq(bomsTable.id, parseInt(idParam)));
+      case "bom": {
+        const bomId = parseInt(idParam);
+        // A BOM linked to any session (legacy or changeover) must NOT be force-
+        // deleted: doing so would require mutating or removing those sessions,
+        // which corrupts production history and its reports. Refuse the delete and
+        // leave the BOM and every session completely untouched.
+        const legacyLinked = await db
+          .select({ n: sql<number>`count(*)::int` })
+          .from(sessionsTable)
+          .where(eq(sessionsTable.bomId, bomId))
+          .then((r) => r[0]?.n ?? 0);
+        const changeoverLinked = await db
+          .select({ n: sql<number>`count(*)::int` })
+          .from(changeoverSessionsTable)
+          .where(eq(changeoverSessionsTable.bomId, bomId))
+          .then((r) => r[0]?.n ?? 0);
+        const linked = legacyLinked + changeoverLinked;
+        if (linked > 0) {
+          return res.status(409).json({
+            error: `Cannot permanently delete this BOM — it is linked to ${linked} session${linked === 1 ? "" : "s"}. Deleting it would affect those sessions, so it has been left untouched. Remove or restore the linked sessions first.`,
+          });
+        }
+        // No session references it — safe to delete (bom_items cascade too).
+        await db.delete(bomItemsTable).where(eq(bomItemsTable.bomId, bomId));
+        await db.delete(bomsTable).where(eq(bomsTable.id, bomId));
         break;
+      }
       case "bom_item":
         await db
           .delete(bomItemsTable)

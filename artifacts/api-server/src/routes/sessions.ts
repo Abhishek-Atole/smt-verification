@@ -926,7 +926,7 @@ router.post("/sessions", requireRole("operator", "qa", "supervisor", "admin"), a
       bomId, companyName, customerName, panelName, supervisorName,
       operatorName, qaName, engineerName, shiftName, shiftDate, logoUrl, productionCount,
       machineName, lineName, verificationMode, pcbName,
-      bomVerificationSkipped, bomSkipApproverRole, bomSkipApproverName, bomSkipApprovalRemarks,
+      bomVerificationSkipped,
     } = req.body;
 
     // Allow bomId to be 0 (free scan) or a valid BOM ID, but not null/undefined
@@ -941,20 +941,12 @@ router.post("/sessions", requireRole("operator", "qa", "supervisor", "admin"), a
       return;
     }
 
-    // Module 1.2/1.3: skipping BOM verification requires a single QA OR Supervisor
-    // approval. Block session creation until a valid approval is recorded.
+    // Trial (skip-BOM, data-collection) changeovers: only a supervisor may start
+    // one, and no separate approval is required — the supervisor is the authority.
     const skipped = bomVerificationSkipped === true;
-    if (skipped) {
-      const role = typeof bomSkipApproverRole === "string" ? bomSkipApproverRole.toLowerCase() : "";
-      const approver = typeof bomSkipApproverName === "string" ? bomSkipApproverName.trim() : "";
-      if (role !== "qa" && role !== "supervisor") {
-        res.status(400).json({ error: "bomSkipApproverRole must be 'qa' or 'supervisor' when BOM verification is skipped" });
-        return;
-      }
-      if (!approver) {
-        res.status(400).json({ error: "bomSkipApproverName is required when BOM verification is skipped" });
-        return;
-      }
+    if (skipped && req.actor?.role !== "supervisor") {
+      res.status(403).json({ error: "Only a supervisor can start a trial (skip-BOM) changeover" });
+      return;
     }
 
     // Convert bomId = 0 (free scan mode) to null for database storage
@@ -1017,10 +1009,12 @@ router.post("/sessions", requireRole("operator", "qa", "supervisor", "admin"), a
         lineName: lineName ?? null,
         verificationMode: finalVerificationMode,
         bomVerificationSkipped: skipped,
-        bomSkipApproverRole: skipped ? String(bomSkipApproverRole).toLowerCase() : null,
-        bomSkipApproverName: skipped ? String(bomSkipApproverName).trim() : null,
+        // Trial sessions are supervisor-authorized at creation; the creating
+        // supervisor is recorded as the authority (no separate approval step).
+        bomSkipApproverRole: skipped ? "supervisor" : null,
+        bomSkipApproverName: skipped ? (req.actor?.name ?? null) : null,
         bomSkipApprovalAt: skipped ? timestamps.createdAt : null,
-        bomSkipApprovalRemarks: skipped && bomSkipApprovalRemarks ? String(bomSkipApprovalRemarks) : null,
+        bomSkipApprovalRemarks: null,
         status: "active",
         startTime: timestamps.startTime,
         createdAt: timestamps.createdAt,
@@ -1067,7 +1061,7 @@ router.post("/sessions", requireRole("operator", "qa", "supervisor", "admin"), a
             approverName: session.bomSkipApproverName,
             remarks: session.bomSkipApprovalRemarks,
           }),
-          description: `BOM verification skipped on changeover #${session.id}, approved by ${session.bomSkipApproverName} (${session.bomSkipApproverRole})`,
+          description: `Trial (skip-BOM) changeover #${session.id} started by ${session.bomSkipApproverName} (supervisor) for data collection`,
         });
       }
     }
@@ -1422,7 +1416,7 @@ router.patch("/sessions/:sessionId", requireRole("operator", "qa", "supervisor",
     // strings can't be written straight to the column.
     const ALLOWED_STATUSES = new Set([
       "active", "pending_qa", "qa_in_review", "qa_confirmed",
-      "splicing_pending_qa", "completed", "cancelled", "incomplete",
+      "active_splicing", "splicing_pending_qa", "completed", "cancelled", "incomplete",
     ]);
     if (status !== undefined && !ALLOWED_STATUSES.has(String(status))) {
       res.status(400).json({ error: "Invalid status" });
@@ -1646,12 +1640,12 @@ router.post("/sessions/:sessionId/submit-splicing-qa", requireRole("operator", "
       return;
     }
 
-    if (session.status !== "qa_confirmed" && session.status !== "splicing_pending_qa") {
+    if (session.status !== "qa_confirmed" && session.status !== "active_splicing" && session.status !== "splicing_pending_qa") {
       res.status(409).json({ error: "Session is not ready for splicing QA submission", status: session.status });
       return;
     }
 
-    if (session.status === "qa_confirmed") {
+    if (session.status === "qa_confirmed" || session.status === "active_splicing") {
       // Stamp the submit time only on the first transition — the 2h QA-confirmation
       // clock starts here. Repeat calls (already splicing_pending_qa) skip this block,
       // so the original deadline is preserved.
@@ -2104,6 +2098,11 @@ router.get("/sessions/:sessionId/splices", requireRole("operator", "qa", "superv
           .where(
             and(
               eq(auditLogsTable.entityType, "feeder_splice"),
+              // Only "splice_recorded" carries the match snapshot (status/matchedAs).
+              // QA "splice_approved"/"splice_rejected" logs reuse the same entityId
+              // but omit those fields; without this filter the newer QA log clobbers
+              // the snapshot on read and every approved splice renders as FAILED / "-".
+              eq(auditLogsTable.action, "splice_recorded"),
               inArray(auditLogsTable.entityId, spliceEntityIds),
             ),
           )
@@ -2276,6 +2275,14 @@ router.post("/sessions/:sessionId/splices", requireRole("operator", "qa", "super
     const [session] = await db.select().from(sessionsTable).where(eq(sessionsTable.id, sessionId));
     if (!session) {
       res.status(404).json({ error: "Session not found" });
+      return;
+    }
+
+    // Finish Splicing is a one-way lock: once the operator has submitted for QA
+    // (or the session is closed) no further splices may be recorded. active /
+    // qa_confirmed / active_splicing still accept inserts.
+    if (session.status === "splicing_pending_qa" || session.status === "completed" || session.status === "cancelled") {
+      res.status(409).json({ error: "Splicing is closed for this session", status: session.status });
       return;
     }
 
@@ -2475,6 +2482,15 @@ router.post("/sessions/:sessionId/splices", requireRole("operator", "qa", "super
       });
     }
 
+    // First recorded splice moves the session into the live-splicing lane so it
+    // surfaces in the QA queue immediately (qa_confirmed = loading done but not yet
+    // splicing). Finish Splicing later flips active_splicing → splicing_pending_qa.
+    if (session.status === "qa_confirmed") {
+      await db.update(sessionsTable)
+        .set({ status: "active_splicing" })
+        .where(eq(sessionsTable.id, sessionId));
+    }
+
     // === STEP 8: Return Response ===
     res.status(idempotentSpliceRetry ? 200 : 201).json({
       ...buildSpliceResponse(splice, bomItem, auditPayload),
@@ -2649,12 +2665,14 @@ router.get("/sessions/:sessionId/report/pdf", requireRole("qa", "supervisor", "a
                         ? "Internal P/N"
                         : "—";
 
+      // Final report canonicalises verification data to UPPERCASE. Matching is
+      // case-insensitive, so case carries no meaning — the report shows one form.
       const expectedParts = [row.mpn1, row.mpn2, row.mpn3, row.mpn4, row.mpn5, row.mpn6, row.mpn7, row.mpn8]
         .filter((val: any) => val && String(val).trim())
-        .map((val: any) => String(val).trim());
+        .map((val: any) => String(val).trim().toUpperCase());
       const expectedMpns = expectedParts.length > 0 ? expectedParts.join("\n") : "—";
 
-      const scannedValue = safeText(row.scannedValue);
+      const scannedValue = safeText(row.scannedValue).toUpperCase();
       const isAlternate = matchedField === "mpn2" || matchedField === "mpn3" || matchedField === "mpn4" || matchedField === "mpn5" || matchedField === "mpn6" || matchedField === "mpn7" || matchedField === "mpn8";
       const isFailed = status === "failed";
 
@@ -2666,16 +2684,16 @@ router.get("/sessions/:sessionId/report/pdf", requireRole("qa", "supervisor", "a
 
       return {
         rowIndex,
-        feederNumber: safeText(row.feederNumber),
-        refDes: safeText(row.referenceLocation),
+        feederNumber: safeText(row.feederNumber).toUpperCase(),
+        refDes: safeText(row.referenceLocation).toUpperCase(),
         component: safeText(row.description),
         value: safeText(row.value),
         pkgSize: safeText(row.packageDescription ?? row.packageType),
-        internalPartNo: safeText(row.internalPartNumber),
+        internalPartNo: safeText(row.internalPartNumber).toUpperCase(),
         expectedMpns,
         scannedText,
-        matchedLabel,
-        lotCode: safeText(row.lotCode),
+        matchedLabel: matchedLabel.toUpperCase(),
+        lotCode: safeText(row.lotCode).toUpperCase(),
         modeText: String(row.verificationMode ?? reportSession.verificationMode ?? "AUTO").toUpperCase() === "MANUAL" ? "MAN" : "AUTO",
         status: status === "verified" ? "PASS" : status === "failed" ? "FAIL" : status === "duplicate" ? "DUP" : "MISS",
         scannedAt: row.scannedAt ? new Date(row.scannedAt).toLocaleTimeString("en-US", { hour12: true }) : "—",
