@@ -14,6 +14,7 @@ import { LogPanel } from "@/components/LogPanel";
 import { AppLogo } from "@/components/AppLogo";
 import { appConfig } from "@/lib/appConfig";
 import { isAcceptToken } from "@/lib/accept-token";
+import { registerScanResult } from "@/utils/indication";
 
 export default function VerificationPage() {
   const [, setLocation] = useLocation();
@@ -49,12 +50,14 @@ export default function VerificationPage() {
     try {
       if (currentStep === "feederId") {
         submitFeederId(value);
+        registerScanResult(value, true);
         showSuccessAlert(`Feeder ${value.trim().toUpperCase()} found in BOM.`);
         return;
       }
 
       if (currentStep === "mpn") {
         submitMPN(value);
+        registerScanResult(value, true);
         const isAlt = pendingMatch && pendingMatch.partId !== undefined;
         if (isAlt) {
           showWarningAlert(`Component ${value.trim().toUpperCase()} accepted for ${activeFeederInput}.`);
@@ -66,9 +69,11 @@ export default function VerificationPage() {
 
       if (currentStep === "lotCode") {
         submitLotCode(value);
+        registerScanResult(value, true);
         showSuccessAlert(`Feeder ${activeFeederInput} verified successfully.`);
       }
     } catch (error: any) {
+      registerScanResult(value, false);
       showErrorAlert(error?.message || "Verification failed", "high");
     }
   };

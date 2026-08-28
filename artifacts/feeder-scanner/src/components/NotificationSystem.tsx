@@ -2,6 +2,7 @@ import { createContext, useCallback, useContext, useEffect, useMemo, useRef, use
 import { AnimatePresence, motion } from "framer-motion";
 import { CheckCircle2, Info, TriangleAlert, XCircle, X } from "lucide-react";
 import { logger } from "../lib/logger";
+import { useNotificationBellStore } from "@/store/useNotificationBellStore";
 
 type NotificationType = "success" | "error" | "warning" | "info" | "duplicate";
 
@@ -46,7 +47,7 @@ const TYPE_STYLE: Record<
     bg: "#dcfce7",
     border: "#16a34a",
     icon: <CheckCircle2 className="h-5 w-5" />,
-    autoDismiss: 3000,
+    autoDismiss: 5000,
   },
   error: {
     title: "ERROR",
@@ -60,7 +61,7 @@ const TYPE_STYLE: Record<
     bg: "#fef3c7",
     border: "#d97706",
     icon: <TriangleAlert className="h-5 w-5" />,
-    autoDismiss: 4000,
+    autoDismiss: 6000,
   },
   info: {
     title: "INFO",
@@ -203,6 +204,13 @@ export function NotificationProvider({ children }: { children: ReactNode }) {
 
       const timer = setTimeout(() => dismiss(item.id), item.autoDismissMs);
       timersRef.current.set(item.id, timer);
+
+      // Persist to the header bell (survives auto-dismiss + reload, until read).
+      useNotificationBellStore.getState().record({
+        type,
+        title: TYPE_STYLE[type].title,
+        message: details ? `${message}\n${details}` : message,
+      });
     },
     [dismiss],
   );
@@ -233,7 +241,9 @@ export function NotificationProvider({ children }: { children: ReactNode }) {
   return (
     <NotificationContext.Provider value={value}>
       {children}
-      <div className="fixed right-3 top-3 z-[9999] flex w-full max-w-[360px] flex-col gap-2">
+      {/* Secondary toasts (duplicate scans + server feed) sit bottom-right so
+          they never cover the primary top-right scan notifications. */}
+      <div className="fixed right-4 bottom-4 z-[9999] flex w-[360px] max-w-[calc(100vw-2rem)] flex-col gap-2">
         <AnimatePresence initial={false}>
           {items.map((item) => (
             <NotificationToast key={item.id} item={item} onClose={dismiss} />

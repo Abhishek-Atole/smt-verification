@@ -27,6 +27,7 @@ import { SessionProvider } from "@/context/session-context";
 import { ThemeProvider } from "@/components/theme-provider";
 import { NotificationProvider } from "@/components/NotificationSystem";
 import { NotificationFeedListener } from "@/components/NotificationFeedListener";
+import { IndicationLight } from "@/components/IndicationLight";
 import { ErrorBoundary } from "@/components/ErrorBoundary";
 import { appConfig } from "@/lib/appConfig";
 import { AdminGate } from "@/admin/AdminGate";
@@ -148,6 +149,7 @@ function Router() {
         {loading ? null : user ? (
           <AppShell>
             <NotificationFeedListener />
+            <IndicationLight />
             <Layout>
               <Switch>
                 <Route path="/">

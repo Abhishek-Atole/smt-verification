@@ -2092,7 +2092,7 @@ router.post(
           .where(
             and(
               eq(componentAlternatesTable.primaryComponentId, bomItem.componentId),
-              eq(componentsTable.mpn, scannedValue),
+              sql`upper(${componentsTable.mpn}) = ${scanned}`,
               eq(componentAlternatesTable.approvalStatus, "approved"),
             ),
           );

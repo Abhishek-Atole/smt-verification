@@ -41,7 +41,7 @@ export function ScanNotification({ notifications, onDismiss }: ScanNotificationP
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
 
   return (
-    <div className="fixed top-4 right-4 z-[9999] flex w-[320px] max-w-[calc(100vw-2rem)] flex-col gap-2 sm:right-4 sm:left-auto left-1/2 -translate-x-1/2 sm:translate-x-0">
+    <div className="fixed top-4 right-4 z-[9999] flex w-[320px] max-w-[calc(100vw-2rem)] flex-col gap-2">
       <AnimatePresence>
         {reversed.map((entry) => {
           const tone = styleByType[entry.type];

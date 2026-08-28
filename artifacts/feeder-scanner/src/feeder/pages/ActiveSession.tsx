@@ -44,6 +44,7 @@ import { AppLogo } from "@/components/AppLogo";
 import { buildCandidates, normalizeMpn } from "@/utils/mpnUtils";
 import { logger } from "@/lib/logger";
 import { ACCEPT_TOKEN, isAcceptToken } from "@/lib/accept-token";
+import { registerScanResult, resetStrikes, signalError, signalSuccess } from "@/utils/indication";
 
 type ScanStep = "feeder" | "spool" | "lot";
 type Mode = "scan" | "splice";
@@ -128,59 +129,30 @@ function buildLegacyCandidates(
   return merged;
 }
 
-// Web Audio API sound generator
+// Web Audio API sound generator. Success/error now route through the central
+// indication layer (strong "wrong" buzzer + on-screen LED + hardware seam);
+// warning keeps its lightweight single mid-range beep.
 function playBuzzer(type: "success" | "error" | "warning") {
+  if (type === "success") {
+    signalSuccess();
+    return;
+  }
+  if (type === "error") {
+    signalError();
+    return;
+  }
   try {
     const audioContext = new (window.AudioContext || (window as any).webkitAudioContext)();
     const now = audioContext.currentTime;
-    
-    if (type === "success") {
-      // Success: two ascending beeps
-      const osc1 = audioContext.createOscillator();
-      const gain1 = audioContext.createGain();
-      osc1.connect(gain1);
-      gain1.connect(audioContext.destination);
-      osc1.frequency.value = 800;
-      gain1.gain.setValueAtTime(0.1, now);
-      gain1.gain.exponentialRampToValueAtTime(0.01, now + 0.1);
-      osc1.start(now);
-      osc1.stop(now + 0.1);
-      
-      const osc2 = audioContext.createOscillator();
-      const gain2 = audioContext.createGain();
-      osc2.connect(gain2);
-      gain2.connect(audioContext.destination);
-      osc2.frequency.value = 1200;
-      gain2.gain.setValueAtTime(0.1, now + 0.15);
-      gain2.gain.exponentialRampToValueAtTime(0.01, now + 0.25);
-      osc2.start(now + 0.15);
-      osc2.stop(now + 0.25);
-    } else if (type === "error") {
-      // Error: three low beeps
-      for (let i = 0; i < 3; i++) {
-        const osc = audioContext.createOscillator();
-        const gain = audioContext.createGain();
-        osc.connect(gain);
-        gain.connect(audioContext.destination);
-        osc.frequency.value = 400;
-        const startTime = now + i * 0.15;
-        gain.gain.setValueAtTime(0.1, startTime);
-        gain.gain.exponentialRampToValueAtTime(0.01, startTime + 0.1);
-        osc.start(startTime);
-        osc.stop(startTime + 0.1);
-      }
-    } else if (type === "warning") {
-      // Warning: single mid-range beep
-      const osc = audioContext.createOscillator();
-      const gain = audioContext.createGain();
-      osc.connect(gain);
-      gain.connect(audioContext.destination);
-      osc.frequency.value = 600;
-      gain.gain.setValueAtTime(0.1, now);
-      gain.gain.exponentialRampToValueAtTime(0.01, now + 0.2);
-      osc.start(now);
-      osc.stop(now + 0.2);
-    }
+    const osc = audioContext.createOscillator();
+    const gain = audioContext.createGain();
+    osc.connect(gain);
+    gain.connect(audioContext.destination);
+    osc.frequency.value = 600;
+    gain.gain.setValueAtTime(0.1, now);
+    gain.gain.exponentialRampToValueAtTime(0.01, now + 0.2);
+    osc.start(now);
+    osc.stop(now + 0.2);
   } catch (err) {
     logger.warn("Audio playback failed:", err);
   }
@@ -674,7 +646,11 @@ export default function SessionActive() {
             `Feeder "${normalizedFeederNumber}" does not exist in the loaded BOM.\n\nPlease check the feeder number and try again.`,
             "high",
           );
-          playBuzzer("error");
+          registerScanResult(
+            normalizedFeederNumber,
+            false,
+            `Feeder "${normalizedFeederNumber}" rejected 3 times. Verify the feeder number or call a supervisor.`,
+          );
           return;
         }
 
@@ -736,7 +712,7 @@ export default function SessionActive() {
         }
 
         showSuccessAlert(`Feeder "${normalizedFeederNumber}" found in BOM`);
-        playBuzzer("success");
+        registerScanResult(normalizedFeederNumber, true);
         setScanStep("spool");
         setNeedsAlternateSelection(false);
         return;
@@ -816,7 +792,11 @@ export default function SessionActive() {
             `MPN Mismatch for Feeder ${lockedFeeder?.feederNumber ?? pendingFeeder}. Expected: ${expectedDisplay}`,
             "high",
           );
-          playBuzzer("error");
+          registerScanResult(
+            normalizedScanned,
+            false,
+            `Component "${normalizedScanned}" rejected 3 times on feeder ${lockedFeeder?.feederNumber ?? pendingFeeder}. Verify the part or call a supervisor.`,
+          );
           clearScanInput();
           return;
         }
@@ -829,9 +809,10 @@ export default function SessionActive() {
 
         if (match.isPrimary) {
           showSuccessAlert(`✓ Primary Match — ${match.label}: ${match.value}`);
-          playBuzzer("success");
+          registerScanResult(normalizedScanned, true);
         } else {
           showWarningAlert(`⚠ Alternate Match — ${match.label}: ${match.value}`, "medium");
+          resetStrikes(normalizedScanned);
           playBuzzer("warning");
         }
 

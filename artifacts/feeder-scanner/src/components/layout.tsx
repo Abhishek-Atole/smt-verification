@@ -10,6 +10,7 @@ import type { ReactNode } from "react";
 import { AppLogo } from "@/components/AppLogo";
 import { appConfig } from "@/lib/appConfig";
 import { LicenseBadge } from "@/licensing/LicenseBadge";
+import { NotificationBell } from "@/components/NotificationBell";
 
 interface NavItem {
   href: string;
@@ -96,8 +97,11 @@ export function Layout({ children }: { children: ReactNode }) {
           >
             <X className="w-4 h-4" />
           </Button>
-          {/* Desktop controls: theme, minimize (icon-rail), hide */}
+          {/* Desktop controls: notifications, theme, minimize (icon-rail), hide */}
           <div className="hidden md:flex items-center gap-1">
+            {!collapsed && (
+              <NotificationBell align="left" className="text-sidebar-foreground" />
+            )}
             {!collapsed && (
               <Button
                 variant="ghost"
@@ -211,13 +215,16 @@ export function Layout({ children }: { children: ReactNode }) {
               <span className="text-center font-semibold text-sm truncate">{appConfig.companyShort}</span>
             </div>
           </div>
-          <Button
-            variant="ghost"
-            size="icon"
-            onClick={() => setTheme(theme === "light" ? "dark" : "light")}
-          >
-            {theme === "light" ? <Moon className="w-4 h-4" /> : <Sun className="w-4 h-4" />}
-          </Button>
+          <div className="flex items-center gap-1">
+            <NotificationBell />
+            <Button
+              variant="ghost"
+              size="icon"
+              onClick={() => setTheme(theme === "light" ? "dark" : "light")}
+            >
+              {theme === "light" ? <Moon className="w-4 h-4" /> : <Sun className="w-4 h-4" />}
+            </Button>
+          </div>
         </div>
         {children}
       </main>

@@ -19,6 +19,7 @@ import { useAuth } from "@/context/auth-context";
 import { useSession } from "@/context/session-context";
 import { logger } from "@/lib/logger";
 import { isAcceptToken } from "@/lib/accept-token";
+import { registerScanResult, resetStrikes, stopAlarm } from "@/utils/indication";
 import { getGetBomQueryKey, getGetSessionQueryKey, getListSplicesQueryKey, useGetBom, useGetSession, useListSplices, useRecordSplice } from "@workspace/api-client-react";
 
 type WorkflowStep = "feeder" | "oldSpool" | "newSpool" | "newLot" | "confirm";
@@ -347,6 +348,15 @@ export default function SplicingPage() {
     setRetryCounts((current) => ({ ...current, [failure.step]: nextCount }));
     setWorkflowFailure(failure);
 
+    // Strong "wrong" buzzer + strike tracking. Keyed by feeder so 3 consecutive
+    // rejects on the same feeder escalate to the continuous alarm (independent
+    // of the RETRY_LIMIT workflow lock). Cleared on a successful save/override.
+    registerScanResult(
+      feederNumber || "splice",
+      false,
+      `Feeder ${feederNumber || "?"} rejected ${nextCount} times. Verify the component or call a supervisor.`,
+    );
+
     await postWorkflowAuditLog({
       sessionId,
       operatorId: operatorId || "system",
@@ -372,6 +382,8 @@ export default function SplicingPage() {
   };
 
   const resetWorkflow = () => {
+    stopAlarm();
+    resetStrikes();
     setStep("feeder");
     setFeederNumber("");
     setLockedBomItem(null);
@@ -417,6 +429,8 @@ export default function SplicingPage() {
       }
       const data = await res.json();
       showSuccessAlert(`Override approved by ${data.approverName} (${data.approverRole}). Workflow unlocked.`, "medium");
+      stopAlarm();
+      resetStrikes();
       setWorkflowLocked(false);
       setWorkflowFailure(null);
       setRetryCounts((prev) => ({ ...prev, [workflowFailure?.step ?? "oldSpool"]: 0 }));
@@ -479,6 +493,7 @@ export default function SplicingPage() {
       });
 
       showSuccessAlert(`Splice saved successfully for feeder ${feederNumber}.`, "medium");
+      registerScanResult(feederNumber || "splice", true);
       resetWorkflow();
     } catch (error: any) {
       // Surface API validation errors (e.g. MISSING_LOT_CODE, WRONG_FEEDER_ALLOCATION)

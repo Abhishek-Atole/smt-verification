@@ -2,6 +2,7 @@ import { useCallback, useMemo } from "react";
 import playFeedback from "@/utils/audio";
 import { useNotificationStore } from "@/store/useNotificationStore";
 import type { StoredNotification } from "@/store/useNotificationStore";
+import { useNotificationBellStore } from "@/store/useNotificationBellStore";
 import { useLogStore } from "@/store/useLogStore";
 import type { NotificationPayload } from "@/types";
 
@@ -74,9 +75,10 @@ export function useNotification(): UseNotificationReturn {
       title?: string,
       duration: number = 0
     ) => {
+      const resolvedTitle = title || getTitleForType(type);
       push({
         type,
-        title: title || getTitleForType(type),
+        title: resolvedTitle,
         message,
         autoCloseDuration: duration > 0 ? duration : getDurationForType(type),
       });
@@ -88,6 +90,9 @@ export function useNotification(): UseNotificationReturn {
           priority,
         },
       });
+
+      // Persist to the header bell (survives auto-dismiss + reload, until read).
+      useNotificationBellStore.getState().record({ type, title: resolvedTitle, message });
 
       if (type === "success") {
         playFeedback("success");
@@ -102,7 +107,7 @@ export function useNotification(): UseNotificationReturn {
 
   const showErrorAlert = useCallback(
     (message: string, priority: "critical" | "high" | "medium" | "low" = "high") => {
-      showAlert(message, "error", priority, "❌ ERROR", 5000);
+      showAlert(message, "error", priority, "❌ ERROR", 8000);
     },
     [showAlert]
   );
@@ -110,13 +115,13 @@ export function useNotification(): UseNotificationReturn {
   const notify = useMemo(
     () => ({
       success: (title: string, message?: string) => {
-        showAlert(message || title, "success", "low", title, 2000);
+        showAlert(message || title, "success", "low", title, 4000);
       },
       error: (title: string, message?: string) => {
-        showAlert(message || title, "error", "high", title, 5000);
+        showAlert(message || title, "error", "high", title, 8000);
       },
       warning: (title: string, message?: string) => {
-        showAlert(message || title, "warning", "medium", title, 3000);
+        showAlert(message || title, "warning", "medium", title, 5000);
       },
     }),
     [showAlert]
@@ -124,14 +129,14 @@ export function useNotification(): UseNotificationReturn {
 
   const showWarningAlert = useCallback(
     (message: string, priority: "critical" | "high" | "medium" | "low" = "medium") => {
-      showAlert(message, "warning", priority, "⚡ WARNING", 3000);
+      showAlert(message, "warning", priority, "⚡ WARNING", 5000);
     },
     [showAlert]
   );
 
   const showSuccessAlert = useCallback(
     (message: string, priority: "critical" | "high" | "medium" | "low" = "medium") => {
-      showAlert(message, "success", priority, "✓ SUCCESS", 2000);
+      showAlert(message, "success", priority, "✓ SUCCESS", 4000);
     },
     [showAlert]
   );
@@ -161,12 +166,12 @@ export function useNotification(): UseNotificationReturn {
 
 function getDurationForType(type: "error" | "warning" | "success") {
   if (type === "error") {
-    return 5000;
+    return 8000;
   }
   if (type === "success") {
-    return 2000;
+    return 4000;
   }
-  return 3000;
+  return 5000;
 }
 
 function getTitleForType(type: "error" | "warning" | "success") {

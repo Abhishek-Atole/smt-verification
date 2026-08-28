@@ -102,10 +102,10 @@ describe("NotificationSystem", () => {
     expect(screen.getByText("Duplicate Scan")).toBeTruthy();
   });
 
-  test("SUCCESS auto-dismisses after 3000ms", async () => {
+  test("SUCCESS auto-dismisses after 5000ms", async () => {
     renderNotification("success", "Scan complete");
     act(() => {
-      vi.advanceTimersByTime(3250);
+      vi.advanceTimersByTime(5250);
     });
     expect(screen.queryByText("Scan complete")).toBeNull();
   });
@@ -118,10 +118,10 @@ describe("NotificationSystem", () => {
     expect(screen.queryByText("Scan failed")).toBeNull();
   });
 
-  test("WARNING auto-dismisses after 4000ms", async () => {
+  test("WARNING auto-dismisses after 6000ms", async () => {
     renderNotification("warning", "Alternate component used");
     act(() => {
-      vi.advanceTimersByTime(4250);
+      vi.advanceTimersByTime(6250);
     });
     expect(screen.queryByText("Alternate component used")).toBeNull();
   });
