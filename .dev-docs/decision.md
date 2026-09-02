@@ -2095,3 +2095,56 @@ real fix means either a fixed archive location or a `systemctl edit` step in the
 `chown -R "$BUILD_USER"` with no re-lock, so it would leave the tree unlocked. Fresh installs via
 `setup.sh` are complete; the update script was not requested and is not written.
 **Git:** committed as part of the v2.5.0 release (user asked for the push).
+
+## v2.5.0 release — one commit, public tag, downloadable GitHub Release
+
+**Context:** The working tree had accumulated 96 files of uncommitted work across several sessions
+(Module 15b report output, Module 11.4/11.7 reels, notification targeting, device/IP audit, splice
+status fix) plus this session's deploy hardening. The user asked to push it as the latest version so a
+client can download and run it from the public repo. This was the first commit authorisation in a repo
+that had been commit-only-when-asked.
+
+**Decision & why:** One release commit rather than a per-feature split. The features share
+schema/route/UI files written in different sessions — a split would have produced intermediate commits
+where a route references a table whose schema is not yet committed, i.e. non-building history, which is
+worse than one large commit with a thorough body. The body enumerates each feature so history stays
+readable. Committed straight to `main` because a branch cannot serve the download path the user asked
+for without a merge, and every prior release on this repo went to `main` directly. Tag `v2.5.0`
+(annotated) carries the two client-facing behaviour changes in its message — the folder is now
+sudo-only and `CREDENTIALS.txt` needs `sudo cat` — so they are visible from `git show v2.5.0` and not
+only in the release page. Published a GitHub Release with the tarball **and** its `.sha256` so the
+client verifies before executing; the notes lead with the four download/verify/extract/install commands
+and state the Chromium-only + secure-context limit plainly, since that is the one place this feature
+will look broken to a user who did nothing wrong.
+Two untracked-but-unignored files were resolved rather than committed: `*.tar.gz.sha256` and
+`update-client-v*.sh` are now gitignored. Checksums belong with the Release, and a per-version updater
+inside the next version's tarball only confuses whoever runs the install — no previous updater was ever
+tracked, so this codifies existing practice.
+
+**Rejected alternatives:** (a) A feature-split series of commits — non-building intermediates, per
+above. (b) A release branch + PR — no second reviewer on this repo, and it delays the download path the
+request was about. (c) Committing the `.sha256`/updater files — see above. (d) Leaving `test.txt` (a
+stray tracked file, already deleted in the working tree) for a separate cleanup commit — it was already
+staged as a deletion and splitting it out adds a commit for nothing.
+
+**Touches:** `.gitignore` (release artifacts + updater scripts), `.env.example` (documents
+`REPORT_ARCHIVE_ROOT` as a fallback-only setting and warns that `ProtectSystem=strict` makes any path
+outside `ReadWritePaths` read-only). Commit `dce307f`, tag `v2.5.0`.
+
+**Verification:** Pre-push gate all green — api-server `tsc --noEmit` 0 errors and **329 passed / 26
+skipped** (33 files); feeder-scanner `tsc` 0 errors and **40 passed** (3 files). Secret scan over
+exactly the staged content (not the working tree): the packager's own high-entropy regex, any 32+ hex
+run outside the lockfile, JWT-shaped literals, and any staged `.env`/`CREDENTIALS`/key file — all
+clean; the `.env.example` diff is comment-only. Pushed `660bcb6..dce307f` to `origin/main` with 0
+commits behind. Packaged from the tag: guard passed, secret scan clean, **1.2M / 481 files** (was ~3.5M
+/ ~1100). Extracted the actual published tarball and asserted all 16 pruned paths absent, 0 test files
+remaining, all 10 required paths present, `setup.sh` and `lock-app-dir.sh` still executable — then ran
+**`pnpm install --frozen-lockfile`** in it: **exit 0, "Scope: all 8 workspace projects"**. That last
+check also confirms the fix for a real breakage: `artifacts/feeder-scanner/package.json` at the previous
+HEAD said `electron: ^42.4.0` while `pnpm-lock.yaml` recorded `^42.10.1` (commit 660bcb6 landed the
+lockfile without the manifest bump), so **any client installing from the previous HEAD would have hit
+`ERR_PNPM_OUTDATED_LOCKFILE` on setup.sh's first step**. Release verified public and non-draft, both
+assets attached, and an anonymous `curl` of the checksum asset returns HTTP 200 with content identical
+to the local file.
+**Git:** committed and pushed — `dce307f`, tag `v2.5.0`,
+https://github.com/Abhishek-Atole/smt-verification/releases/tag/v2.5.0
