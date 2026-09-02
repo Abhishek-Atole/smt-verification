@@ -13,6 +13,7 @@ const NAV_ITEMS = [
   { path: "integrity", label: "Integrity", icon: "\u25C9" },
   { path: "notifications", label: "Notifications", icon: "\u25C9" },
   { path: "labels", label: "Print Labels", icon: "\u25C9" },
+  { path: "reports", label: "Report Output", icon: "\u25C9" },
   { path: "license", label: "License", icon: "\u25C9" },
 ];
 

@@ -92,6 +92,20 @@ export function verifyAccessToken(token: string): AccessTokenPayload | null {
   }
 }
 
+// Module 13 — the client needs the access token's expiry to schedule a silent
+// refresh *before* the session dies. verifyAccessToken deliberately drops `exp`
+// (it only returns the actor shape used for signing), so this is a separate
+// read. Returns epoch **seconds** as the JWT carries it, or null if the token is
+// invalid/expired — callers must not treat null as "never expires".
+export function accessTokenExpirySec(token: string): number | null {
+  try {
+    const decoded = jwt.verify(token, getJwtSecret()) as JwtPayload;
+    return typeof decoded.exp === "number" ? decoded.exp : null;
+  } catch {
+    return null;
+  }
+}
+
 // Refresh tokens are opaque random 256-bit values, base64url-encoded for cookie
 // transport. We never store the plaintext — the SHA-256 hex digest is what hits
 // refresh_tokens.token_hash.

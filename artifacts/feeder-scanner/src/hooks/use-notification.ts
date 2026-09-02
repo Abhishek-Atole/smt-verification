@@ -2,7 +2,6 @@ import { useCallback, useMemo } from "react";
 import playFeedback from "@/utils/audio";
 import { useNotificationStore } from "@/store/useNotificationStore";
 import type { StoredNotification } from "@/store/useNotificationStore";
-import { useNotificationBellStore } from "@/store/useNotificationBellStore";
 import { useLogStore } from "@/store/useLogStore";
 import type { NotificationPayload } from "@/types";
 
@@ -90,9 +89,6 @@ export function useNotification(): UseNotificationReturn {
           priority,
         },
       });
-
-      // Persist to the header bell (survives auto-dismiss + reload, until read).
-      useNotificationBellStore.getState().record({ type, title: resolvedTitle, message });
 
       if (type === "success") {
         playFeedback("success");

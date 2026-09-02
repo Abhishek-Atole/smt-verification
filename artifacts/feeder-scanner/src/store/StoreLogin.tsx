@@ -6,6 +6,7 @@ import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { STORE_ROUTE } from "./config";
 import { logger } from "../lib/logger";
+import { consumeSessionExpiredNotice, SESSION_EXPIRED_MESSAGE } from "../lib/session-guard";
 
 // Store-only login window. Role is fixed to "storekeeper" (no role picker) —
 // this is an isolated entry point distinct from the main app login.
@@ -13,6 +14,10 @@ export default function StoreLogin() {
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
+  // Module 13(c) — same notice as the main and admin logins. StoreGate renders
+  // this component inline (no navigation), so the flag is what carries the
+  // reason across the reload the guard performs.
+  const [sessionExpired] = useState(consumeSessionExpiredNotice);
   const { login } = useAuth();
   const [, setLocation] = useLocation();
 
@@ -38,6 +43,11 @@ export default function StoreLogin() {
           <CardDescription className="text-center">Enter your storekeeper credentials to continue</CardDescription>
         </CardHeader>
         <CardContent>
+          {sessionExpired && (
+            <p role="status" className="mb-6 rounded-md border border-amber-500/40 bg-amber-500/10 px-4 py-3 text-sm font-medium text-amber-700 dark:text-amber-400">
+              {SESSION_EXPIRED_MESSAGE}
+            </p>
+          )}
           <form onSubmit={handleLogin} className="space-y-6" autoComplete="on">
             <div className="space-y-3">
               <label className="text-sm font-medium" htmlFor="store-username">

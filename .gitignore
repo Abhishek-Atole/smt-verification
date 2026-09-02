@@ -223,3 +223,9 @@ release/
 
 # Build artifacts
 *.tar.gz
+# Release-artifact checksums belong with the GitHub Release, not the tree.
+*.tar.gz.sha256
+# Per-version client hand-over updaters. Generated per release and handed over
+# out of band; shipping a previous version's updater inside the tarball only
+# confuses whoever is doing the install.
+update-client-v*.sh

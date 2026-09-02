@@ -227,6 +227,12 @@ export const sessionHandoversTable = pgTable("session_handovers", {
 // Module 2.2/4.3: co-ownership of a changeover (legacy sessionsTable). Creator
 // is inserted on session start; handover recipients are added later (Module 4),
 // so both operators retain access. Access filtering joins on this table.
+//
+// Module 4 (2026-08-30): handover recipients are added as `status='pending'` and
+// gain access only once they Accept (status→'accepted'); creator rows default to
+// 'accepted'. `fromOperatorId`/`notes` carry the incoming-handover banner data
+// (who handed over + why) so the recipient's pending-handover list reads from
+// this table — the live session model — rather than the unused session_handovers.
 export const changeoverOperatorsTable = pgTable(
   "changeover_operators",
   {
@@ -238,6 +244,10 @@ export const changeoverOperatorsTable = pgTable(
       .notNull()
       .references(() => usersTable.id),
     role: text("role").notNull().default("creator"), // "creator" | "handover"
+    status: text("status").notNull().default("accepted"), // "accepted" | "pending" | "rejected"
+    fromOperatorId: uuid("from_operator_id").references(() => usersTable.id), // initiator of a handover row
+    notes: text("notes"),
+    acceptedAt: timestamp("accepted_at"),
     addedAt: timestamp("added_at").defaultNow().notNull(),
   },
   (table) => ({

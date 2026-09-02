@@ -35,12 +35,23 @@ type AuditEvent =
   | "SESSION_REVOKED"
   // Module 10 — device / IP restriction & security settings
   | "SECURITY_DEVICE_BLOCKED"
+  | "SECURITY_DEVICE_LOOKUP_UNAVAILABLE"
+  | "SECURITY_ORIGIN_REJECTED"
   | "SECURITY_MAINTENANCE_BLOCK"
   | "SECURITY_LOGIN_DEVICE_MISMATCH"
   | "DEVICE_CREATED"
   | "DEVICE_UPDATED"
   | "DEVICE_DELETED"
-  | "SECURITY_SETTINGS_UPDATED";
+  | "SECURITY_SETTINGS_UPDATED"
+  // Module 12.3 — database backup run + retention prune audit trail
+  | "BACKUP_STARTED"
+  | "BACKUP_SUCCEEDED"
+  | "BACKUP_FAILED"
+  | "BACKUP_PRUNED"
+  // Module 14 — admin notification broadcast
+  | "NOTIFICATION_BROADCAST"
+  // Module 15b — report output destinations (client folder policy + archive root)
+  | "REPORT_OUTPUT_SETTINGS_UPDATED";
 
 import crypto from "node:crypto";
 import { desc, isNotNull } from "drizzle-orm";

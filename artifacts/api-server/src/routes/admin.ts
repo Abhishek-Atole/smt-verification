@@ -1,5 +1,6 @@
 import { Router, type IRouter, type Request, type Response } from "express";
 import bcrypt from "bcryptjs";
+import path from "node:path";
 import { and, desc, eq, gt, isNull, sql } from "drizzle-orm";
 import { db, pool } from "@workspace/db";
 import {
@@ -11,6 +12,7 @@ import {
   devicesTable,
   securitySettingsTable,
   refreshTokensTable,
+  reportOutputSettingsTable,
 } from "@workspace/db/schema";
 import type { DeviceType, DeviceStatus } from "@workspace/db/schema";
 import { logger } from "../lib/logger";
@@ -28,10 +30,12 @@ import {
 import { revokeUser } from "../lib/tokenBlacklist";
 import { revokeAllForUser } from "../lib/refreshStore";
 import { invalidateDeviceCache, invalidateSecuritySettingsCache } from "../lib/deviceStore";
+import { invalidateReportOutputSettingsCache } from "../lib/reportOutputStore";
 import { isValidIpOrCidr } from "../lib/ipMatch";
 import { snapshot as metricsSnapshot, latest as metricsLatest } from "../lib/metricsRingBuffer";
 import { checkLockout, recordFailure, recordSuccess } from "../lib/lockoutStore";
 import { userCache, buildKey, getCached, invalidatePrefix, setCached, getCacheStats } from "../lib/cache";
+import { pushNotification, type NotificationType } from "../lib/notify";
 
 const DEVICE_TYPES: DeviceType[] = ["end_device", "admin_device", "store_device", "server"];
 const DEVICE_STATUSES: DeviceStatus[] = ["active", "blocked", "pending"];
@@ -437,7 +441,13 @@ router.post("/backups/run", requireAdminAuth, slideAdminCookie, async (req: Admi
 
 router.get("/devices", requireAdminAuth, slideAdminCookie, async (_req, res) => {
   const rows = await db.select().from(devicesTable).orderBy(devicesTable.deviceType, devicesTable.deviceName);
-  res.json({ devices: rows });
+  // Module 10.2 — flag rows whose stored allowed_ip fails the strict validator
+  // (written before the 2026-08-30 fix). Computed server-side so the admin UI
+  // badge and the save-time rejection use the SAME validator and cannot drift.
+  // Additive field; nothing is modified or hidden — see decision.md 2026-08-30.
+  res.json({
+    devices: rows.map((row) => ({ ...row, allowedIpValid: isValidIpOrCidr(row.allowedIp) })),
+  });
 });
 
 router.post("/devices", requireAdminAuth, slideAdminCookie, async (req: AdminAuthRequest, res: Response) => {
@@ -581,6 +591,87 @@ router.patch("/security-settings", requireAdminAuth, slideAdminCookie, async (re
   res.json({ settings: updated });
 });
 
+// ─── Module 15b — Report output settings (single-row) ───────────────────
+// Two destinations with different reach:
+//   • client folder → POLICY ONLY. A browser cannot be given a path; the File
+//     System Access API yields an opaque, non-serializable handle from a user
+//     gesture. Each PC picks its own folder once; only on/off + subfolder layout
+//     + an advisory label sync from here.
+//   • archive root → a real absolute path on the API host, honoured by
+//     report-archive-service.ts. Overrides REPORT_ARCHIVE_ROOT.
+router.get("/report-output-settings", requireAdminAuth, slideAdminCookie, async (_req, res) => {
+  const [row] = await db.select().from(reportOutputSettingsTable).where(eq(reportOutputSettingsTable.id, true));
+  res.json({ settings: row ?? null, envArchiveRoot: process.env.REPORT_ARCHIVE_ROOT?.trim() || null });
+});
+
+router.patch("/report-output-settings", requireAdminAuth, slideAdminCookie, async (req: AdminAuthRequest, res: Response) => {
+  const body = req.body as {
+    clientFolderEnabled?: unknown; folderLabel?: unknown; organizeSubfolders?: unknown;
+    archiveEnabled?: unknown; archiveRoot?: unknown;
+  } | null;
+  const patch: Partial<{
+    clientFolderEnabled: boolean; folderLabel: string | null; organizeSubfolders: boolean;
+    archiveEnabled: boolean; archiveRoot: string | null;
+    updatedBy: string | null; updatedAt: Date;
+  }> = {};
+
+  if (typeof body?.clientFolderEnabled === "boolean") patch.clientFolderEnabled = body.clientFolderEnabled;
+  if (typeof body?.organizeSubfolders === "boolean") patch.organizeSubfolders = body.organizeSubfolders;
+  if (typeof body?.archiveEnabled === "boolean") patch.archiveEnabled = body.archiveEnabled;
+
+  if (body?.folderLabel !== undefined) {
+    if (body.folderLabel !== null && typeof body.folderLabel !== "string") {
+      res.status(400).json({ error: "invalid_folder_label", message: "folderLabel must be a string or null." });
+      return;
+    }
+    const label = typeof body.folderLabel === "string" ? body.folderLabel.trim() : "";
+    if (label.length > 200) {
+      res.status(400).json({ error: "invalid_folder_label", message: "folderLabel max 200 chars." });
+      return;
+    }
+    patch.folderLabel = label || null;
+  }
+
+  if (body?.archiveRoot !== undefined) {
+    if (body.archiveRoot !== null && typeof body.archiveRoot !== "string") {
+      res.status(400).json({ error: "invalid_archive_root", message: "archiveRoot must be a string or null." });
+      return;
+    }
+    const root = typeof body.archiveRoot === "string" ? body.archiveRoot.trim() : "";
+    if (root) {
+      // Absolute only: a relative root resolves against the API's cwd, which
+      // differs between the systemd unit and a dev shell — same setting, two
+      // different folders. Reject rather than silently pick one.
+      if (!path.isAbsolute(root)) {
+        res.status(400).json({ error: "invalid_archive_root", message: "archiveRoot must be an absolute path." });
+        return;
+      }
+      if (root.length > 500) {
+        res.status(400).json({ error: "invalid_archive_root", message: "archiveRoot max 500 chars." });
+        return;
+      }
+    }
+    patch.archiveRoot = root || null;
+  }
+
+  if (Object.keys(patch).length === 0) { res.status(400).json({ error: "No valid fields to update" }); return; }
+
+  patch.updatedBy = req.admin?.adminId ?? null;
+  patch.updatedAt = new Date();
+  const [updated] = await db.insert(reportOutputSettingsTable)
+    .values({ id: true, ...patch })
+    .onConflictDoUpdate({ target: reportOutputSettingsTable.id, set: patch })
+    .returning();
+  invalidateReportOutputSettingsCache();
+  await auditLog({
+    event: "REPORT_OUTPUT_SETTINGS_UPDATED",
+    operatorId: req.admin?.adminId,
+    detail: `fields=${Object.keys(patch).filter((k) => k !== "updatedBy" && k !== "updatedAt").join(",")}`,
+    ip: req.ip,
+  });
+  res.json({ settings: updated });
+});
+
 // ─── Module 10.3 — Active sessions + force logout ───────────────────────
 // Lists live (unrevoked, unexpired) refresh-token sessions joined to their
 // user so the admin can see who is logged in on which device_type and force
@@ -648,5 +739,48 @@ export function getPoolStats() {
 
 // Marker re-export for tests that need the sql tag
 export { sql };
+
+// Module 14 — admin-authored notification broadcast. Writes one row into the
+// shared feed, either global (target_role/target_user_id null) or scoped to a
+// single role. Reuses pushNotification's best-effort insert; classified
+// event_class "broadcast" so the client can style it distinctly.
+const BROADCAST_ROLES = ["operator", "qa", "supervisor", "admin", "storekeeper"];
+const BROADCAST_TYPES: NotificationType[] = ["success", "info", "warning", "error"];
+
+router.post("/notifications/broadcast", requireAdminAuth, slideAdminCookie, async (req: AdminAuthRequest, res: Response) => {
+  const body = req.body as { message?: unknown; detail?: unknown; type?: unknown; targetRole?: unknown } | null;
+  const message = typeof body?.message === "string" ? body.message.trim() : "";
+  const detail = typeof body?.detail === "string" && body.detail.trim() ? body.detail.trim() : undefined;
+  const type = BROADCAST_TYPES.includes(body?.type as NotificationType) ? (body!.type as NotificationType) : "info";
+  // "all" (or omitted) → global; otherwise a single valid role.
+  const rawRole = typeof body?.targetRole === "string" ? body.targetRole : "all";
+  if (rawRole !== "all" && !BROADCAST_ROLES.includes(rawRole)) {
+    res.status(400).json({ error: "Invalid targetRole" });
+    return;
+  }
+  if (!message || message.length > 500) {
+    res.status(400).json({ error: "message is required (max 500 chars)" });
+    return;
+  }
+
+  await pushNotification({
+    type,
+    message,
+    detail,
+    eventClass: "broadcast",
+    targetRole: rawRole === "all" ? undefined : rawRole,
+    createdBy: req.admin?.username,
+    createdByUserId: req.admin?.adminId,
+  });
+
+  await auditLog({
+    event: "NOTIFICATION_BROADCAST",
+    operatorId: req.admin?.adminId,
+    detail: `broadcast:${rawRole}:${message.slice(0, 80)}`,
+    ip: req.ip,
+  });
+
+  res.status(201).json({ success: true, targetRole: rawRole });
+});
 
 export default router;

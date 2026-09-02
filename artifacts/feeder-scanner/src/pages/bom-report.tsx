@@ -11,6 +11,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { format } from "date-fns";
 import jsPDF from "jspdf";
 import autoTable from "jspdf-autotable"; import { logger } from "../lib/logger";
+import { saveReportFile } from "@/lib/reportFolder";
 const NAVY: [number, number, number] = [0, 51, 102];
 const WHITE: [number, number, number] = [255, 255, 255];
 const LIGHT_ROW: [number, number, number] = [220, 230, 242];
@@ -53,7 +54,7 @@ export default function BomReport() {
     },
   };
 
-  const handleDownloadPDF = () => {
+  const handleDownloadPDF = async () => {
     const doc = new jsPDF();
     
     // Header
@@ -147,7 +148,8 @@ export default function BomReport() {
       },
     });
 
-    doc.save(`BOM-${reportData.id}-Report.pdf`);
+    // Module 15b — chosen folder when configured, else a normal download.
+    await saveReportFile(doc.output("blob"), `BOM-${reportData.id}-Report.pdf`);
   };
 
   // Excel export is handled by backend API for security
@@ -238,7 +240,7 @@ export default function BomReport() {
 
       {/* Download Actions */}
       <div className="flex gap-3">
-        <Button onClick={handleDownloadPDF} className="gap-2">
+        <Button onClick={() => void handleDownloadPDF()} className="gap-2">
           <Download className="w-4 h-4" />
           Download PDF
         </Button>

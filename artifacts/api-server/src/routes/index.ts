@@ -23,6 +23,8 @@ import mastersRouter from "./masters";
 import documentControlRouter from "./document-control";
 import inspectionLogRouter from "./inspection-log";
 import bypassRouter from "./bypass";
+import reelsRouter from "./reels";
+import reportOutputRouter from "./report-output";
 
 
 const router: IRouter = Router();
@@ -51,6 +53,8 @@ router.use(mastersRouter);
 router.use(documentControlRouter);
 router.use(inspectionLogRouter);
 router.use(bypassRouter);
+router.use(reelsRouter);
+router.use(reportOutputRouter);
 
 
 export default router;

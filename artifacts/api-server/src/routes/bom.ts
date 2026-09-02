@@ -257,7 +257,7 @@ router.post("/bom", requireRole("qa", "supervisor", "admin"), requireStepUp, asy
     }).returning();
     invalidateBomCache();
     await auditLog({ event: "BOM_CREATED", operatorId: req.actor?.id, detail: `BOM "${bom.name}" created`, ip: req.ip });
-    await pushNotification({ type: "success", message: `BOM created: ${bom.name}`, detail: `by ${req.actor?.username ?? "system"}`, entityId: String(bom.id), createdBy: req.actor?.username });
+    await pushNotification({ type: "success", message: `BOM created: ${bom.name}`, detail: `by ${req.actor?.username ?? "system"}`, entityId: String(bom.id), createdBy: req.actor?.username, eventClass: "bom", targetRole: "qa", relatedEntityType: "bom", relatedEntityId: String(bom.id), createdByUserId: req.actor?.id });
     res.status(201).json({
       id: bom.id,
       name: bom.name,
@@ -368,7 +368,7 @@ router.patch("/bom/:bomId", requireRole("qa", "supervisor", "admin"), requireSte
 
     invalidateBomCache();
     await auditLog({ event: "BOM_UPDATED", operatorId: req.actor?.id, detail: `BOM "${updatedBom.name}" updated`, ip: req.ip });
-    await pushNotification({ type: "info", message: `BOM updated: ${updatedBom.name}`, detail: `by ${req.actor?.username ?? "system"}`, entityId: String(updatedBom.id), createdBy: req.actor?.username });
+    await pushNotification({ type: "info", message: `BOM updated: ${updatedBom.name}`, detail: `by ${req.actor?.username ?? "system"}`, entityId: String(updatedBom.id), createdBy: req.actor?.username, eventClass: "bom", targetRole: "qa", relatedEntityType: "bom", relatedEntityId: String(updatedBom.id), createdByUserId: req.actor?.id });
     res.json({
       ...updatedBom,
       items,
@@ -403,7 +403,7 @@ router.delete("/bom/:bomId", requireRole("qa", "supervisor", "admin"), async (re
 
     invalidateBomCache();
     await auditLog({ event: "BOM_DELETED", operatorId: req.actor?.id, detail: `BOM "${bom.name}" moved to trash`, ip: req.ip });
-    await pushNotification({ type: "warning", message: `BOM deleted: ${bom.name}`, detail: `moved to trash by ${req.actor?.username ?? "system"}`, entityId: String(bomId), createdBy: req.actor?.username });
+    await pushNotification({ type: "warning", message: `BOM deleted: ${bom.name}`, detail: `moved to trash by ${req.actor?.username ?? "system"}`, entityId: String(bomId), createdBy: req.actor?.username, eventClass: "bom", targetRole: "qa", relatedEntityType: "bom", relatedEntityId: String(bomId), createdByUserId: req.actor?.id });
     res.json({ success: true, message: "BOM moved to trash" });
   } catch (err) {
     req.log.error(err);
@@ -754,7 +754,7 @@ router.patch("/bom/:bomId/delete", requireRole("qa", "supervisor", "admin"), req
 
     invalidateBomCache();
     await auditLog({ event: "BOM_DELETED", operatorId: req.actor?.id, detail: `BOM "${bom.name}" moved to trash`, ip: req.ip });
-    await pushNotification({ type: "warning", message: `BOM deleted: ${bom.name}`, detail: `moved to trash by ${req.actor?.username ?? "system"}`, entityId: String(bomId), createdBy: req.actor?.username });
+    await pushNotification({ type: "warning", message: `BOM deleted: ${bom.name}`, detail: `moved to trash by ${req.actor?.username ?? "system"}`, entityId: String(bomId), createdBy: req.actor?.username, eventClass: "bom", targetRole: "qa", relatedEntityType: "bom", relatedEntityId: String(bomId), createdByUserId: req.actor?.id });
     res.json({ success: true, message: "BOM moved to trash" });
   } catch (err) {
     req.log.error(err);
@@ -784,7 +784,7 @@ router.patch("/bom/:bomId/restore", requireRole("qa", "supervisor", "admin"), re
 
     invalidateBomCache();
     await auditLog({ event: "BOM_RESTORED", operatorId: req.actor?.id, detail: `BOM "${bom.name}" restored from trash`, ip: req.ip });
-    await pushNotification({ type: "info", message: `BOM restored: ${bom.name}`, detail: `by ${req.actor?.username ?? "system"}`, entityId: String(bomId), createdBy: req.actor?.username });
+    await pushNotification({ type: "info", message: `BOM restored: ${bom.name}`, detail: `by ${req.actor?.username ?? "system"}`, entityId: String(bomId), createdBy: req.actor?.username, eventClass: "bom", targetRole: "qa", relatedEntityType: "bom", relatedEntityId: String(bomId), createdByUserId: req.actor?.id });
     res.json({ success: true, message: "BOM restored from trash" });
   } catch (err) {
     req.log.error(err);
@@ -828,7 +828,7 @@ router.patch("/bom/:bomId/status", requireRole("qa", "supervisor", "admin"), req
 
     invalidateBomCache();
     await auditLog({ event: meta.event, operatorId: req.actor?.id, detail: `BOM "${bom.name}" ${meta.verb}`, ip: req.ip });
-    await pushNotification({ type: meta.type, message: `BOM ${meta.verb}: ${bom.name}`, detail: `by ${req.actor?.username ?? "system"}`, entityId: String(bomId), createdBy: req.actor?.username });
+    await pushNotification({ type: meta.type, message: `BOM ${meta.verb}: ${bom.name}`, detail: `by ${req.actor?.username ?? "system"}`, entityId: String(bomId), createdBy: req.actor?.username, eventClass: "bom", targetRole: "qa", relatedEntityType: "bom", relatedEntityId: String(bomId), createdByUserId: req.actor?.id });
     res.json(updated);
   } catch (err) {
     req.log.error(err);
@@ -890,7 +890,7 @@ router.delete("/bom/:bomId/permanent", requireRole("qa", "supervisor", "admin"),
 
     invalidateBomCache();
     await auditLog({ event: "BOM_PERMANENTLY_DELETED", operatorId: req.actor?.id, detail: `BOM "${bom.name}" permanently deleted`, ip: req.ip });
-    await pushNotification({ type: "error", message: `BOM permanently deleted: ${bom.name}`, detail: `by ${req.actor?.username ?? "system"}`, entityId: String(bomId), createdBy: req.actor?.username });
+    await pushNotification({ type: "error", message: `BOM permanently deleted: ${bom.name}`, detail: `by ${req.actor?.username ?? "system"}`, entityId: String(bomId), createdBy: req.actor?.username, eventClass: "bom", targetRole: "qa", relatedEntityType: "bom", relatedEntityId: String(bomId), createdByUserId: req.actor?.id });
     res.status(204).send();
   } catch (err) {
     req.log.error(err);

@@ -13,12 +13,6 @@ class APIError extends Error {
   }
 }
 
-function redirectToLogin() {
-  if (typeof window !== "undefined" && window.location.pathname !== "/login") {
-    window.location.assign("/login");
-  }
-}
-
 async function parseJsonResponse<T>(response: Response): Promise<T> {
   const text = await response.text();
   return text ? (JSON.parse(text) as T) : ({} as T);
@@ -37,10 +31,12 @@ async function request<T>(url: string, init?: RequestInit): Promise<T> {
     headers,
   });
 
-  if (response.status === 401) {
-    redirectToLogin();
-  }
-
+  // Module 13 — 401 handling deliberately lives in the window.fetch patch
+  // (main.tsx → lib/session-guard.ts), not here. This wrapper used to redirect
+  // to a hardcoded "/login", which is wrong for the store and admin portals and
+  // covered only the handful of callers that use `api.*`. The guard sees this
+  // request too, so the redirect still happens — it just picks the right login
+  // surface now. We only translate the status into an APIError for the caller.
   const data = await parseJsonResponse<T>(response);
   if (!response.ok) {
     throw new APIError(

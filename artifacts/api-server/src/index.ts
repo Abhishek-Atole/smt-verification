@@ -3,6 +3,7 @@ import http from "node:http";
 import https from "node:https";
 import app from "./app";
 import { logger } from "./lib/logger";
+import { auditStoredDeviceIps } from "./lib/deviceIpAudit";
 import { startAdminBackgroundJobs } from "./services/admin-background-jobs";
 
 const rawPort = process.env["PORT"];
@@ -56,4 +57,9 @@ server.listen(port, host, () => {
   // is bound. Regression guard: this call was dropped in 49f3118, which left
   // /api/admin/metrics/* empty and the System Health page blank.
   startAdminBackgroundJobs();
+
+  // Module 10.2 — report any stored allowed_ip that the strict validator
+  // rejects (rows written before the 2026-08-30 fix). Reports only; never
+  // modifies. Fire-and-forget: it must not delay or block accepting requests.
+  void auditStoredDeviceIps();
 });

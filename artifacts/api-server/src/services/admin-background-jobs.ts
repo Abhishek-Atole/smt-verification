@@ -3,7 +3,7 @@ import { db, pool } from "@workspace/db";
 import { dbSizeLog } from "@workspace/db/schema";
 import { logger } from "../lib/logger";
 import { captureSystemSample, pushSample } from "../lib/metricsRingBuffer";
-import { runBackupNow } from "./backup-service";
+import { runBackupNow, verifyBackupStorage } from "./backup-service";
 
 // Three jobs:
 // 1. Metrics tick — every 5 s push a sample into the ring buffer.
@@ -36,7 +36,16 @@ export function startAdminBackgroundJobs(): void {
   dbSizeTimer.unref?.();
   void captureDbSize();
 
-  scheduleNextBackup();
+  // Only schedule backups once storage is verified off-disk (spec §12.1). A
+  // misconfigured BACKUP_DIR disables the backup job (loud error) but leaves the
+  // metrics/db-size jobs — and the whole API — running.
+  void verifyBackupStorage().then((check) => {
+    if (check.ok) {
+      scheduleNextBackup();
+    } else {
+      logger.error({ reason: check.reason }, "Scheduled backups NOT started — fix BACKUP_DIR and restart");
+    }
+  });
   logger.info("Admin background jobs started");
 }
 

@@ -66,9 +66,12 @@ export default function Dashboard() {
   const [showAllCompletedSessions, setShowAllCompletedSessions] = useState(false);
   const [showAllAdminControls, setShowAllAdminControls] = useState(false);
   const [recoveringSessionId, setRecoveringSessionId] = useState<number | null>(null);
+  // Module 4: pending handovers now come from the live session model
+  // (changeover_operators joined to sessions), so id/sessionId are integers —
+  // they used to be the dead changeover_sessions text ids.
   const [pendingHandovers, setPendingHandovers] = useState<Array<{
-    id: string;
-    sessionId: string;
+    id: number;
+    sessionId: number;
     fromOperatorName: string | null;
     initiatedAt: string;
     notes: string | null;
@@ -260,23 +263,25 @@ export default function Dashboard() {
     return () => cancelAnimationFrame(frameId);
   }, [deletingSessionId, deleteSessionMutation.isPending]);
 
-  const acceptHandover = async (handoverId: string, sessionId: string) => {
+  const acceptHandover = async (handoverId: number, sessionId: number) => {
     try {
-      const res = await fetch(`/api/verification/handover/${encodeURIComponent(sessionId)}/accept`, {
+      const res = await fetch(`/api/verification/handover/${sessionId}/accept`, {
         method: "POST",
         credentials: "include",
       });
       if (res.ok) {
         setPendingHandovers((prev) => prev.filter((h) => h.id !== handoverId));
+        // Accepting grants session access, so the scoped session lists change.
+        queryClient.invalidateQueries({ queryKey: getListSessionsQueryKey() });
       }
     } catch {
       // Silently fail
     }
   };
 
-  const rejectHandover = async (handoverId: string, sessionId: string) => {
+  const rejectHandover = async (handoverId: number, sessionId: number) => {
     try {
-      const res = await fetch(`/api/verification/handover/${encodeURIComponent(sessionId)}/reject`, {
+      const res = await fetch(`/api/verification/handover/${sessionId}/reject`, {
         method: "POST",
         credentials: "include",
       });
@@ -499,7 +504,7 @@ export default function Dashboard() {
                   <div key={ho.id} className="flex items-center gap-3 p-3 rounded-lg border border-amber-200 bg-white dark:bg-amber-950/10">
                     <div className="flex-1 min-w-0">
                       <p className="text-sm font-semibold text-foreground truncate">
-                        Session {ho.sessionId.slice(0, 8)}…
+                        Changeover #{ho.sessionId}
                       </p>
                       <p className="text-xs text-muted-foreground">
                         From: {ho.fromOperatorName ?? "Unknown"} &middot;{" "}

@@ -373,7 +373,12 @@ router.get("/verification/sessions/active", requireAuth, async (req: AuthRequest
             db
               .select({ sessionId: changeoverOperatorsTable.sessionId })
               .from(changeoverOperatorsTable)
-              .where(eq(changeoverOperatorsTable.operatorId, actor.id)),
+              .where(
+                and(
+                  eq(changeoverOperatorsTable.operatorId, actor.id),
+                  eq(changeoverOperatorsTable.status, "accepted"),
+                ),
+              ),
           ),
         )!,
         eq(sessionsTable.bomVerificationSkipped, false),
@@ -1842,6 +1847,11 @@ router.post(
           message: `Session #${sessionId} — QA verified, proceed to splicing`,
           entityId: sessionId,
           createdBy: actor.name,
+          eventClass: "qa_result",
+          targetRole: "operator",
+          relatedEntityType: "session",
+          relatedEntityId: sessionId,
+          createdByUserId: actor.id,
         });
 
         res.json({ success: true, message: "All feeders manually confirmed" });
@@ -1935,6 +1945,11 @@ router.post(
         message: `Session ${sessionId} — QA verified, proceed to splicing`,
         entityId: sessionId,
         createdBy: actor.name,
+        eventClass: "qa_result",
+        targetRole: "operator",
+        relatedEntityType: "session",
+        relatedEntityId: sessionId,
+        createdByUserId: actor.id,
       });
 
       res.json({ success: true, message: "All feeders manually confirmed" });
@@ -2239,6 +2254,11 @@ router.post(
             message: `Session #${sessionId} — splicing QA verified, changeover closed`,
             entityId: sessionId,
             createdBy: actor.name,
+            eventClass: "qa_result",
+            targetRole: "operator",
+            relatedEntityType: "session",
+            relatedEntityId: sessionId,
+            createdByUserId: actor.id,
           });
 
           res.json({ success: true, status: "completed", discrepancyFound: false });
@@ -2692,6 +2712,11 @@ router.get(
 /**
  * GET /api/verification/handover/pending
  * Returns pending handovers for the current user (as incoming operator).
+ *
+ * Module 4: reads the LIVE session model (changeover_operators joined to the
+ * legacy sessionsTable), not the dead session_handovers/changeover_sessions
+ * pair. A row is pending when the operator was handed a session (role='handover')
+ * and has not yet Accepted/Rejected it. initiatedAt maps to addedAt.
  */
 router.get(
   "/verification/handover/pending",
@@ -2702,26 +2727,27 @@ router.get(
       const actor = req.actor!;
       const handovers = await db
         .select({
-          id: sessionHandoversTable.id,
-          sessionId: sessionHandoversTable.sessionId,
-          fromOperatorId: sessionHandoversTable.fromOperatorId,
-          toOperatorId: sessionHandoversTable.toOperatorId,
-          initiatedAt: sessionHandoversTable.initiatedAt,
-          status: sessionHandoversTable.status,
-          notes: sessionHandoversTable.notes,
+          id: changeoverOperatorsTable.id,
+          sessionId: changeoverOperatorsTable.sessionId,
+          fromOperatorId: changeoverOperatorsTable.fromOperatorId,
+          initiatedAt: changeoverOperatorsTable.addedAt,
+          status: changeoverOperatorsTable.status,
+          notes: changeoverOperatorsTable.notes,
           fromOperatorName: usersTable.name,
-          sessionStatus: changeoverSessionsTable.status,
+          sessionStatus: sessionsTable.status,
         })
-        .from(sessionHandoversTable)
-        .leftJoin(usersTable, eq(sessionHandoversTable.fromOperatorId, usersTable.id))
-        .leftJoin(changeoverSessionsTable, eq(sessionHandoversTable.sessionId, changeoverSessionsTable.id))
+        .from(changeoverOperatorsTable)
+        .leftJoin(usersTable, eq(changeoverOperatorsTable.fromOperatorId, usersTable.id))
+        .leftJoin(sessionsTable, eq(changeoverOperatorsTable.sessionId, sessionsTable.id))
         .where(
           and(
-            eq(sessionHandoversTable.toOperatorId, actor.id),
-            eq(sessionHandoversTable.status, "pending"),
+            eq(changeoverOperatorsTable.operatorId, actor.id),
+            eq(changeoverOperatorsTable.status, "pending"),
+            eq(changeoverOperatorsTable.role, "handover"),
+            isNull(sessionsTable.deletedAt),
           ),
         )
-        .orderBy(desc(sessionHandoversTable.initiatedAt));
+        .orderBy(desc(changeoverOperatorsTable.addedAt));
 
       res.json({ handovers, total: handovers.length });
     } catch (err) {
@@ -2734,6 +2760,13 @@ router.get(
 /**
  * POST /api/verification/handover/:sessionId
  * Initiate a shift handover.
+ *
+ * DEPRECATED (Module 4, 2026-08-30): operates on the dead changeover_sessions /
+ * session_handovers pair (both 0 rows) and has no callers — the UI initiates via
+ * POST /api/sessions/:sessionId/handover on the live model. Left in place rather
+ * than deleted so any out-of-tree client still gets a 404 instead of a crash;
+ * do not build on it. The pending/accept/reject siblings below were repointed to
+ * changeover_operators.
  */
 router.post(
   "/verification/handover/:sessionId",
@@ -2843,6 +2876,12 @@ router.post(
 /**
  * POST /api/verification/handover/:sessionId/accept
  * Accept a pending shift handover.
+ *
+ * Module 4: operates on the LIVE model. Accepting flips the caller's
+ * changeover_operators row from 'pending' to 'accepted', which is what actually
+ * grants session access (every ownership filter requires status='accepted').
+ * The session's own status is deliberately NOT touched — its lifecycle
+ * (active → pending_qa → qa_confirmed → …) is orthogonal to co-ownership.
  */
 router.post(
   "/verification/handover/:sessionId/accept",
@@ -2850,62 +2889,50 @@ router.post(
   requireAuth,
   async (req: AuthRequest, res) => {
     try {
-      const sessionId = String(req.params.sessionId ?? "").trim();
+      const sessionId = Number(req.params.sessionId);
       const actor = req.actor!;
-
-      const [handover] = await db
-        .select({
-          id: sessionHandoversTable.id,
-          fromOperatorId: sessionHandoversTable.fromOperatorId,
-          toOperatorId: sessionHandoversTable.toOperatorId,
-          status: sessionHandoversTable.status,
-        })
-        .from(sessionHandoversTable)
-        .where(
-          and(
-            eq(sessionHandoversTable.sessionId, sessionId),
-            eq(sessionHandoversTable.status, "pending"),
-          ),
-        );
-
-      if (!handover) {
-        res.status(404).json({ error: "No pending handover found for this session" });
+      if (!Number.isInteger(sessionId)) {
+        res.status(400).json({ error: "Invalid session id" });
         return;
       }
 
-      // Only the designated incoming operator can accept
-      if (String(handover.toOperatorId) !== String(actor.id)) {
-        res.status(403).json({ error: "Only the designated incoming operator can accept this handover" });
+      // Keyed on (sessionId, actor) — only the designated incoming operator has
+      // a pending row, so this lookup is also the authorization check.
+      const [pending] = await db
+        .select({ id: changeoverOperatorsTable.id, fromOperatorId: changeoverOperatorsTable.fromOperatorId })
+        .from(changeoverOperatorsTable)
+        .where(
+          and(
+            eq(changeoverOperatorsTable.sessionId, sessionId),
+            eq(changeoverOperatorsTable.operatorId, actor.id),
+            eq(changeoverOperatorsTable.status, "pending"),
+          ),
+        );
+
+      if (!pending) {
+        res.status(404).json({ error: "No pending handover found for this session" });
         return;
       }
 
       const now = new Date();
       await db.transaction(async (tx) => {
         await tx
-          .update(sessionHandoversTable)
-          .set({
-            status: "accepted",
-            acceptedAt: now,
-          })
-          .where(eq(sessionHandoversTable.id, handover.id));
-
-        await tx
-          .update(changeoverSessionsTable)
-          .set({
-            handoverAcceptedAt: now,
-            handoverAcceptedById: actor.id,
-            splicingOperatorId: actor.id,
-            status: "active_splicing",
-          })
-          .where(eq(changeoverSessionsTable.id, sessionId));
+          .update(changeoverOperatorsTable)
+          .set({ status: "accepted", acceptedAt: now })
+          .where(eq(changeoverOperatorsTable.id, pending.id));
 
         await tx.insert(auditLogsTable).values({
           entityType: "session",
-          entityId: sessionId,
+          entityId: String(sessionId),
           action: "handover_accepted",
           changedBy: actor.id,
-          newValue: JSON.stringify({ sessionId, byOperator: actor.id, acceptedAt: now.toISOString() }),
-          description: `Handover accepted by operator ${actor.id} on session ${sessionId}`,
+          newValue: JSON.stringify({
+            sessionId,
+            byOperator: actor.id,
+            fromOperatorId: pending.fromOperatorId,
+            acceptedAt: now.toISOString(),
+          }),
+          description: `Handover accepted by ${actor.name} on changeover #${sessionId}`,
         });
       });
 
@@ -2920,6 +2947,10 @@ router.post(
 /**
  * POST /api/verification/handover/:sessionId/reject
  * Reject a pending shift handover, returning the session to the original operator.
+ *
+ * Module 4: marks the caller's changeover_operators row 'rejected'. The sender
+ * keeps their own 'accepted' row untouched, so the session simply stays with
+ * them — no session-level state needs reverting.
  */
 router.post(
   "/verification/handover/:sessionId/reject",
@@ -2927,63 +2958,48 @@ router.post(
   requireAuth,
   async (req: AuthRequest, res) => {
     try {
-      const sessionId = String(req.params.sessionId ?? "").trim();
+      const sessionId = Number(req.params.sessionId);
       const actor = req.actor!;
-
-      const [handover] = await db
-        .select({
-          id: sessionHandoversTable.id,
-          fromOperatorId: sessionHandoversTable.fromOperatorId,
-          toOperatorId: sessionHandoversTable.toOperatorId,
-          status: sessionHandoversTable.status,
-        })
-        .from(sessionHandoversTable)
-        .where(
-          and(
-            eq(sessionHandoversTable.sessionId, sessionId),
-            eq(sessionHandoversTable.status, "pending"),
-          ),
-        );
-
-      if (!handover) {
-        res.status(404).json({ error: "No pending handover found for this session" });
+      if (!Number.isInteger(sessionId)) {
+        res.status(400).json({ error: "Invalid session id" });
         return;
       }
 
-      // Only the designated incoming operator can reject
-      if (String(handover.toOperatorId) !== String(actor.id)) {
-        res.status(403).json({ error: "Only the designated incoming operator can reject this handover" });
+      const [pending] = await db
+        .select({ id: changeoverOperatorsTable.id, fromOperatorId: changeoverOperatorsTable.fromOperatorId })
+        .from(changeoverOperatorsTable)
+        .where(
+          and(
+            eq(changeoverOperatorsTable.sessionId, sessionId),
+            eq(changeoverOperatorsTable.operatorId, actor.id),
+            eq(changeoverOperatorsTable.status, "pending"),
+          ),
+        );
+
+      if (!pending) {
+        res.status(404).json({ error: "No pending handover found for this session" });
         return;
       }
 
       const now = new Date();
       await db.transaction(async (tx) => {
         await tx
-          .update(sessionHandoversTable)
-          .set({
-            status: "rejected",
-            acceptedAt: now,
-          })
-          .where(eq(sessionHandoversTable.id, handover.id));
-
-        // Revert session to its pre-handover state
-        await tx
-          .update(changeoverSessionsTable)
-          .set({
-            handedOverToOperatorId: null,
-            handedOverToSupervisorId: null,
-            handedOverAt: null,
-            status: "active",
-          })
-          .where(eq(changeoverSessionsTable.id, sessionId));
+          .update(changeoverOperatorsTable)
+          .set({ status: "rejected" })
+          .where(eq(changeoverOperatorsTable.id, pending.id));
 
         await tx.insert(auditLogsTable).values({
           entityType: "session",
-          entityId: sessionId,
+          entityId: String(sessionId),
           action: "handover_rejected",
           changedBy: actor.id,
-          newValue: JSON.stringify({ sessionId, byOperator: actor.id, rejectedAt: now.toISOString() }),
-          description: `Handover rejected by operator ${actor.id} on session ${sessionId}`,
+          newValue: JSON.stringify({
+            sessionId,
+            byOperator: actor.id,
+            fromOperatorId: pending.fromOperatorId,
+            rejectedAt: now.toISOString(),
+          }),
+          description: `Handover rejected by ${actor.name} on changeover #${sessionId}`,
         });
       });
 

@@ -74,8 +74,24 @@ export interface RecordFailureResult extends LockoutStatus {
   failCount: number;
 }
 
-export function recordFailure(bucket: LockoutBucket, key: string): RecordFailureResult {
+/**
+ * `maxAttemptsOverride` lets the caller supply the admin-configurable
+ * `failedAttemptThreshold` from `security_settings` (read via the cached
+ * getSecuritySettings, so no per-attempt DB round-trip). Passed by the
+ * user-login path only; admin-login / password-change keep their stricter
+ * PRD defaults. An absent/invalid override falls back to the bucket default,
+ * which is also the fresh-install case (no settings row yet).
+ */
+export function recordFailure(
+  bucket: LockoutBucket,
+  key: string,
+  maxAttemptsOverride?: number,
+): RecordFailureResult {
   const cfg = CONFIG[bucket];
+  const maxAttempts =
+    Number.isInteger(maxAttemptsOverride) && (maxAttemptsOverride as number) > 0
+      ? (maxAttemptsOverride as number)
+      : cfg.maxAttempts;
   const k = bucketKey(bucket, key);
   const now = Date.now();
   let entry = store.get(k);
@@ -98,7 +114,7 @@ export function recordFailure(bucket: LockoutBucket, key: string): RecordFailure
 
   entry.failCount += 1;
 
-  if (entry.failCount >= cfg.maxAttempts) {
+  if (entry.failCount >= maxAttempts) {
     // Trip the lockout. lockoutMs=0 (password-change) keeps lockedUntil=0
     // so further requests in-window still 429 via the failCount check on
     // the caller side, but no sticky lockout window.

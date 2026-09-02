@@ -11,6 +11,7 @@ import { pushNotification } from "../lib/notify";
 import { isUniqueViolation } from "../lib/dbErrors";
 import { formatSmtSessionId } from "../lib/session-id";
 import { TimestampService } from "../services/timestamp-service";
+import { beginReportArchive } from "../services/report-archive-service";
 import PDFDocument from "pdfkit";
 import ExcelJS from "exceljs";
 import fs from "node:fs";
@@ -66,7 +67,13 @@ async function requireLegacySessionOwnership(
   const [owned] = await db
     .select({ sessionId: changeoverOperatorsTable.sessionId })
     .from(changeoverOperatorsTable)
-    .where(and(eq(changeoverOperatorsTable.sessionId, sessionId), eq(changeoverOperatorsTable.operatorId, actor.id)));
+    .where(
+      and(
+        eq(changeoverOperatorsTable.sessionId, sessionId),
+        eq(changeoverOperatorsTable.operatorId, actor.id),
+        eq(changeoverOperatorsTable.status, "accepted"),
+      ),
+    );
   if (owned) {
     next();
     return;
@@ -832,7 +839,12 @@ router.get("/sessions", requireRole("operator", "qa", "supervisor", "admin"), as
       const owned = await db
         .select({ sessionId: changeoverOperatorsTable.sessionId })
         .from(changeoverOperatorsTable)
-        .where(eq(changeoverOperatorsTable.operatorId, actor.id));
+        .where(
+          and(
+            eq(changeoverOperatorsTable.operatorId, actor.id),
+            eq(changeoverOperatorsTable.status, "accepted"),
+          ),
+        );
       const ownedIds = owned.map((o) => o.sessionId);
       where = and(
         isNull(sessionsTable.deletedAt),
@@ -878,7 +890,12 @@ router.get("/sessions/latest", requireRole("operator", "qa", "supervisor", "admi
       const owned = await db
         .select({ sessionId: changeoverOperatorsTable.sessionId })
         .from(changeoverOperatorsTable)
-        .where(eq(changeoverOperatorsTable.operatorId, actor.id));
+        .where(
+          and(
+            eq(changeoverOperatorsTable.operatorId, actor.id),
+            eq(changeoverOperatorsTable.status, "accepted"),
+          ),
+        );
       const ownedIds = owned.map((o) => o.sessionId);
       where = and(
         isNull(sessionsTable.deletedAt),
@@ -992,7 +1009,7 @@ router.post("/sessions", requireRole("operator", "qa", "supervisor", "admin"), a
     // pre-loads feeders in BOM order so the operator scans only MPN + lot; it still
     // validates strictly like AUTO on the server. Anything unknown falls back to AUTO.
     const normalizedMode = String(verificationMode ?? "AUTO").trim().toUpperCase();
-    const finalVerificationMode = ["AUTO", "MANUAL", "AUTO_LEGACY"].includes(normalizedMode)
+    const finalVerificationMode = ["AUTO", "AUTO_LEGACY"].includes(normalizedMode)
       ? normalizedMode
       : "AUTO";
 
@@ -1114,7 +1131,13 @@ router.post("/sessions/:sessionId/handover", requireAuth, async (req: AuthReques
       const [owner] = await db
         .select({ id: changeoverOperatorsTable.id })
         .from(changeoverOperatorsTable)
-        .where(and(eq(changeoverOperatorsTable.sessionId, sessionId), eq(changeoverOperatorsTable.operatorId, actor.id)));
+        .where(
+          and(
+            eq(changeoverOperatorsTable.sessionId, sessionId),
+            eq(changeoverOperatorsTable.operatorId, actor.id),
+            eq(changeoverOperatorsTable.status, "accepted"),
+          ),
+        );
       const isOwnerByName = session.operatorName === actor.name;
       if (!owner && !isOwnerByName) {
         res.status(403).json({ error: "Only an owner of this changeover or a supervisor can initiate handover" });
@@ -1135,10 +1158,31 @@ router.post("/sessions/:sessionId/handover", requireAuth, async (req: AuthReques
       return;
     }
 
-    for (const id of recipientIds) {
+    // Module 4: the incoming operator is added as a PENDING co-owner and gains
+    // access only once they Accept (status→'accepted'). An optional supervisor
+    // recipient is added directly as 'accepted' (supervisors are privileged and
+    // bypass the ownership filters anyway). onConflictDoUpdate re-arms a fresh
+    // pending handover if the same operator was previously handed this session
+    // and rejected/accepted it.
+    await db
+      .insert(changeoverOperatorsTable)
+      .values({
+        sessionId,
+        operatorId: toOperatorId,
+        role: "handover",
+        status: "pending",
+        fromOperatorId: actor.id,
+        notes: notes || null,
+        acceptedAt: null,
+      })
+      .onConflictDoUpdate({
+        target: [changeoverOperatorsTable.sessionId, changeoverOperatorsTable.operatorId],
+        set: { role: "handover", status: "pending", fromOperatorId: actor.id, notes: notes || null, acceptedAt: null },
+      });
+    if (toSupervisorId) {
       await db
         .insert(changeoverOperatorsTable)
-        .values({ sessionId, operatorId: id, role: "handover" })
+        .values({ sessionId, operatorId: toSupervisorId, role: "handover", status: "accepted" })
         .onConflictDoNothing();
     }
 
@@ -1157,6 +1201,11 @@ router.post("/sessions/:sessionId/handover", requireAuth, async (req: AuthReques
       detail: notes || undefined,
       entityId: String(sessionId),
       createdBy: actor.id,
+      eventClass: "handover",
+      targetUserId: String(toOperatorId),
+      relatedEntityType: "session",
+      relatedEntityId: String(sessionId),
+      createdByUserId: actor.id,
     });
 
     res.status(201).json({ success: true, sessionId, toOperatorId, toSupervisorId: toSupervisorId || null });
@@ -1270,6 +1319,7 @@ router.get("/sessions/:sessionId", requireRole("operator", "qa", "supervisor", "
           and(
             eq(changeoverOperatorsTable.sessionId, sessionId),
             eq(changeoverOperatorsTable.operatorId, actor.id),
+            eq(changeoverOperatorsTable.status, "accepted"),
           ),
         );
       if (!membership && session.operatorName !== actor.name) {
@@ -1463,8 +1513,8 @@ router.patch("/sessions/:sessionId", requireRole("operator", "qa", "supervisor",
     if (logoUrl !== undefined) updates.logoUrl = logoUrl;
     if (verificationMode !== undefined) {
       const normalizedMode = String(verificationMode).trim().toUpperCase();
-      if (!['AUTO', 'MANUAL', 'AUTO_LEGACY'].includes(normalizedMode)) {
-        res.status(400).json({ error: "verificationMode must be 'AUTO', 'MANUAL' or 'AUTO_LEGACY'" });
+      if (!['AUTO', 'AUTO_LEGACY'].includes(normalizedMode)) {
+        res.status(400).json({ error: "verificationMode must be 'AUTO' or 'AUTO_LEGACY'" });
         return;
       }
       updates.verificationMode = normalizedMode;
@@ -1556,8 +1606,8 @@ router.patch("/sessions/:sessionId/mode", requireRole("operator", "qa", "supervi
       return;
     }
 
-    if (!['AUTO', 'MANUAL', 'AUTO_LEGACY'].includes(mode)) {
-      res.status(400).json({ error: "mode must be 'AUTO', 'MANUAL' or 'AUTO_LEGACY'" });
+    if (!['AUTO', 'AUTO_LEGACY'].includes(mode)) {
+      res.status(400).json({ error: "mode must be 'AUTO' or 'AUTO_LEGACY'" });
       return;
     }
 
@@ -1612,6 +1662,11 @@ router.post("/sessions/:sessionId/submit-qa", requireRole("operator", "qa", "sup
       detail: [session.panelName, session.operatorName].filter(Boolean).join(" · ") || undefined,
       entityId: String(sessionId),
       createdBy: req.actor?.name,
+      eventClass: "qa_request",
+      targetRole: "qa",
+      relatedEntityType: "session",
+      relatedEntityId: String(sessionId),
+      createdByUserId: req.actor?.id,
     });
 
     res.json({ sessionId, status: "pending_qa" });
@@ -1658,6 +1713,11 @@ router.post("/sessions/:sessionId/submit-splicing-qa", requireRole("operator", "
       detail: [session.panelName, session.operatorName].filter(Boolean).join(" · ") || undefined,
       entityId: String(sessionId),
       createdBy: req.actor?.name,
+      eventClass: "qa_request",
+      targetRole: "qa",
+      relatedEntityType: "session",
+      relatedEntityId: String(sessionId),
+      createdByUserId: req.actor?.id,
     });
 
     res.json({ sessionId, status: "splicing_pending_qa" });
@@ -1783,6 +1843,9 @@ router.post("/sessions/:sessionId/scans", scanLimiter, requireRole("operator", "
 
     // === STEP 3: BOM VALIDATION ===
     const isFreeScanMode = session.bomId === null;
+    // Trial Session (skip-BOM, data collection): feeder must still exist in the
+    // BOM, but any MPN is accepted — the part-number match is skipped.
+    const bomVerificationSkipped = session.bomVerificationSkipped === true;
     let scanStatus = "ok";
     let selectedItem: BomItem | null = null;
     let primaryItems: BomItem[] = [];
@@ -1844,8 +1907,16 @@ router.post("/sessions/:sessionId/scans", scanLimiter, requireRole("operator", "
         const hasExpectedMpn = expectedMpnValues.length > 0;
         verificationMatch = normalizedMpnId ? verifyMPN(normalizedMpnId, selectedItem) : null;
 
+        // Trial Session (skip-BOM, data collection): feeder exists (checked above);
+        // accept ANY MPN — no part-number match required.
+        if (bomVerificationSkipped) {
+          mpnMatched = verificationMatch !== null;
+          internalIdMatched = verificationMatch?.matchedField === "internalPartNumber";
+          scanStatus = "ok";
+          message = `✅ Feeder ${normalizedFeeder} recorded (Trial Session — MPN not validated)`;
+        }
         // Step 2: Validate MPN/Internal ID using strict exact matching only
-        if (normalizedMpnId) {
+        else if (normalizedMpnId) {
           mpnMatched = verificationMatch !== null;
           internalIdMatched = verificationMatch?.matchedField === "internalPartNumber";
 
@@ -2300,10 +2371,9 @@ router.post("/sessions/:sessionId/splices", requireRole("operator", "qa", "super
         )
       );
 
-    // BOM verification bypass: a changeover created with an approved "Skip BOM
-    // Verification" must not have its splices rejected on BOM mismatch. When set,
-    // the feeder/old-spool/new-spool BOM gates below fall back to acceptance and
-    // still record the splice.
+    // BOM verification bypass (Trial Session): the feeder number must still exist
+    // in the BOM (enforced below), but the old/new-spool MPN gates fall back to
+    // acceptance — any MPN is recorded. Only the part-number match is skipped.
     const bypassBom = session.bomVerificationSkipped === true;
 
     const [bomItem] = session.bomId != null
@@ -2313,7 +2383,7 @@ router.post("/sessions/:sessionId/splices", requireRole("operator", "qa", "super
           .where(and(eq(bomItemsTable.bomId, session.bomId), eq(bomItemsTable.feederNumber, normalizedFeeder), isNull(bomItemsTable.deletedAt)))
       : [];
 
-    if (!bomItem && !bypassBom) {
+    if (!bomItem) {
       return res.status(404).json({ error: `Feeder ${normalizedFeeder} not found in BOM` });
     }
 
@@ -2810,6 +2880,10 @@ router.get("/sessions/:sessionId/report/pdf", requireRole("qa", "supervisor", "a
       margins: { top: 20, bottom: 20, left: 20, right: 20 },
     });
     doc.pipe(res);
+    // Module 15 — tee the exact PDF to the fixed archive (best-effort; null when
+    // archival is disabled or this session is already archived).
+    const archive = await beginReportArchive("session", String(sessionId));
+    if (archive) doc.pipe(archive.stream);
 
     const pageW = doc.page.width;
     const pageH = doc.page.height;
@@ -3274,6 +3348,7 @@ router.get("/sessions/:sessionId/report/pdf", requireRole("qa", "supervisor", "a
     drawApprovals();
 
     doc.end();
+    if (archive) await archive.finalize();
   } catch (err) {
     req.log.error(err);
     res.status(500).json({ error: "Failed to generate session report PDF" });

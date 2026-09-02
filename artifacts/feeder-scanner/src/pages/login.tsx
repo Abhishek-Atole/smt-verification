@@ -8,12 +8,17 @@ import { Settings, ShieldCheck, ScanLine } from "lucide-react";
 import { appConfig } from "@/lib/appConfig";
 import { AppLogo } from "@/components/AppLogo";
 import { logger } from "../lib/logger";
+import { consumeSessionExpiredNotice, SESSION_EXPIRED_MESSAGE } from "../lib/session-guard";
 
 export default function Login() {
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
   const [role, setRole] = useState<"supervisor" | "qa" | "operator" | null>(null);
+  // Module 13(c) — read-and-clear on first render so the user is told why they
+  // landed here. Lazy initialiser, not an effect: the flag must be consumed
+  // exactly once, and StrictMode double-invokes effects.
+  const [sessionExpired] = useState(consumeSessionExpiredNotice);
   const { login } = useAuth();
   const [, setLocation] = useLocation();
 
@@ -63,6 +68,11 @@ export default function Login() {
           <CardDescription className="text-center">Select your role and enter credentials to continue</CardDescription>
         </CardHeader>
         <CardContent>
+          {sessionExpired && (
+            <p role="status" className="mb-6 rounded-md border border-amber-500/40 bg-amber-500/10 px-4 py-3 text-sm font-medium text-amber-700 dark:text-amber-400">
+              {SESSION_EXPIRED_MESSAGE}
+            </p>
+          )}
           <form onSubmit={handleLogin} className="space-y-8" autoComplete="on">
             <div className="space-y-4">
               <label className="text-sm font-medium">Select Role</label>

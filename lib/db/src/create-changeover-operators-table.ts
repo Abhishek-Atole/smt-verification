@@ -27,6 +27,16 @@ async function createChangeoverOperatorsTable() {
     CREATE UNIQUE INDEX IF NOT EXISTS "changeover_operators_session_operator_uq"
       ON "changeover_operators" ("session_id", "operator_id");
   `);
+  // Module 4 (2026-08-30): pending-handover columns. Idempotent so re-running is
+  // safe and a later drizzle-kit push sees no diff. Existing rows default to
+  // 'accepted' — they keep the access they already had.
+  await db.execute(sql`
+    ALTER TABLE "changeover_operators"
+      ADD COLUMN IF NOT EXISTS "status" text DEFAULT 'accepted' NOT NULL,
+      ADD COLUMN IF NOT EXISTS "from_operator_id" uuid REFERENCES "users"("id"),
+      ADD COLUMN IF NOT EXISTS "notes" text,
+      ADD COLUMN IF NOT EXISTS "accepted_at" timestamp;
+  `);
 }
 
 createChangeoverOperatorsTable()

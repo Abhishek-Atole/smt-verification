@@ -6,6 +6,7 @@ import { db } from "@workspace/db";
 import { usersTable, loginEventsTable } from "@workspace/db/schema";
 
 import {
+  accessTokenExpirySec,
   computeFingerprint,
   getAccessTtlSec,
   getReauthTtlSec,
@@ -184,6 +185,16 @@ export function getAuthActorFromCookie(req: { cookies?: { smt_token?: string } }
   return token ? verifyAccessToken(token) : null;
 }
 
+// Module 13 — expiry the client can act on, in milliseconds (Date.now() units)
+// so the browser timer needs no unit conversion. `null` means "no usable exp";
+// the client treats that as "no proactive refresh, fall back to the 401 guard",
+// NOT as "never expires".
+function accessExpiresAtMs(token: string | null): number | null {
+  if (!token) return null;
+  const exp = accessTokenExpirySec(token);
+  return exp === null ? null : exp * 1000;
+}
+
 // ─── routes ─────────────────────────────────────────────────────────────────
 const router: IRouter = Router();
 
@@ -211,6 +222,10 @@ router.post("/auth/login", async (req: Request, res: Response) => {
     });
     return;
   }
+  // Module 10.5 — the failed-attempt threshold is admin-configurable in
+  // security_settings; read it (cached) so a dashboard change actually takes
+  // effect. Falls back to the bucket default on a fresh install with no row.
+  const failedAttemptThreshold = (await getSecuritySettings()).failedAttemptThreshold;
   const columns = await getUserTableColumns();
   const identifierColumn = columns.has("employee_id") ? "employee_id" : "username";
   const passwordColumn   = columns.has("password_hash") ? "password_hash" : "password";
@@ -247,7 +262,7 @@ router.post("/auth/login", async (req: Request, res: Response) => {
   if (!user) {
     // Treat unknown-user as a failed attempt against the typed username so an
     // attacker can't probe usernames cheaply by guessing wrong roles.
-    const failure = recordFailure("user-login", lockoutKey);
+    const failure = recordFailure("user-login", lockoutKey, failedAttemptThreshold);
     await recordLoginEvent({ employeeId: username, ip: req.ip, ua: req.get("user-agent"), result: "failure", reason: failure.justLocked ? "locked" : "unknown_user" });
     if (failure.justLocked) {
       await auditLog({ event: "SECURITY_ACCOUNT_LOCKED", detail: `username=${username} reason=unknown_user_threshold`, ip: req.ip });
@@ -258,7 +273,7 @@ router.post("/auth/login", async (req: Request, res: Response) => {
 
   const passwordMatches = await bcrypt.compare(password, user.password_hash ?? "");
   if (!passwordMatches) {
-    const failure = recordFailure("user-login", lockoutKey);
+    const failure = recordFailure("user-login", lockoutKey, failedAttemptThreshold);
     await recordLoginEvent({ userId: user.id, employeeId: username, ip: req.ip, ua: req.get("user-agent"), result: "failure", reason: failure.justLocked ? "locked" : "password_mismatch" });
     if (failure.justLocked) {
       await auditLog({ event: "SECURITY_ACCOUNT_LOCKED", operatorId: user.id, detail: `username=${username} reason=password_threshold`, ip: req.ip });
@@ -326,6 +341,7 @@ router.post("/auth/login", async (req: Request, res: Response) => {
     name:               user.display_name ?? user.username,
     role:               user.role,
     mustChangePassword: user.must_change_password === true,
+    expiresAt:          accessExpiresAtMs(access),
   });
 });
 
@@ -376,6 +392,14 @@ router.post("/auth/refresh", async (req: Request, res: Response) => {
     return;
   }
 
+  // Module 10.3 must survive a refresh. Until Module 13 no client ever called
+  // this route, so it re-signed with the *default* 30-min TTL and nobody
+  // noticed. Now that the expiry timer refreshes automatically, omitting the
+  // per-device TTL would let a store or admin device silently escalate its
+  // session timeout past what security_settings allows — on the first refresh,
+  // and every one after. Read it the same way /auth/login does.
+  const refreshTtlSec = await sessionTtlForDevice((req as DeviceRequest).deviceType);
+
   const access = signAccessToken({
     userId:             user.id,
     username:           user.username,
@@ -383,11 +407,11 @@ router.post("/auth/refresh", async (req: Request, res: Response) => {
     role:               user.role,
     mustChangePassword: user.must_change_password === true,
     jti:                outcome.id,
-  });
+  }, refreshTtlSec);
 
-  res.cookie("smt_token",   access,           accessCookieOptions(req));
+  res.cookie("smt_token",   access,           { ...accessCookieOptions(req), ...(refreshTtlSec ? { maxAge: refreshTtlSec * 1000 } : {}) });
   res.cookie("smt_refresh", outcome.token,    refreshCookieOptions(req));
-  res.status(200).json({ refreshed: true });
+  res.status(200).json({ refreshed: true, expiresAt: accessExpiresAtMs(access) });
 });
 
 router.post("/auth/logout", attachActor, requireAuth, async (req: AuthRequest, res: Response) => {
@@ -413,6 +437,7 @@ router.get("/auth/me", (req: Request, res: Response) => {
     name:               actor.name,
     role:               actor.role,
     mustChangePassword: actor.mustChangePassword,
+    expiresAt:          accessExpiresAtMs(readAccessCookie(req)),
   });
 });
 

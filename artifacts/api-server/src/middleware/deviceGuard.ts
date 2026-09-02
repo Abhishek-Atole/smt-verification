@@ -1,5 +1,5 @@
 import type { NextFunction, Request, Response } from "express";
-import { getDevices, getActiveDevices, getSecuritySettings } from "../lib/deviceStore";
+import { getDevices, getActiveDevices, getSecuritySettings, DeviceLookupUnavailableError } from "../lib/deviceStore";
 import { matchesIp, normalizeIp, isLoopback } from "../lib/ipMatch";
 import { auditLog } from "../lib/auditLogger";
 import { logger } from "../lib/logger";
@@ -49,7 +49,28 @@ export async function deviceGuard(req: DeviceRequest, res: Response, next: NextF
     return;
   }
 
-  const allDevices = await getDevices();
+  const allDevices = await getDevices().catch((err) => {
+    if (err instanceof DeviceLookupUnavailableError) return null;
+    throw err;
+  });
+
+  // The allow-list is unreadable and no recent copy survives, so we cannot tell
+  // whether this is a registered device. Fail CLOSED — but as 503, not 403, so
+  // nobody is told their device was de-registered when the real fault is the DB.
+  // Loopback is already past this point, so the server can still administer itself.
+  if (allDevices === null) {
+    void auditLog({
+      event: "SECURITY_DEVICE_LOOKUP_UNAVAILABLE",
+      detail: `ip=${ip} method=${req.method} path=${req.path}`,
+      ip,
+    });
+    res.status(503).json({
+      error: "device_check_unavailable",
+      message: "Device verification is temporarily unavailable. Please retry shortly.",
+    });
+    return;
+  }
+
   if (allDevices.length === 0) {
     warnBootstrapOccasionally();
     next();

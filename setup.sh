@@ -84,7 +84,12 @@ fi
 # Directories
 mkdir -p /var/backups/"$DB_NAME"
 mkdir -p "$APP_DIR/logs" "$APP_DIR/exports"
-info "Created backup and log directories"
+# ExportService resolves its output dir against process.cwd(), and the systemd
+# unit's WorkingDirectory is artifacts/api-server — so CSV/XLSX exports land
+# here, not in $APP_DIR/exports. Create it now so the lock step can make it
+# service-writable; otherwise the first export fails on a read-only tree.
+mkdir -p "$APP_DIR/artifacts/api-server/exports"
+info "Created backup, log and export directories"
 
 # ============================================================================
 # Phase 2: Generate secrets and .env
@@ -284,6 +289,19 @@ psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f "$APP_DIR/migrations/ops/0004_manage_
 psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f "$APP_DIR/scripts/add-indexes.sql" >/dev/null
 info "Ops migrations applied"
 
+# Idempotent table bootstraps. drizzle-kit push above already created these
+# tables from the schema, but these scripts also add the pieces push does not
+# generate — the single-row CHECK on report_output_settings and its seed row, so
+# the settings endpoints never return null on a fresh install.
+sudo -u "$ORIG_USER" env APP_DIR="$APP_DIR" DATABASE_URL="$DATABASE_URL" bash <<'BOOTSTRAP'
+set -euo pipefail
+cd "$APP_DIR/lib/db"
+for s in create-reels-table add-report-archive-record create-report-output-settings-table; do
+  npx --no-install tsx "src/$s.ts"
+done
+BOOTSTRAP
+info "Table bootstraps applied (reels, report archive, report output settings)"
+
 # Seed users
 pnpm --filter @workspace/api-server run seed:users 2>&1 | grep -E "(created user|updated existing|Done)" || true
 info "Users seeded"
@@ -317,32 +335,30 @@ StandardError=journal
 NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict
-ReadWritePaths=$APP_DIR $APP_DIR/logs $APP_DIR/exports /var/backups/$DB_NAME
+# $APP_DIR itself is deliberately NOT writable: the tree is root-owned (see
+# scripts/lock-app-dir.sh) and the service only needs to read it. Listing just
+# the four directories it writes means a compromised process cannot rewrite
+# dist/index.mjs even if the file permissions were ever loosened by hand.
+ReadWritePaths=$APP_DIR/logs $APP_DIR/exports $APP_DIR/artifacts/api-server/exports /var/backups/$DB_NAME
+# Admin-configurable report archive (Admin Portal > Report Output). ProtectSystem=strict
+# makes every other path read-only, so an archive root outside this list silently
+# fails to write. The leading "-" keeps the unit valid when the dir does not exist;
+# point the admin setting here, or add the chosen root and re-run daemon-reload.
+ReadWritePaths=-/srv/smt-reports
 
 [Install]
 WantedBy=multi-user.target
 UNIT
 
-# Give smt-app ownership of only the dirs it needs to write at runtime.
-# Source, dist, and node_modules stay owned by the install user so they
-# can be rebuilt without sudo.
-chown -R "$APP_USER":"$APP_USER" \
-  "$APP_DIR/logs" \
-  "$APP_DIR/exports" \
-  /var/backups/"$DB_NAME"
-# .env must be readable by smt-app but no one else
-chown "$APP_USER":"$APP_USER" "$APP_DIR/.env"
-chmod 600 "$APP_DIR/.env"
-
-# Ensure the service user can traverse all parent directories into APP_DIR.
-# Ubuntu home dirs default to 750, which blocks smt-app from entering the
-# working directory (systemd exits with status=200/CHDIR). Walk up to root
-# and add execute (traverse) permission for "others" on each ancestor.
-_path="$APP_DIR"
-while [ "$_path" != "/" ]; do
-  _path="$(dirname "$_path")"
-  chmod o+x "$_path"
-done
+# Lock the install directory: root owns the whole tree, the service account gets
+# group-read, and only the four runtime dirs stay service-writable. An operator
+# sitting at this PC must not be able to edit dist/index.mjs or a .ts file and
+# thereby change verification logic, the audit chain or the license check.
+# Everything above this point had to be writable by the build user; from here on
+# it takes sudo. To upgrade later:
+#   sudo ./scripts/lock-app-dir.sh unlock "$APP_DIR" <user>  →  rebuild  →  lock
+APP_USER="$APP_USER" DB_NAME="$DB_NAME" \
+  bash "$APP_DIR/scripts/lock-app-dir.sh" lock "$APP_DIR"
 
 systemctl daemon-reload
 systemctl enable smt-verification
@@ -372,10 +388,13 @@ info "Service: sudo systemctl status smt-verification"
 info "Logs: sudo journalctl -u smt-verification -f"
 echo
 warn "NEXT STEPS:"
-warn "1. Read CREDENTIALS.txt (in this directory) for login passwords"
+warn "1. Read credentials:  sudo cat $APP_DIR/CREDENTIALS.txt  (root-only by design)"
 warn "2. Open http://$LAN_IP:$PORT in a browser"
 warn "3. Activate the full license: Admin Portal > License > Activate (string in CREDENTIALS.txt)"
 warn "4. Change all user passwords on first login"
 warn "5. Set a STATIC IP for this machine"
 warn "6. Copy daily backups from /var/backups/$DB_NAME to a NAS"
+echo
+info "This folder is LOCKED (root-owned). Editing it needs sudo — that is intentional."
+info "Check state:  sudo ./scripts/lock-app-dir.sh status $APP_DIR"
 echo

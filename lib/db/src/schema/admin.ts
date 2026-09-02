@@ -1,4 +1,4 @@
-import { pgTable, uuid, text, bigint, date, timestamp, boolean, integer, index } from "drizzle-orm/pg-core";
+import { pgTable, uuid, text, bigint, date, timestamp, boolean, integer, index, uniqueIndex } from "drizzle-orm/pg-core";
 import { usersTable } from "./users";
 
 // login_events — one row per login attempt (success or failure). Read by admin login-activity viewer.
@@ -61,3 +61,27 @@ export const backupRunsTable = pgTable(
 export type LoginEvent   = typeof loginEventsTable.$inferSelect;
 export type DbSizeLog    = typeof dbSizeLog.$inferSelect;
 export type BackupRun    = typeof backupRunsTable.$inferSelect;
+
+// Module 15 — report_archive_record: one row per report archived to the fixed
+// filesystem root (REPORT_ARCHIVE_ROOT). Mirrors the backup_runs pattern (file
+// path + size + checksum). Deduped per (report_type, related_entity_id) so a
+// session's canonical archive is written once regardless of how many times the
+// report is re-downloaded. Indefinite retention — never pruned.
+export const reportArchiveRecordTable = pgTable(
+  "report_archive_record",
+  {
+    id:              uuid("id").primaryKey().defaultRandom(),
+    reportType:      text("report_type").notNull(),         // e.g. 'session'
+    relatedEntityId: text("related_entity_id").notNull(),   // e.g. legacy session id
+    filePath:        text("file_path").notNull(),
+    fileSizeBytes:   bigint("file_size_bytes", { mode: "number" }),
+    checksum:        text("checksum"),                      // sha256 hex of the archived file
+    generatedAt:     timestamp("generated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    entityIdx:  uniqueIndex("report_archive_type_entity_idx").on(t.reportType, t.relatedEntityId),
+    typeIdx:    index("report_archive_type_idx").on(t.reportType),
+  })
+);
+
+export type ReportArchiveRecord = typeof reportArchiveRecordTable.$inferSelect;

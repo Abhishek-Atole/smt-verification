@@ -193,7 +193,25 @@ export default function AccessControl() {
                     <tr key={d.id} style={{ borderBottom: "1px solid rgba(30,42,58,0.5)" }}>
                       <td style={{ padding: "0.5rem 0.75rem", color: "#94a3b8", fontSize: 12 }}>{d.deviceType}</td>
                       <td style={{ padding: "0.5rem 0.75rem", color: "#cbd5e1" }}>{d.deviceName}</td>
-                      <td style={{ padding: "0.5rem 0.75rem", color: "#cbd5e1" }}>{d.allowedIp}</td>
+                      <td style={{ padding: "0.5rem 0.75rem", color: "#cbd5e1" }}>
+                        {d.allowedIp}
+                        {/* Module 10.2 — a stored value the strict validator rejects
+                            (written before the 2026-08-30 fix). Display-only: the
+                            value is left exactly as stored; an admin must edit and
+                            re-save it, which then goes through the validator. */}
+                        {d.allowedIpValid === false && (
+                          <span
+                            title="Invalid IP entry — this value fails validation and matches no device. Edit and re-save it with a valid IP or CIDR range."
+                            style={{
+                              marginLeft: 8, fontSize: 11, padding: "2px 7px", borderRadius: 4,
+                              background: "rgba(255,68,68,0.15)", color: "#ff4444",
+                              whiteSpace: "nowrap",
+                            }}
+                          >
+                            ⚠ Invalid IP entry — review and correct
+                          </span>
+                        )}
+                      </td>
                       <td style={{ padding: "0.5rem 0.75rem", color: "#64748b", fontSize: 12 }}>{d.macAddress ?? "—"}</td>
                       <td style={{ padding: "0.5rem 0.75rem" }}>
                         <span style={{

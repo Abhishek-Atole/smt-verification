@@ -1,5 +1,6 @@
-import { createContext, useContext, useEffect, useState, type ReactNode } from "react";
+import { createContext, useContext, useEffect, useRef, useState, type ReactNode } from "react";
 import { logger } from "../lib/logger";
+import { AUTH_SESSION_HINT_KEY, redirectToLoginSurface } from "../lib/session-guard";
 import { recordDailyMetric, appendAuditEntry, loadActiveSessions, saveActiveSessions, nowFormatted } from "../admin/admin-storage";
 
 type Role = "supervisor" | "qa" | "operator" | "admin" | "storekeeper";
@@ -17,9 +18,18 @@ interface AuthSessionResponse {
   username: string;
   role: Role;
   mustChangePassword: boolean;
+  // Module 13 — epoch ms when the access cookie dies, from /auth/me and
+  // /auth/login. null on older servers or an unreadable token: the proactive
+  // timer then stays off and the reactive 401 guard is the only net.
+  expiresAt: number | null;
 }
 
-const AUTH_SESSION_HINT_KEY = "feeder-scanner-auth-session";
+// Fire the silent refresh this far ahead of expiry. Long enough to absorb a slow
+// round-trip and clock skew, short enough that the session is genuinely near its
+// end (default access TTL is 30 min, and the admin-configurable per-device
+// timeouts in security_settings can be shorter).
+const REFRESH_LEAD_MS = 60_000;
+
 
 function hasAuthSessionHint() {
   return typeof window !== "undefined" && window.localStorage.getItem(AUTH_SESSION_HINT_KEY) === "true";
@@ -70,6 +80,9 @@ function normalizeAuthSession(payload: unknown): AuthSessionResponse | null {
     username,
     role,
     mustChangePassword: source.mustChangePassword === true,
+    expiresAt: typeof source.expiresAt === "number" && Number.isFinite(source.expiresAt)
+      ? source.expiresAt
+      : null,
   };
 }
 
@@ -131,6 +144,10 @@ async function toAuthError(response: Response): Promise<Error> {
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<User | null>(null);
   const [loading, setLoading] = useState(true);
+  // Module 13 — proactive expiry. Held in state (not a ref) so the scheduling
+  // effect re-runs whenever a refresh pushes the deadline out.
+  const [expiresAt, setExpiresAt] = useState<number | null>(null);
+  const refreshingRef = useRef(false);
 
   useEffect(() => {
     if (typeof window !== "undefined" && window.location.pathname.endsWith("/login")) {
@@ -154,9 +171,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         if (active) {
           if (session) {
             setUser({ userId: session.userId, name: session.username, role: session.role, mustChangePassword: session.mustChangePassword });
+            setExpiresAt(session.expiresAt);
             setAuthSessionHint(true);
           } else {
             setUser(null);
+            setExpiresAt(null);
             setAuthSessionHint(false);
           }
         }
@@ -171,6 +190,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
         if (active) {
           setUser(null);
+          setExpiresAt(null);
           setAuthSessionHint(false);
         }
       } finally {
@@ -184,6 +204,66 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       active = false;
     };
   }, []);
+
+  // Module 13(b) — proactive expiry. The reactive 401 guard alone means the user
+  // discovers the dead session by having an action fail; this renews it before
+  // that happens. POST /api/auth/refresh was fully built (rotation + reuse and
+  // fingerprint detection) but no client ever called it, so this is wiring
+  // existing plumbing, not new auth surface.
+  //
+  // Refresh failure → the same redirect the 401 guard performs, which is the
+  // spec's "redirect exactly at expiry" path. Note /api/auth/refresh is on the
+  // guard's exemption list precisely so this branch owns the decision.
+  useEffect(() => {
+    if (!user || expiresAt === null) return;
+
+    let cancelled = false;
+
+    const runRefresh = async () => {
+      if (cancelled || refreshingRef.current) return;
+      refreshingRef.current = true;
+      try {
+        const result = await fetchWithCredentials<{ refreshed?: boolean; expiresAt?: number | null }>(
+          "/api/auth/refresh",
+          { method: "POST" },
+        );
+        if (cancelled) return;
+        const next = typeof result.expiresAt === "number" && Number.isFinite(result.expiresAt)
+          ? result.expiresAt
+          : null;
+        // Only reschedule against an expiry that actually moved forward. A
+        // response that reports the same-or-earlier deadline (older server with
+        // no expiresAt, clock skew, a TTL shorter than REFRESH_LEAD_MS) would
+        // otherwise give delay=0 and spin this effect. Falling back to null
+        // leaves the reactive 401 guard as the net, which is correct-but-later
+        // rather than a hot loop.
+        setExpiresAt((prev) => {
+          if (next === null || next <= Date.now()) return null;
+          if (prev !== null && next <= prev) return null;
+          return next;
+        });
+      } catch (error) {
+        if (cancelled) return;
+        logger.warn({ error }, "[AuthContext] Silent refresh failed — session expired");
+        setUser(null);
+        setExpiresAt(null);
+        redirectToLoginSurface();
+      } finally {
+        refreshingRef.current = false;
+      }
+    };
+
+    // setTimeout is clamped to ~24.8 days by the spec's int32 delay; access TTLs
+    // are minutes, so a direct delay is safe here. Already inside the lead
+    // window (or past it) → refresh now.
+    const delay = Math.max(0, expiresAt - Date.now() - REFRESH_LEAD_MS);
+    const timer = window.setTimeout(() => { void runRefresh(); }, delay);
+
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, [user, expiresAt]);
 
   useEffect(() => {
     const handleBeforeUnload = () => {
@@ -230,6 +310,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }
 
     setUser({ userId: session.userId, name: session.username, role: session.role, mustChangePassword: session.mustChangePassword });
+    setExpiresAt(session.expiresAt);
     setAuthSessionHint(true);
     recordDailyMetric({ loginSuccesses: 1 });
     appendAuditEntry({
@@ -262,6 +343,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       } catch {}
     }
     setUser(null);
+    setExpiresAt(null);
     setAuthSessionHint(false);
     setLoading(false);
   };

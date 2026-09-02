@@ -113,7 +113,31 @@ export const adminApi = {
     call<{ sessions: ActiveSession[] }>("GET", "/admin/active-sessions"),
   forceLogout: (userId: string) =>
     call<{ userId: string; revoked: boolean }>("POST", `/admin/active-sessions/${userId}/logout`),
+
+  // Module 15b — report output destinations.
+  getReportOutputSettings: () =>
+    call<{ settings: ReportOutputSettings | null; envArchiveRoot: string | null }>(
+      "GET",
+      "/admin/report-output-settings",
+    ),
+  updateReportOutputSettings: (patch: {
+    clientFolderEnabled?: boolean;
+    folderLabel?: string | null;
+    organizeSubfolders?: boolean;
+    archiveEnabled?: boolean;
+    archiveRoot?: string | null;
+  }) => call<{ settings: ReportOutputSettings }>("PATCH", "/admin/report-output-settings", patch),
 };
+
+export interface ReportOutputSettings {
+  clientFolderEnabled: boolean;
+  folderLabel: string | null;
+  organizeSubfolders: boolean;
+  archiveEnabled: boolean;
+  archiveRoot: string | null;
+  updatedBy: string | null;
+  updatedAt: string;
+}
 
 export type UserRole = "operator" | "qa" | "supervisor" | "admin" | "storekeeper";
 
@@ -189,6 +213,13 @@ export interface Device {
   createdAt: string;
   lastModifiedBy: string | null;
   lastModifiedAt: string;
+  /**
+   * Module 10.2 — whether `allowedIp` passes the server's strict CIDR validator.
+   * Computed server-side on GET /admin/devices so this badge and the save-time
+   * rejection share one validator. Optional because older servers omit it;
+   * `undefined` means "not reported", which must not render as invalid.
+   */
+  allowedIpValid?: boolean;
 }
 
 export interface SecuritySettings {

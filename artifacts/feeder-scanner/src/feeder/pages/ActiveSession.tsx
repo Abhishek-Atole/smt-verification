@@ -215,6 +215,10 @@ export default function SessionActive() {
     },
   });
   const bomId = session?.bomId;
+  // Trial Session (skip-BOM, data collection): the feeder number is still verified
+  // in the feeder step, but any scanned MPN is accepted — no BOM part match.
+  const bomVerificationSkipped =
+    (session as { bomVerificationSkipped?: boolean } | undefined)?.bomVerificationSkipped === true;
   // Free Scan Mode: no BOM attached (stored as NULL in the DB). Every scan is
   // captured with no validation. Keyed off the absence of a bomId — not `=== 0`,
   // which never matches the NULL the backend actually stores.
@@ -774,6 +778,23 @@ export default function SessionActive() {
           ? buildLegacyCandidates(pendingFeeder, sessionApiBom, bomDetail?.items, lockedFeeder)
           : buildCandidates(lockedFeeder);
 
+        // Trial Session (skip-BOM): feeder already verified in the feeder step —
+        // accept ANY scanned MPN without matching the BOM, then go to the lot step.
+        if (bomVerificationSkipped) {
+          setInternalIdType("mpn");
+          showSuccessAlert(`✓ Recorded (Trial — MPN not validated): ${normalizedScanned}`);
+          registerScanResult(normalizedScanned, true);
+          setInternalIdInput(normalizedScanned);
+          setCaseConverted(caseConverted || rawScanned !== normalizedScanned);
+          clearScanInput();
+          const trialDuration = feederScanTime ? Date.now() - feederScanTime : undefined;
+          setPendingMpnScan(normalizedScanned);
+          setPendingScanDuration(trialDuration);
+          setScanStep("lot");
+          focusNextFrame(inputRef);
+          return;
+        }
+
         logger.debug("[MPN MATCH ATTEMPT] scanned:", normalizedScanned);
         logger.debug("[MPN MATCH ATTEMPT] candidates:", candidates);
 
@@ -878,6 +899,7 @@ export default function SessionActive() {
     internalIdType,
     verificationMode,
     legacyMode,
+    bomVerificationSkipped,
     // State setters
     setVerificationInProgress,
     setScanStep,

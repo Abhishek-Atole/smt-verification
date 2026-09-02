@@ -19,6 +19,8 @@ import { AppLogo } from "@/components/AppLogo";
 import { appConfig } from "@/lib/appConfig";
 import { formatSmtSessionCode } from "@/lib/session-code";
 import { useAuth } from "@/context/auth-context";
+import { useToast } from "@/hooks/use-toast";
+import { saveReportFile } from "@/lib/reportFolder";
 import { logger } from "../lib/logger";
 import { C_NAVY, C_WHITE, C_GREY_LIGHT, C_GREY, C_BLUE_LIGHT, C_GREEN, C_AMBER, C_RED, toRgb, dash } from "@/utils/colors";
 
@@ -56,6 +58,7 @@ export default function SessionReport() {
   const [, params] = useRoute("/session/:id/report");
   const sessionId = Number(params?.id);
   const { user } = useAuth();
+  const { toast } = useToast();
   // Operators may view the report on-screen but not export it — the PDF/Excel
   // endpoints are qa/supervisor/admin only, so hide those buttons for operators.
   const canExport = user?.role !== "operator";
@@ -580,10 +583,41 @@ export default function SessionReport() {
       const footerText = `SMTVerification System — Electronically Generated Report | Changeover: ${changeoverId} | Date: ${format(new Date(session.startedAt || new Date()), "dd-MMM-yyyy")} | BOM: ${dash(session.bomVersion)} | Mode: ${verificationMode} — STRICT | This document is valid without physical signature when QR-verified.`;
       doc.text(footerText, margin, footerY, { maxWidth: pageWidth - margin * 2 });
 
-      doc.save(`smt-changeover-report-${session.id}.pdf`);
+      // Module 15b — into the admin-chosen folder when configured, else a
+      // normal download. jsPDF's own doc.save() can only do the latter.
+      const outcome = await saveReportFile(
+        doc.output("blob"),
+        `smt-changeover-report-${session.id}.pdf`,
+      );
+      if (outcome === "folder") {
+        toast({ title: "Report saved", description: "Written to the configured report folder." });
+      }
     } catch (error) {
       logger.error({ error }, "PDF generation failed");
       alert("Failed to generate PDF. Please check the console for details.");
+    }
+  };
+
+  // Module 15b — the server-rendered PDF. Was window.open(), which hands the
+  // stream straight to the browser's download manager and can't be redirected.
+  // Fetching it as a blob lets the same bytes go to the chosen folder instead.
+  // The server still tees its own archive copy independently.
+  const exportServerPdf = async () => {
+    try {
+      const response = await fetch(`/api/sessions/${sessionId}/report/pdf`, {
+        credentials: "include",
+      });
+      if (!response.ok) throw new Error(`Export failed (${response.status})`);
+      const outcome = await saveReportFile(
+        await response.blob(),
+        `SMT_Report_${displaySessionCode}.pdf`,
+      );
+      if (outcome === "folder") {
+        toast({ title: "Report saved", description: "Written to the configured report folder." });
+      }
+    } catch (error) {
+      logger.error({ error }, "Server PDF export failed");
+      toast({ title: "Export failed", description: "Could not download the report PDF.", variant: "destructive" });
     }
   };
 
@@ -633,7 +667,7 @@ export default function SessionReport() {
           {canExport && (
             <>
               <Button
-                onClick={() => window.open(`/api/sessions/${sessionId}/report/pdf`, "_blank")}
+                onClick={() => void exportServerPdf()}
                 variant="secondary"
                 className="font-mono rounded-sm text-xs sm:text-sm py-1 sm:py-2 px-2 sm:px-3 h-auto"
                 data-testid="btn-export-pdf"

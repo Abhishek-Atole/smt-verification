@@ -93,6 +93,47 @@ describe("user-login bucket (PRD §2.5: 5/15min, 15-min lockout)", () => {
   });
 });
 
+describe("configurable failedAttemptThreshold (Module 10.5 — admin-settable)", () => {
+  test("a lower threshold trips lockout at exactly that count, not the old default of 5", () => {
+    // Admin set failedAttemptThreshold = 3 in the dashboard.
+    for (let i = 1; i <= 2; i++) {
+      const r = recordFailure("user-login", "operator1", 3);
+      expect(r.locked).toBe(false);
+      expect(r.justLocked).toBe(false);
+    }
+    const third = recordFailure("user-login", "operator1", 3);
+    expect(third.locked).toBe(true);
+    expect(third.justLocked).toBe(true);
+    expect(third.failCount).toBe(3);
+  });
+
+  test("a higher threshold does NOT lock at the old default of 5", () => {
+    for (let i = 1; i <= 5; i++) {
+      expect(recordFailure("user-login", "operator1", 8).locked).toBe(false);
+    }
+    for (let i = 6; i <= 7; i++) recordFailure("user-login", "operator1", 8);
+    const eighth = recordFailure("user-login", "operator1", 8);
+    expect(eighth.locked).toBe(true);
+    expect(eighth.justLocked).toBe(true);
+    expect(eighth.failCount).toBe(8);
+  });
+
+  test("fresh-install fallback: no override → bucket default (5) still enforced", () => {
+    // getSecuritySettings returns the default 5 when no row exists; but even an
+    // undefined/invalid override must not disable lockout.
+    for (let i = 1; i <= 4; i++) expect(recordFailure("user-login", "op", undefined).locked).toBe(false);
+    expect(recordFailure("user-login", "op", undefined).justLocked).toBe(true);
+  });
+
+  test("an invalid override (0 / negative / non-integer) falls back to the default, never disables lockout", () => {
+    for (const bad of [0, -3, 2.5, NaN]) {
+      _resetForTests();
+      for (let i = 1; i <= 4; i++) expect(recordFailure("user-login", "op", bad).locked).toBe(false);
+      expect(recordFailure("user-login", "op", bad).justLocked).toBe(true); // trips at default 5
+    }
+  });
+});
+
 describe("admin-login bucket (PRD §2.5: 3/15min, 30-min lockout)", () => {
   test("3rd failure trips lockout", () => {
     recordFailure("admin-login", "10.0.0.1:admin1");

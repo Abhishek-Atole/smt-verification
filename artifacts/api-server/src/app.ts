@@ -16,6 +16,8 @@ import { db } from "@workspace/db";
 import { sql } from "drizzle-orm";
 import adminRouter from "./routes/admin";
 import { deviceGuard } from "./middleware/deviceGuard";
+import { decideOrigin, deriveLocalOrigins, type OriginPolicy } from "./lib/allowedOrigins";
+import { auditLog } from "./lib/auditLogger";
 
 validateEnv();
 
@@ -114,6 +116,12 @@ app.use(cookieParser());
 // browser→API path is same-origin and bypasses this list. The list still
 // matters for: (a) dev (Vite on :5173 hitting the API on :PORT), (b)
 // external tooling, (c) any non-renderer client.
+//
+// Module 10.5 (Issue 3) — ALLOWED_ORIGINS is no longer the ONLY source. It is
+// static, so an IP change made it stale and every asset 500'd (blank page)
+// even though the SPA and API were the same origin. Same-origin (Origin ==
+// Host) and the server's own boot-time interface addresses are now accepted
+// too; see lib/allowedOrigins.ts for why that does not widen the surface.
 const configuredOrigins = (process.env.ALLOWED_ORIGINS ?? "http://localhost:5173")
   .split(",")
   .map((origin) => origin.trim())
@@ -122,35 +130,45 @@ const configuredOrigins = (process.env.ALLOWED_ORIGINS ?? "http://localhost:5173
 
 const allowedOrigins = configuredOrigins.length > 0 ? configuredOrigins : ["http://localhost:5173"];
 const isDevelopment = process.env.NODE_ENV !== "production";
-const localhostOriginPattern = /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/;
-const localhostHostPattern = /^(localhost|127\.0\.0\.1)(:\d+)?$/;
+
+const originPort = Number(process.env.PORT ?? 4000);
+const originTls = Boolean(process.env.TLS_CERT_PATH && process.env.TLS_KEY_PATH);
+const originPolicy: OriginPolicy = {
+  configured: allowedOrigins,
+  local: Number.isFinite(originPort) && originPort > 0 ? deriveLocalOrigins(originPort, originTls) : [],
+};
+logger.info(
+  { configured: originPolicy.configured, local: originPolicy.local },
+  "CORS origin policy (same-origin requests are always accepted)",
+);
 
 app.use((req, res, next) => {
   const requestOrigin = req.headers.origin;
   const requestHost = req.headers.host ?? "";
+  const decision = decideOrigin(requestOrigin, requestHost, originPolicy, isDevelopment);
+
+  if (!decision.allowed) {
+    // Previously this threw, which the error handler turned into a bare 500 —
+    // indistinguishable from a server crash, and on /assets/* it blanked the
+    // SPA with nothing in the console to act on. Answer explicitly instead.
+    logger.warn({ origin: requestOrigin, host: requestHost, path: req.path }, "CORS origin rejected");
+    void auditLog({
+      event: "SECURITY_ORIGIN_REJECTED",
+      detail: `origin=${requestOrigin} host=${requestHost} method=${req.method} path=${req.path}`,
+      ip: req.ip,
+    });
+    res.setHeader("Content-Security-Policy", cspDirectives);
+    res.status(403).json({
+      error: "cors_origin_rejected",
+      origin: requestOrigin,
+      message:
+        "This origin is not permitted. Add it to ALLOWED_ORIGINS or reach the server on its own address.",
+    });
+    return;
+  }
 
   cors({
-    origin: (origin, callback) => {
-      if (!requestOrigin) {
-        // No Origin header = direct navigation, curl, health checks, or
-        // same-origin requests. These cannot be cross-origin attacks (browsers
-        // always send Origin on cross-origin requests), so always allow.
-        callback(null, true);
-        return;
-      }
-
-      if (allowedOrigins.includes(requestOrigin)) {
-        callback(null, true);
-        return;
-      }
-
-      if (isDevelopment) {
-        callback(null, true);
-        return;
-      }
-
-      callback(new Error(`CORS blocked: ${requestOrigin}`));
-    },
+    origin: (_origin, callback) => callback(null, true),
     credentials: true,
     methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
     allowedHeaders: ["Content-Type", "Authorization", "X-Requested-With"],

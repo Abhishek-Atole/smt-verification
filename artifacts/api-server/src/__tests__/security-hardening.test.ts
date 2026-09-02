@@ -44,6 +44,28 @@ vi.mock("@workspace/db", () => ({
 
 vi.mock("../lib/auditLogger", () => ({ auditLog: mocks.auditLog }));
 
+// These tests exercise the auth routes, not the device guard. The guard runs
+// first on every /api request, and some tests use a non-loopback X-Forwarded-For
+// (so they don't get the loopback bypass), which would send the guard to the
+// device table. Stub the store into bootstrap allow-all mode so the guard lets
+// the request through to the route under test. (Without this, the shared db
+// mock's `select` has no `.from`, the lookup throws, and the guard now correctly
+// fails closed with 503 — masking what these tests actually assert.)
+vi.mock("../lib/deviceStore", () => ({
+  getDevices: vi.fn().mockResolvedValue([]),
+  getActiveDevices: vi.fn().mockResolvedValue([]),
+  getSecuritySettings: vi.fn().mockResolvedValue({
+    id: true,
+    maintenanceMode: false,
+    failedAttemptThreshold: 5,
+    sessionTimeoutEndDeviceSec: 1800,
+    sessionTimeoutStoreDeviceSec: 1800,
+    sessionTimeoutAdminDeviceSec: 900,
+    updatedBy: null,
+    updatedAt: new Date(),
+  }),
+}));
+
 vi.mock("../lib/importProcessor", () => ({
   parseCsvBuffer: mocks.parseCsvBuffer,
   parseExcelBuffer: mocks.parseExcelBuffer,

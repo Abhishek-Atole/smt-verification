@@ -1,6 +1,7 @@
 import { useEffect, useRef } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { useNotification } from "@/components/NotificationSystem";
+import { playSuccessBeep } from "@/utils/audio";
 
 interface FeedRow {
   id: number;
@@ -59,6 +60,13 @@ export function NotificationFeedListener() {
 
     // Toast oldest-first for natural ordering.
     const fresh = rows.filter((r) => !seenIds.current.has(r.id)).reverse();
+    // Server notifications (QA requests/results, handover, BOM, broadcasts) get
+    // an audible chime — NotificationSystem only sounds on "error", so QA rows
+    // (pushed as success/warning) would otherwise arrive silently. One tone per
+    // batch, not per row, so a backlog doesn't machine-gun the operator.
+    if (fresh.length > 0) {
+      playSuccessBeep();
+    }
     for (const row of fresh) {
       seenIds.current.add(row.id);
       const type: ToastType = TOAST_TYPES.includes(row.type as ToastType)

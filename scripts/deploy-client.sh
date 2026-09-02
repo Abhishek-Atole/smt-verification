@@ -116,7 +116,14 @@ NODE_ENV=production
 COOKIE_SECURE=false
 ADMIN_IP_ALLOWLIST=127.0.0.1,::1
 STATIC_ROOT=$APP_DIR/artifacts/feeder-scanner/dist/public
+# Backups (spec §12.1): BACKUP_DIR MUST live off the DB's physical disk so a disk
+# failure cannot take the DB and its backups down together. The default below is
+# on the same single disk as Postgres, so BACKUP_ALLOW_SAME_DISK=true is set to
+# let backups run today — but this only protects against corruption, NOT disk
+# loss. ACTION: mount a second disk / NAS / cloud path, point BACKUP_DIR at it,
+# and DELETE the BACKUP_ALLOW_SAME_DISK line. Until then backups share the DB's fate.
 BACKUP_DIR=/var/backups/$DB_NAME
+BACKUP_ALLOW_SAME_DISK=true
 # Module 10.5 — TLS in transit is OFF by default (direct LAN over HTTP).
 # To enable HTTPS: install a cert + key on the client, point these at them,
 # set COOKIE_SECURE=true, update ALLOWED_ORIGINS to https://…, open 443/tcp,
@@ -237,7 +244,12 @@ DB: $DB_NAME / role $DB_USER (password in $APP_DIR/.env on the client only)
 
 Reminders for the client:
   - Give this PC a static IP (or DHCP reservation) — the app URL depends on it.
-  - Backups land in /var/backups/$DB_NAME daily at 02:00; copy them to a NAS.
+  - Backups land in /var/backups/$DB_NAME daily at 02:00 — this is the SAME disk as
+    the database (BACKUP_ALLOW_SAME_DISK=true in .env lets it run). This survives
+    corruption but NOT a disk failure. Mount a second disk / NAS, set BACKUP_DIR to
+    it, and remove BACKUP_ALLOW_SAME_DISK from .env; otherwise copy backups to a NAS.
+    If BACKUP_DIR is unset or stays same-disk without the override, backups are
+    disabled (loud error in journalctl) and the app keeps running.
   - Restore is manual by design: psql "\$DATABASE_URL" < backup.sql
   - Service control: sudo systemctl {status,restart} smt-verification
   - Logs: sudo journalctl -u smt-verification -f

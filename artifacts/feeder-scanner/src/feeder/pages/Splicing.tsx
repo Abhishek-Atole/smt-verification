@@ -341,21 +341,23 @@ export default function SplicingPage() {
 
   const currentBomItem = lockedBomItem;
 
-  const recordFailure = async (failure: StepFailure, scannedValues: Record<string, unknown>, expectedValues: Record<string, unknown>) => {
+  const recordFailure = async (
+    failure: StepFailure,
+    scannedValues: Record<string, unknown>,
+    expectedValues: Record<string, unknown>,
+    scanKey: string,
+  ) => {
     const nextCount = (retryCounts[failure.step] ?? 0) + 1;
     const shouldLock = nextCount >= RETRY_LIMIT;
 
     setRetryCounts((current) => ({ ...current, [failure.step]: nextCount }));
     setWorkflowFailure(failure);
 
-    // Strong "wrong" buzzer + strike tracking. Keyed by feeder so 3 consecutive
-    // rejects on the same feeder escalate to the continuous alarm (independent
-    // of the RETRY_LIMIT workflow lock). Cleared on a successful save/override.
-    registerScanResult(
-      feederNumber || "splice",
-      false,
-      `Feeder ${feederNumber || "?"} rejected ${nextCount} times. Verify the component or call a supervisor.`,
-    );
+    // Strong "wrong" buzzer + strike tracking. Keyed by the SCANNED VALUE, so 3
+    // consecutive rejects of the same barcode escalate to the continuous alarm
+    // while three different bad barcodes do not (independent of the RETRY_LIMIT
+    // workflow lock). Cleared when that value is accepted, or on save/override.
+    registerScanResult(scanKey, false);
 
     await postWorkflowAuditLog({
       sessionId,
@@ -507,7 +509,14 @@ export default function SplicingPage() {
           step: apiCode === "WRONG_FEEDER_ALLOCATION" ? "newSpool" : "newSpool",
           message: apiMessage,
         };
-        await recordFailure(failure, { apiError: apiMessage, apiCode }, { feederNumber, newSpool, oldSpool });
+        await recordFailure(
+          failure,
+          { apiError: apiMessage, apiCode },
+          { feederNumber, newSpool, oldSpool },
+          // Same raw barcode the newSpool step keys on, so an API rejection of a
+          // barcode accumulates with local rejections of that same barcode.
+          newSpool?.raw ?? "",
+        );
         // Roll back to the new-spool step so the user can re-scan
         setStep("newSpool");
         setNewSpool(null);
@@ -605,7 +614,7 @@ export default function SplicingPage() {
         step: "feeder",
         message: "A BOM must be loaded before splicing can begin.",
       };
-      await recordFailure(failure, { scannedValue: value }, { bomLoaded: false });
+      await recordFailure(failure, { scannedValue: value }, { bomLoaded: false }, value);
       clearStepInput();
       return;
     }
@@ -619,7 +628,7 @@ export default function SplicingPage() {
           step: "feeder",
           message: `Feeder ${normalizedFeeder} was not found in the loaded BOM.`,
         };
-        await recordFailure(failure, { feederNumber: normalizedFeeder }, { expectedFeeders: bomItems.map((item) => item.feederNumber) });
+        await recordFailure(failure, { feederNumber: normalizedFeeder }, { expectedFeeders: bomItems.map((item) => item.feederNumber) }, normalizedFeeder);
         clearStepInput();
         return;
       }
@@ -639,6 +648,7 @@ export default function SplicingPage() {
       setRetryCounts((current) => ({ ...current, feeder: 0 }));
       clearStepInput();
       showSuccessAlert(`Feeder ${normalizedFeeder} accepted. Scan the old spool now.`, "medium");
+      registerScanResult(normalizedFeeder, true);
       return;
     }
 
@@ -658,7 +668,7 @@ export default function SplicingPage() {
             step: "oldSpool",
             message: `Old spool does not match BOM feeder ${feederNumber}.`,
           };
-          await recordFailure(failure, parsed, { feederNumber, bom: lockedBomItem });
+          await recordFailure(failure, parsed, { feederNumber, bom: lockedBomItem }, value);
           clearStepInput();
           return;
         }
@@ -672,6 +682,7 @@ export default function SplicingPage() {
       setRetryCounts((current) => ({ ...current, oldSpool: 0 }));
       clearStepInput();
       showSuccessAlert(`Old spool accepted via ${match.label}.`, "medium");
+      registerScanResult(value, true);
       return;
     }
 
@@ -701,7 +712,7 @@ export default function SplicingPage() {
             step: "newSpool",
             message: `New spool does not match BOM feeder ${feederNumber} (MPN1, MPN2, MPN3, or Internal ID).`,
           };
-          await recordFailure(failure, parsed, { feederNumber, bom: lockedBomItem });
+          await recordFailure(failure, parsed, { feederNumber, bom: lockedBomItem }, value);
           clearStepInput();
           return;
         }
@@ -712,6 +723,7 @@ export default function SplicingPage() {
         setRetryCounts((current) => ({ ...current, newSpool: 0 }));
         clearStepInput();
         showSuccessAlert("New spool accepted (BOM bypassed). Scan the new spool LOT CODE.", "medium");
+        registerScanResult(value, true);
         return;
       }
 
@@ -722,6 +734,7 @@ export default function SplicingPage() {
       setRetryCounts((current) => ({ ...current, newSpool: 0 }));
       clearStepInput();
       showSuccessAlert(`New spool accepted via ${match.label}. Scan the new spool LOT CODE.`, "medium");
+      registerScanResult(value, true);
       return;
     }
 
@@ -747,6 +760,7 @@ export default function SplicingPage() {
       setRetryCounts((current) => ({ ...current, newLot: 0 }));
       clearStepInput();
       showSuccessAlert(`Lot code "${scannedLot}" captured. Review and confirm the splice.`, "medium");
+      registerScanResult(scannedLot, true);
       return;
     }
   };

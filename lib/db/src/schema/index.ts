@@ -21,4 +21,6 @@ export * from "./bypass_log";
 export * from "./master_lists";
 export * from "./document_control";
 export * from "./devices";
+export * from "./reels";
+export * from "./report_output";
 

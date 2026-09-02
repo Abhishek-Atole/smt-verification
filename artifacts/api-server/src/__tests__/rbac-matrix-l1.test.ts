@@ -68,6 +68,12 @@ const TIERS: Tier[] = [
     allowed: ["qa", "supervisor", "admin"] },
   { name: "admin-only user role (GET /api/audit/recent)", method: "get", path: "/api/audit/recent",
     allowed: ["admin"] },
+  // Module 11.4/11.7 — store Reel/Lot Master. Read is widened to supervisor so
+  // they can see stock without a store login; receive/issue stays store-side.
+  { name: "store read (GET /api/reels)", method: "get", path: "/api/reels",
+    allowed: ["storekeeper", "supervisor", "admin"] },
+  { name: "store write (POST /api/reels)", method: "post", path: "/api/reels",
+    allowed: ["storekeeper", "admin"] },
 ];
 
 function fire(tier: Tier, role: string) {

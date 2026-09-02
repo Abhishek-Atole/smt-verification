@@ -2,7 +2,6 @@ import { createContext, useCallback, useContext, useEffect, useMemo, useRef, use
 import { AnimatePresence, motion } from "framer-motion";
 import { CheckCircle2, Info, TriangleAlert, XCircle, X } from "lucide-react";
 import { logger } from "../lib/logger";
-import { useNotificationBellStore } from "@/store/useNotificationBellStore";
 
 type NotificationType = "success" | "error" | "warning" | "info" | "duplicate";
 
@@ -204,13 +203,6 @@ export function NotificationProvider({ children }: { children: ReactNode }) {
 
       const timer = setTimeout(() => dismiss(item.id), item.autoDismissMs);
       timersRef.current.set(item.id, timer);
-
-      // Persist to the header bell (survives auto-dismiss + reload, until read).
-      useNotificationBellStore.getState().record({
-        type,
-        title: TYPE_STYLE[type].title,
-        message: details ? `${message}\n${details}` : message,
-      });
     },
     [dismiss],
   );

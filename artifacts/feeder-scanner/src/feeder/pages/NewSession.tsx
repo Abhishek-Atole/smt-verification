@@ -102,7 +102,7 @@ export default function SessionNew() {
   const [machineNames, setMachineNames] = useState<string[]>([]);
   const [lineName, setLineName] = useState("");
   const [bomVerificationSkipped, setBomVerificationSkipped] = useState(false);
-  const [verificationMode, setVerificationMode] = useState<"AUTO" | "MANUAL" | "AUTO_LEGACY">("AUTO");
+  const [verificationMode, setVerificationMode] = useState<"AUTO" | "AUTO_LEGACY">("AUTO");
 
   const operatorName = user?.name ?? "";
   // Free Scan Mode bypasses all BOM validation, so only supervisors may enable it.
@@ -363,8 +363,8 @@ export default function SessionNew() {
             </div>
           )}
 
-          {/* Verification mode: AUTO (scan feeder→MPN→auto-submit), MANUAL (confirm each),
-              or AUTO_LEGACY (feeders pre-loaded in BOM order — operator scans MPN + lot only). */}
+          {/* Verification mode: AUTO (scan feeder→MPN→auto-submit) or AUTO_LEGACY
+              (feeders pre-loaded in BOM order — operator scans MPN + lot only). */}
           <div className="pt-2 space-y-2">
             <Label>Verification Mode</Label>
             <Select value={verificationMode} onValueChange={(v) => setVerificationMode(v as typeof verificationMode)}>
@@ -373,7 +373,6 @@ export default function SessionNew() {
               </SelectTrigger>
               <SelectContent>
                 <SelectItem value="AUTO">Auto (scan feeder, then MPN — auto-submit)</SelectItem>
-                <SelectItem value="MANUAL">Manual (confirm each match)</SelectItem>
                 <SelectItem value="AUTO_LEGACY">Auto Legacy (serial feeders — scan MPN + lot only)</SelectItem>
               </SelectContent>
             </Select>

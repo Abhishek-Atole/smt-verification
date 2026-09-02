@@ -17,6 +17,7 @@ import AccessControl from "./pages/AccessControl";
 import IntegrityCheckPage from "./pages/IntegrityCheck";
 import NotificationsPage from "./pages/Notifications";
 import PrintLabels from "./pages/PrintLabels";
+import ReportOutput from "./pages/ReportOutput";
 import LicensePage from "./pages/License";
 
 export function AdminGate() {
@@ -99,6 +100,8 @@ function AdminRouter() {
       return <NotificationsPage />;
     case "labels":
       return <PrintLabels />;
+    case "reports":
+      return <ReportOutput />;
     case "license":
       return <LicensePage />;
     default:

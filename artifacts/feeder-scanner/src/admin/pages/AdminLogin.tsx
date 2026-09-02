@@ -1,5 +1,6 @@
 import { useState, useRef } from "react";
 import { adminApi, ApiError, type AdminMe } from "../api";
+import { consumeSessionExpiredNotice, SESSION_EXPIRED_MESSAGE } from "../../lib/session-guard";
 
 interface Props {
   onSuccess: (me: AdminMe) => void;
@@ -12,6 +13,10 @@ export default function AdminLogin({ onSuccess }: Props) {
   const [busy, setBusy] = useState(false);
   const [showPw, setShowPw] = useState(false);
   const [shake, setShake] = useState(false);
+  // Module 13(c) — the admin portal keeps its own separate token
+  // (smt_admin_token, path=/api/admin) and AdminGate renders this inline rather
+  // than navigating, but the expiry notice is identical across all five roles.
+  const [sessionExpired] = useState(consumeSessionExpiredNotice);
   const userRef = useRef<HTMLInputElement>(null);
 
   function triggerShake() {
@@ -73,6 +78,15 @@ export default function AdminLogin({ onSuccess }: Props) {
           </p>
         </div>
         <form onSubmit={handleSubmit} style={{ margin: 0 }}>
+          {sessionExpired && (
+            <div role="status" style={{
+              marginBottom: "0.75rem", padding: "0.5rem 0.75rem", borderRadius: 6, fontSize: 12,
+              background: "rgba(255,176,32,0.12)", color: "#ffb020", textAlign: "center",
+              border: "1px solid rgba(255,176,32,0.3)",
+            }}>
+              {SESSION_EXPIRED_MESSAGE}
+            </div>
+          )}
           <input
             ref={userRef}
             type="text"

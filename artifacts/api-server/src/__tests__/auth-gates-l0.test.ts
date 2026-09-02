@@ -43,7 +43,7 @@ vi.mock("../lib/auditLogger", () => ({
 }));
 
 const app = (await import("../app")).default;
-const { signAccessToken, verifyAccessToken } = await import("../lib/authTokens");
+const { signAccessToken, verifyAccessToken, accessTokenExpirySec } = await import("../lib/authTokens");
 const { signAdminToken, verifyAdminToken } = await import("../middleware/adminAuth");
 
 app.set("trust proxy", 1);
@@ -145,6 +145,57 @@ describe("L0 verifyAccessToken", () => {
   test("signed with the admin secret → null (secret separation)", () => {
     const token = jwt.sign({ userId: "u", username: "x", name: "x", role: "operator", jti: "j" }, process.env.JWT_ADMIN_SECRET!, { expiresIn: "1h" });
     expect(verifyAccessToken(token)).toBeNull();
+  });
+});
+
+// ── Module 13 — client-readable expiry ────────────────────────────────────────
+// The proactive silent-refresh timer schedules against this. verifyAccessToken
+// deliberately drops `exp` (see the round-trip test above), so the expiry is a
+// separate read and must be validated separately.
+describe("L0 accessTokenExpirySec / GET /auth/me expiresAt", () => {
+  test("returns the token's exp in seconds", () => {
+    const before = Math.floor(Date.now() / 1000);
+    const token = signAccessToken(
+      { userId: randomUUID(), username: "op1", name: "Op One", role: "operator", mustChangePassword: false, jti: randomUUID() },
+      600,
+    );
+    const exp = accessTokenExpirySec(token);
+    expect(exp).not.toBeNull();
+    // 600s TTL, allowing a second of clock drift on either side.
+    expect(exp!).toBeGreaterThanOrEqual(before + 599);
+    expect(exp!).toBeLessThanOrEqual(before + 601);
+  });
+
+  test("expired or forged tokens → null, never a far-future expiry", () => {
+    const expired = jwt.sign(
+      { userId: "u", username: "x", name: "x", role: "operator", jti: "j" },
+      process.env.JWT_SECRET!,
+      { expiresIn: -10 },
+    );
+    expect(accessTokenExpirySec(expired)).toBeNull();
+    expect(accessTokenExpirySec("not-a-jwt")).toBeNull();
+    const wrongSecret = jwt.sign(
+      { userId: "u", username: "x", name: "x", role: "operator", jti: "j" },
+      process.env.JWT_ADMIN_SECRET!,
+      { expiresIn: "1h" },
+    );
+    expect(accessTokenExpirySec(wrongSecret)).toBeNull();
+  });
+
+  test("/auth/me exposes expiresAt in epoch ms, matching the cookie's token", async () => {
+    const res = await request(app).get("/api/auth/me").set("Cookie", userCookie("qa"));
+    expect(res.status).toBe(200);
+    expect(typeof res.body.expiresAt).toBe("number");
+    // Default access TTL is 30 min; assert it is in the future and sane rather
+    // than pinning the exact value.
+    expect(res.body.expiresAt).toBeGreaterThan(Date.now());
+    expect(res.body.expiresAt).toBeLessThanOrEqual(Date.now() + 31 * 60 * 1000);
+  });
+
+  test("/auth/me without a cookie still 401s (no expiry leak)", async () => {
+    const res = await request(app).get("/api/auth/me");
+    expect(res.status).toBe(401);
+    expect(res.body.expiresAt).toBeUndefined();
   });
 });
 

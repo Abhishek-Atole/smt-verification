@@ -2,6 +2,7 @@ import { createRoot } from "react-dom/client";
 import { setBaseUrl } from "@workspace/api-client-react";
 import App from "./App";
 import "./index.css";
+import { is401SessionExpiry, redirectToLoginSurface } from "./lib/session-guard";
 
 // PRD §2.8 — backend CSRF middleware (artifacts/api-server/src/middleware/csrf.ts)
 // rejects any state-changing /api/* request without `X-Requested-With:
@@ -10,11 +11,27 @@ import "./index.css";
 // `fetch()` raw — patching window.fetch here adds the header at the
 // network layer so no caller can forget and any future raw fetch is
 // covered automatically.
+//
+// Module 13 rides the same seam for session expiry. There are three request
+// wrappers plus ~113 raw fetch() calls across 32 files, and only one wrapper
+// ever handled 401 — so per-caller handling is exactly the "fixed in one place,
+// still broken in another" bug the spec calls out. Patching here also covers the
+// background pollers (notifications 15s, handover 30s), which is what stops an
+// expired session from either retrying forever or throwing into the console.
+// The response is passed through untouched: the guard only *observes* the
+// status, so callers still see their own 401 and their own error handling runs.
 const originalFetch = window.fetch.bind(window);
-window.fetch = (input: RequestInfo | URL, init?: RequestInit) => {
+window.fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
   const headers = new Headers(init?.headers);
   if (!headers.has("X-Requested-With")) headers.set("X-Requested-With", "XMLHttpRequest");
-  return originalFetch(input, { ...init, headers });
+  const response = await originalFetch(input, { ...init, headers });
+
+  if (response.status === 401) {
+    const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+    if (is401SessionExpiry(url)) redirectToLoginSurface();
+  }
+
+  return response;
 };
 
 // Resolve API base URL with safe fallbacks:
