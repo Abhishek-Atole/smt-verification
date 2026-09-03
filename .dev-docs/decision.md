@@ -2148,3 +2148,103 @@ assets attached, and an anonymous `curl` of the checksum asset returns HTTP 200 
 to the local file.
 **Git:** committed and pushed — `dce307f`, tag `v2.5.0`,
 https://github.com/Abhishek-Atole/smt-verification/releases/tag/v2.5.0
+
+## Client deploy hygiene, second pass — remove the rest of the non-runtime payload
+
+**Context:** The first prune pass took the release from ~1100 files to 481 by removing the obvious
+dev-only trees. The user then asked for a tighter pass: no unused or extra data on the client, "extra
+unwanted .md files" called out specifically. Two facts had to be established before deciding anything.
+First, **.md files were already at zero** — the only three tracked `.md` files in the repo are
+`.dev-docs/changeover-handover-implementation-spec.md`, `.dev-docs/decision.md` and `README.md`, all
+pruned in the first pass; `find -name '*.md'` over the published v2.5.0 tarball returns nothing. That
+is verified, not assumed, and it means the visible part of the request was already satisfied. Second,
+enumerating the remaining 481 files turned up something worse than clutter:
+`docs/samples/Intermittent Buzzer E-BOM-Rev-001_1 (1)1 (1).csv` and `docs/samples/bom-intbuz-r1.1.json`
+are **another customer's production BOM**, shipping to every site that installs this release.
+
+**Decision & why:** Same rule as the first pass — a path stays only if `setup.sh`, the systemd unit, or
+one of the two builds reads it — but applied to the long tail, and each candidate checked against the
+code rather than assumed. 63 more files removed, 481 → 418, 5.3M → 4.7M unpacked.
+
+Three groups are worth recording because "unused" was not the real reason:
+
+*Actively harmful, not merely unused.* `scripts/setup-boot-autostart.sh` installs
+`scripts/smt-verification.service` under **the same unit name `setup.sh` writes**, but that unit runs
+`User=root` and sets `DB_NAME=smt_verification` — the real database is `smtverification`. A client who
+ran it after `setup.sh` would replace a working, sandboxed, `smt-app`-owned service with a root-running
+one pointed at a database that does not exist. `scripts/system-restart-recovery.sh` exists only to be
+driven by that unit. `scripts/secure-env.sh` is worse in a subtler way: it targets the developer's
+four-`.env` layout and its `--harden` mode forces `.env` to `600`, which strips the `root:smt-app 640`
+group-read the service reads its environment through (see `scripts/lock-app-dir.sh`) — the service
+would fail on next start. `setup-db.sh`, `scripts/install-local.sh` and `scripts/deploy-client.sh` are
+older installers that write their own competing unit file. All pruned: `setup.sh` is the only supported
+install path, and leaving alternatives next to it invites someone to run one.
+`artifacts/api-server/scripts/rebase-audit-chain.ts` is pruned for the same class of reason — it
+rewrites every `audit_logs` HMAC, and a tool that can silently re-sign the tamper-evidence chain should
+not be one command away on a shop-floor PC.
+
+*Another client's data.* `docs/samples` is reduced to `BOM_IMPORT_EXAMPLE.csv`, the generic import
+template. The two Intermittent-Buzzer files are real production data and must not travel between sites;
+`dashboard-indexes.sql` was a dev note superseded by `scripts/add-indexes.sql`, which `setup.sh`
+actually applies.
+
+*Verified against the tool, not the intuition.* `lib/db/drizzle/` is 31 historical migration snapshots
+(424K). `setup.sh` Phase 5 runs `pnpm push` → `drizzle-kit push --config ./drizzle.config.ts`, which
+diffs the Drizzle **schema** against the live database and never reads that folder — but this is exactly
+the kind of assumption that bricks a fresh install, so it was tested rather than reasoned about: with
+`lib/db/drizzle/` moved aside, `push` against an empty scratch database created **39 tables, exit 0**,
+including `sessions.splicing_submitted_at`. Also confirmed no runtime migrator exists (no
+`migrationsFolder`, no `drizzle-orm/*/migrator` import anywhere in the shipped source).
+
+The rest: `lib/api-spec` (orval codegen input — a dev-time step; no manifest depends on it) and
+`lib/shared` (a single `stageOrder.ts` that nothing imports; the one `stageOrder` hit in the API is a
+local `getStageOrder`); `lib/db/drizzle.config.js` (stale duplicate of the `.ts` the push script names
+explicitly), `query.sql`, `seed-master-lists.ts`; `artifacts/feeder-scanner/electron/` and
+`.replit-artifact/` (the client build is `PORT=5173 vite build` — `vite.config` only branches on
+`BUILD_TARGET=electron`, which nothing on the client sets); `insert-buzzer-bom.{ts,js}` and the
+`vitest.config.ts` orphaned by the first pass's suite prune; the two `infizent-*.bat` Windows launchers
+(the client is Ubuntu under systemd); `.gitattributes` and `.gitignore` (the client extracts a tarball,
+not a clone — and `.gitignore` additionally names internal spec docs and DB-snapshot/hand-over
+filenames that have no business being readable on a client PC); and `backups/.gitkeep` (the generated
+`.env` points `BACKUP_DIR` at `/var/backups/$DB_NAME`, which `setup.sh` creates).
+
+`lib/api-zod`, `lib/api-client-react` and `lib/db` **stay** even though `api-zod`'s symbols are never
+imported: `artifacts/api-server/package.json` declares `@workspace/{api-zod,db}` and feeder-scanner
+declares `@workspace/api-client-react`, and a declared workspace dependency whose package is missing
+fails `pnpm install --frozen-lockfile` outright. The completeness guard now pins all four manifests plus
+`artifacts/feeder-scanner/index.html` (Vite's entry point) so a future broad prune line cannot take them.
+
+**Rejected alternatives:** (a) Prune only the `.md` files the user named — they were already at zero, so
+that would have been a no-op reported as a fix. (b) Keep the operational helper scripts "in case the
+client needs them" — the previous entry kept them on exactly that reasoning, and the unit-name collision
+and the `.env` 600 regression show the reasoning was wrong; a script that cannot be run safely is not a
+spare tool. (c) Keep `lib/db/drizzle/` for disaster recovery — those snapshots reconstruct schema
+history, which is a developer concern; a client recovers from `/var/backups/$DB_NAME`, and the tree is
+root-owned anyway. (d) Delete the workspace packages that nothing imports (`api-zod`) — breaks
+`--frozen-lockfile`, see above. (e) Drop `docs/samples` entirely — `BOM_IMPORT_EXAMPLE.csv` is the
+template clients are told to copy. (f) Re-tag or force-push `v2.5.0` with the tightened payload —
+rewriting a published tag breaks anyone who already downloaded and verified against the old checksum.
+
+**Touches:** `scripts/package-release.sh` only — the prune list (grouped, each group carrying the reason
+it is safe) and the completeness guard. No application code changed. `.dev-docs/decision.md` (this
+entry). The published `v2.5.0` asset is deliberately **not** modified.
+
+**Verification:** Packaged from tag `v2.5.0` with the new list: guard "Release contents: complete",
+secret scan clean, **418 files / 4.7M** (was 481 / 5.3M), **0 `.md` files**. Diffed the old and new
+payloads file-by-file: exactly the 63 intended paths removed, **nothing added**. Then exercised the
+pruned payload as a client would, not just inspected it — `pnpm install --frozen-lockfile` **exit 0,
+"Scope: all 7 workspace projects"**; `@workspace/api-server run build` **exit 0** (`dist/index.mjs`
+5.1mb); `infizent-technology-suite run build` **exit 0** (`dist/public/` emitted); against a scratch
+database, `pnpm push` **exit 0 → 39 tables**, ops migrations `0003`/`0004` + `scripts/add-indexes.sql`
+applied, all three bootstraps exit 0 with `report_output_settings` holding its single seed row, and
+`seed:users` created **6 users**; `generate-license.js` produced a valid activation string; `setup.sh`
+and `lock-app-dir.sh` still mode 775 and both pass `bash -n`; every `$APP_DIR/…` and `./scripts/…` path
+`setup.sh` references resolves in the payload (the only non-resolving names are the runtime dirs and
+files `setup.sh` itself creates: `logs`, `exports`, `artifacts/api-server/exports`, `.env`,
+`CREDENTIALS.txt`). Repo gates re-run green: api-server `tsc --noEmit` 0 errors and **329 passed / 26
+skipped** (33 files); feeder-scanner `tsc` 0 errors and **40 passed** (3 files). The published v2.5.0
+tarball's `sha256sum -c` still reports **OK** — the staged rebuild was moved aside and the original
+bytes restored, so the live download and its checksum are untouched.
+
+**Git:** not committed — the working tree holds `scripts/package-release.sh` and this entry, pending the
+user's call on whether the tightened payload ships as a re-cut `v2.5.0` asset or a new `v2.5.1`.

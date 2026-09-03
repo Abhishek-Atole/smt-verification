@@ -25,8 +25,9 @@ OUT="$REPO/smt-verification-${TAG}.tar.gz"
 echo "Packaging release $TAG → $OUT"
 
 # Export the tagged tree into a staging dir (.env is gitignored so never
-# included), prune dev-only files (client-deploy hygiene), then re-pack. Sample
-# CSVs under docs/samples are kept — clients use them as BOM import examples.
+# included), prune dev-only files (client-deploy hygiene), then re-pack. The only
+# sample kept under docs/samples is BOM_IMPORT_EXAMPLE.csv — the import template
+# clients actually use.
 STAGE="$(mktemp -d)"
 trap 'rm -rf "$STAGE"' EXIT
 git -C "$REPO" archive --format=tar --prefix="smt-verification/" "$TAG" | tar -x -C "$STAGE"
@@ -64,9 +65,8 @@ rm -rf "$ROOT/prisma" "$ROOT/prisma.config.ts"
 rm -rf "$ROOT/testing"
 
 # Developer tooling inside scripts/. Kept: add-indexes.sql (setup.sh applies it),
-# package.json + tsconfig.json (workspace member), and the operational helpers a
-# client may genuinely need (secure-env, boot-autostart, restart-recovery,
-# smt-verification.service, deploy-client, install-local).
+# lock-app-dir.sh (setup.sh calls it, and the client needs it to unlock/relock for
+# an upgrade), and package.json + tsconfig.json (workspace member).
 rm -rf "$ROOT/scripts/acceptance" \
        "$ROOT/scripts/bench" \
        "$ROOT/scripts/ci" \
@@ -78,6 +78,79 @@ rm -rf "$ROOT/scripts/acceptance" \
        "$ROOT/scripts/test-sprint-09.sh" \
        "$ROOT/scripts/migrate-users-to-uuid.sh" \
        "$ROOT/scripts/post-merge.sh"
+
+# Superseded install paths. setup.sh is the ONLY supported client install, and
+# these do not merely duplicate it — they conflict with it:
+#   setup-boot-autostart.sh installs scripts/smt-verification.service under the
+#     SAME unit name setup.sh writes, but with User=root and DB_NAME=smt_verification
+#     (the real database is smtverification). Running it after setup.sh replaces a
+#     working, sandboxed unit with a root-running one pointed at a nonexistent DB.
+#   system-restart-recovery.sh exists only to be driven by that unit.
+#   install-local.sh / deploy-client.sh / setup-db.sh are older installers that
+#     write their own competing unit file.
+#   secure-env.sh targets the developer's four-.env layout, and its --harden forces
+#     .env to 600 — stripping the root:smt-app 640 group-read the service reads it
+#     through (see scripts/lock-app-dir.sh), which stops the service on next start.
+rm -f "$ROOT/setup-db.sh" \
+      "$ROOT/scripts/install-local.sh" \
+      "$ROOT/scripts/deploy-client.sh" \
+      "$ROOT/scripts/setup-boot-autostart.sh" \
+      "$ROOT/scripts/system-restart-recovery.sh" \
+      "$ROOT/scripts/smt-verification.service" \
+      "$ROOT/scripts/secure-env.sh"
+
+# Windows launchers — the client is Ubuntu, started by systemd.
+rm -f "$ROOT/infizent-start-server.bat" "$ROOT/infizent-stop-server.bat"
+
+# Workspace packages nothing depends on. api-server declares @workspace/{api-zod,db}
+# and feeder-scanner declares @workspace/api-client-react, so those three must stay
+# (a missing workspace dep fails `pnpm install --frozen-lockfile`). api-spec is
+# orval codegen input (openapi.yaml + configs, a dev-time step) and shared is a
+# single unimported stageOrder.ts; no manifest lists either as a dependency.
+rm -rf "$ROOT/lib/api-spec" "$ROOT/lib/shared"
+
+# lib/db dev leftovers. setup.sh Phase 5 runs `pnpm push`, i.e.
+# `drizzle-kit push --config ./drizzle.config.ts`, which diffs the Drizzle schema
+# against the live database — it never reads the out/ dir that holds these 31
+# historical migration snapshots. Verified against a scratch DB with drizzle/
+# removed: 39 tables created, exit 0. drizzle.config.js is a stale duplicate of
+# the .ts the push script names explicitly; query.sql and seed-master-lists.ts are
+# dev scratch files no script references.
+rm -rf "$ROOT/lib/db/drizzle"
+rm -f "$ROOT/lib/db/drizzle.config.js" \
+      "$ROOT/lib/db/query.sql" \
+      "$ROOT/lib/db/seed-master-lists.ts"
+
+# Electron desktop packaging and Replit preview metadata. The client build is
+# `PORT=5173 vite build` (web target — vite.config only branches on
+# BUILD_TARGET=electron, which nothing on the client sets); electron/ is read only
+# by build:electron*, and .replit-artifact only by Replit's preview harness.
+rm -rf "$ROOT/artifacts/feeder-scanner/electron" \
+       "$ROOT/artifacts/feeder-scanner/.replit-artifact"
+
+# One-off data scripts and the test-runner config orphaned by the suite prune
+# below. Kept: seed-users.ts (setup.sh runs it via `pnpm run seed:users`).
+# rebase-audit-chain.ts rewrites every audit_logs HMAC — a support tool that must
+# never be a double-click away on a shop-floor PC. If it is ever needed, unlock
+# the tree and copy it in.
+rm -f "$ROOT/artifacts/api-server/scripts/insert-buzzer-bom.ts" \
+      "$ROOT/artifacts/api-server/scripts/insert-buzzer-bom.js" \
+      "$ROOT/artifacts/api-server/scripts/rebase-audit-chain.ts" \
+      "$ROOT/artifacts/api-server/vitest.config.ts"
+
+# Another customer's BOM. Real production data — it must not ship to a different
+# site, and dashboard-indexes.sql is a dev note superseded by
+# scripts/add-indexes.sql (which setup.sh actually applies).
+rm -f "$ROOT/docs/samples/Intermittent Buzzer E-BOM-Rev-001_1 (1)1 (1).csv" \
+      "$ROOT/docs/samples/bom-intbuz-r1.1.json" \
+      "$ROOT/docs/samples/dashboard-indexes.sql"
+
+# Git metadata: the client extracts a tarball, not a clone. .gitignore also names
+# dev-only paths (internal spec docs, DB snapshot and hand-over filenames) that
+# have no business being read off a client PC. backups/ is a placeholder — the
+# generated .env points BACKUP_DIR at /var/backups/$DB_NAME, which setup.sh creates.
+rm -f "$ROOT/.gitattributes" "$ROOT/.gitignore"
+rm -rf "$ROOT/backups"
 
 # Editor / lint tool configs.
 rm -f "$ROOT/opencode.json" "$ROOT/.markdownlintrc.json"
@@ -103,10 +176,13 @@ for req in \
   artifacts/api-server/package.json artifacts/api-server/build.mjs \
   artifacts/api-server/scripts/seed-users.ts artifacts/api-server/src/index.ts \
   artifacts/feeder-scanner/package.json artifacts/feeder-scanner/vite.config.ts \
+  artifacts/feeder-scanner/index.html \
   lib/db/package.json lib/db/drizzle.config.ts lib/db/src/index.ts \
   lib/db/src/schema/index.ts lib/db/src/create-reels-table.ts \
   lib/db/src/add-report-archive-record.ts \
   lib/db/src/create-report-output-settings-table.ts \
+  lib/api-zod/package.json lib/api-client-react/package.json \
+  lib/api-client-react/src/index.ts \
   docs/samples/BOM_IMPORT_EXAMPLE.csv
 do
   [ -e "$ROOT/$req" ] || missing+="  - $req"$'\n'
