@@ -1,7 +1,7 @@
 import { Router, type IRouter } from "express";
 import { db } from "@workspace/db";
-import { reportsTable, reportExportsTable, auditLogsTable } from "@workspace/db/schema";
-import { eq, desc } from "drizzle-orm";
+import { reportsTable, reportExportsTable, auditLogsTable, bomItemsTable } from "@workspace/db/schema";
+import { eq, desc, and, not } from "drizzle-orm";
 import { ReportService } from "../services/report-service";
 import { FilterService, ReportFilters } from "../services/filter-service";
 import { ExportService } from "../services/export-service";
@@ -397,7 +397,7 @@ router.get("/reports/trend", validateDateFilters, async (req, res) => {
 router.post("/reports/export/:reportType", requireRole("qa", "supervisor", "admin"), async (req: AuthRequest, res) => {
   try {
     const { reportType } = req.params;
-    const { format = "pdf", filters } = req.body;
+    const { format = "pdf", filters, bomId, title } = req.body;
 
     // Validate report type
     const validReportTypes = [
@@ -412,6 +412,7 @@ router.post("/reports/export/:reportType", requireRole("qa", "supervisor", "admi
       "component",
       "lot-traceability",
       "trend",
+      "bom",
     ];
 
     if (!validReportTypes.includes(reportType as string)) {
@@ -461,6 +462,27 @@ router.post("/reports/export/:reportType", requireRole("qa", "supervisor", "admi
       case "trend":
         reportData = await ReportService.generateTrendReport(filters);
         break;
+      case "bom": {
+        // BOM export is keyed by bomId (not date filters). Pull the BOM's live
+        // items and flatten to the columns the operator sees in the UI table.
+        const parsedBomId = Number(bomId);
+        if (!Number.isInteger(parsedBomId) || parsedBomId <= 0) {
+          return res.status(400).json({ error: "bomId is required for BOM export" });
+        }
+        const items = await db
+          .select()
+          .from(bomItemsTable)
+          .where(and(eq(bomItemsTable.bomId, parsedBomId), not(eq(bomItemsTable.isDeleted, true))));
+        reportData = items.map((item) => ({
+          Feeder: item.feederNumber ?? "—",
+          "MPN/Part": item.mpn ?? item.partNumber ?? "—",
+          Manufacturer: item.manufacturer ?? "—",
+          Package: item.packageSize ?? item.package ?? "—",
+          Qty: item.quantity ?? 1,
+          Description: item.description ?? "—",
+        }));
+        break;
+      }
     }
 
     const queryTime = Date.now() - startTime;
@@ -527,13 +549,18 @@ router.post("/reports/export/:reportType", requireRole("qa", "supervisor", "admi
       });
     }
 
-    return res.json({
-      success: true,
-      filePath,
-      format,
-      recordCount: Array.isArray(reportData) ? reportData.length : 0,
-      queryTimeMs: queryTime,
-      generatedAt: new Date(),
+    // Stream the generated file back so the browser actually receives it.
+    // (The file is also persisted on the server + recorded above for history.)
+    // Metadata that used to be in the JSON body is surfaced as headers so the
+    // client can still read it without a second request.
+    const downloadName = `${title || reportType}-report.${format}`.replace(/[^a-zA-Z0-9._-]/g, "_");
+    res.setHeader("X-Record-Count", String(Array.isArray(reportData) ? reportData.length : 0));
+    res.setHeader("X-Query-Time-Ms", String(queryTime));
+    return res.download(filePath, downloadName, (err) => {
+      if (err && !res.headersSent) {
+        req.log.error(err);
+        res.status(500).json({ error: "Failed to send export file" });
+      }
     });
   } catch (err) {
     req.log.error(err);

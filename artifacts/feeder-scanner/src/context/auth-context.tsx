@@ -1,4 +1,5 @@
 import { createContext, useContext, useEffect, useRef, useState, type ReactNode } from "react";
+import { useQueryClient } from "@tanstack/react-query";
 import { logger } from "../lib/logger";
 import { AUTH_SESSION_HINT_KEY, redirectToLoginSurface } from "../lib/session-guard";
 import { recordDailyMetric, appendAuditEntry, loadActiveSessions, saveActiveSessions, nowFormatted } from "../admin/admin-storage";
@@ -148,6 +149,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   // effect re-runs whenever a refresh pushes the deadline out.
   const [expiresAt, setExpiresAt] = useState<number | null>(null);
   const refreshingRef = useRef(false);
+  // Issue 2: the app's server-state cache. Cleared on logout so a shared
+  // terminal never hands the previous user's query data — most visibly the
+  // all-sessions list a QA/supervisor legitimately sees — to the next operator.
+  // The sessions query key is static (["/api/sessions"], no user id), so without
+  // this an operator's dashboard would briefly show every completed session.
+  const queryClient = useQueryClient();
 
   useEffect(() => {
     if (typeof window !== "undefined" && window.location.pathname.endsWith("/login")) {
@@ -342,6 +349,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         saveActiveSessions(sessions);
       } catch {}
     }
+    // Drop the previous user's cached server state before the next login so the
+    // new user never sees it (Issue 2).
+    queryClient.clear();
     setUser(null);
     setExpiresAt(null);
     setAuthSessionHint(false);

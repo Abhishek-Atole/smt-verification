@@ -1,7 +1,7 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useLocation } from "wouter";
-import { useQueryClient } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { ArrowLeft, CheckCircle2, Circle, Scissors, TriangleAlert, XCircle } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -23,7 +23,6 @@ import { registerScanResult, resetStrikes, stopAlarm } from "@/utils/indication"
 import { getGetBomQueryKey, getGetSessionQueryKey, getListSplicesQueryKey, useGetBom, useGetSession, useListSplices, useRecordSplice } from "@workspace/api-client-react";
 
 type WorkflowStep = "feeder" | "oldSpool" | "newSpool" | "newLot" | "confirm";
-type SpoolField = "mpn1" | "mpn2" | "mpn3" | "internalId";
 type RetryKey = WorkflowStep;
 
 type BomLine = {
@@ -31,6 +30,11 @@ type BomLine = {
   mpn1: string | null;
   mpn2: string | null;
   mpn3: string | null;
+  mpn4: string | null;
+  mpn5: string | null;
+  mpn6: string | null;
+  mpn7: string | null;
+  mpn8: string | null;
   internalId: string | null;
   description: string | null;
   refDes: string | null;
@@ -44,8 +48,12 @@ type StepFailure = {
   message: string;
 };
 
+type MatchField =
+  | "mpn1" | "mpn2" | "mpn3" | "mpn4" | "mpn5" | "mpn6" | "mpn7" | "mpn8"
+  | "internalId";
+
 type MatchResult = {
-  field: SpoolField;
+  field: MatchField;
   label: string;
   expected: string;
   received: string;
@@ -84,12 +92,24 @@ type RemoteSpliceRecord = {
   bomItem?: unknown;
 };
 
-const FIELD_LABELS: Record<SpoolField, string> = {
+const FIELD_LABELS: Record<MatchField, string> = {
   mpn1: "MPN 1",
   mpn2: "MPN 2",
   mpn3: "MPN 3",
+  mpn4: "MPN 4",
+  mpn5: "MPN 5",
+  mpn6: "MPN 6",
+  mpn7: "MPN 7",
+  mpn8: "MPN 8",
   internalId: "Internal ID",
 };
+
+// Field lookup order for a feeder's BOM row: primary first, then alternates, then
+// the internal part number — mirrors the server's verifyMPN / verifySpliceMpn so a
+// scanned spool that equals MPN4..MPN8 is accepted, not just MPN1..MPN3.
+const TARGET_FIELDS: MatchField[] = [
+  "mpn1", "mpn2", "mpn3", "mpn4", "mpn5", "mpn6", "mpn7", "mpn8", "internalId",
+];
 
 const RETRY_LIMIT = 5;
 
@@ -113,6 +133,11 @@ function normalizeBomLine(item: any): BomLine {
     mpn1: normalizeValue(item.mpn1 ?? item.mpn_1) || null,
     mpn2: normalizeValue(item.mpn2 ?? item.mpn_2) || null,
     mpn3: normalizeValue(item.mpn3 ?? item.mpn_3) || null,
+    mpn4: normalizeValue(item.mpn4 ?? item.mpn_4) || null,
+    mpn5: normalizeValue(item.mpn5 ?? item.mpn_5) || null,
+    mpn6: normalizeValue(item.mpn6 ?? item.mpn_6) || null,
+    mpn7: normalizeValue(item.mpn7 ?? item.mpn_7) || null,
+    mpn8: normalizeValue(item.mpn8 ?? item.mpn_8) || null,
     internalId: normalizeValue(internalId) || null,
     description,
     refDes,
@@ -121,25 +146,39 @@ function normalizeBomLine(item: any): BomLine {
   };
 }
 
-function getFieldValue(entity: Pick<SpoolLabel, "mpn1" | "mpn2" | "mpn3" | "internalId"> | BomLine, field: SpoolField): string {
-  return normalizeValue(entity[field]);
-}
+// A scanned spool label only ever carries one recognised part value (MPN1..3 or
+// the internal id / raw text). Compare that to EVERY BOM MPN (mpn1..mpn8) plus
+// the internal part number so a spool that equals MPN4..MPN8 is accepted too.
+function findMatch(subject: SpoolLabel, target: BomLine): MatchResult | null {
+  const receivedValues = new Set<string>();
+  for (const key of ["mpn1", "mpn2", "mpn3", "internalId"] as const) {
+    const v = normalizeValue(subject[key]);
+    if (v) receivedValues.add(v);
+  }
+  const rawVal = normalizeValue(subject.raw);
+  if (rawVal) receivedValues.add(rawVal);
 
-function findMatch(subject: Pick<SpoolLabel, "mpn1" | "mpn2" | "mpn3" | "internalId">, target: Pick<SpoolLabel, "mpn1" | "mpn2" | "mpn3" | "internalId"> | BomLine): MatchResult | null {
-  for (const field of ["mpn1", "mpn2", "mpn3", "internalId"] as SpoolField[]) {
-    const received = getFieldValue(subject, field);
-    const expected = getFieldValue(target, field);
-    if (received && expected && received === expected) {
+  for (const field of TARGET_FIELDS) {
+    const expected = normalizeValue(target[field]);
+    if (expected && receivedValues.has(expected)) {
       return {
         field,
         label: FIELD_LABELS[field],
         expected,
-        received,
+        received: expected,
       };
     }
   }
 
   return null;
+}
+
+// A scanned spool's own label only carries keys up to MPN3 + internal id; a match
+// on MPN4..MPN8 falls back to the label's raw text (same as the old behaviour).
+function spoolFieldValue(spool: SpoolLabel, field: MatchField): string {
+  const record = spool as unknown as Record<string, unknown>;
+  const value = record[field];
+  return typeof value === "string" ? value.trim() : spool.raw.trim();
 }
 
 function formatUTC(date: Date) {
@@ -217,6 +256,29 @@ async function postWorkflowAuditLog(payload: {
   }
 }
 
+// Persist the changeover's splice-workflow lock state so it survives a page
+// reload and logout+login (Issue 1b). Returns the parsed body, or null when the
+// request failed — callers keep the client-side lock as the offline fallback.
+async function postSpliceLock(
+  sessionId: number,
+  path: "splice-failure" | "splice-clear",
+  payload: Record<string, unknown>,
+): Promise<{ locked?: boolean; retryCounts?: Record<string, number> } | null> {
+  try {
+    const res = await fetch(`/api/sessions/${sessionId}/${path}`, {
+      method: "POST",
+      credentials: "include",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    if (!res.ok) return null;
+    return await res.json();
+  } catch (error) {
+    logger.warn(`Failed to ${path} splice lock state`, error);
+    return null;
+  }
+}
+
 export default function SplicingPage() {
   const [, setLocation] = useLocation();
   const queryClient = useQueryClient();
@@ -235,6 +297,24 @@ export default function SplicingPage() {
     query: { enabled: !!sessionId, queryKey: getListSplicesQueryKey(sessionId) },
   });
   const recordSpliceMutation = useRecordSplice();
+
+  // Server-persisted lock for this changeover (splicing_lock_state). Read once
+  // on mount so a logout+login or reload cannot silently clear a workflow lock
+  // the supervisor/QA has not yet overridden.
+  const spliceLockQuery = useQuery({
+    queryKey: ["splice-lock-state", sessionId],
+    queryFn: async () => {
+      const res = await fetch(`/api/sessions/${sessionId}/splice-state`, { credentials: "include" });
+      if (!res.ok) throw new Error(`splice-state ${res.status}`);
+      return (await res.json()) as {
+        locked?: boolean;
+        failure?: { step?: string; code?: string; message?: string } | null;
+        retryCounts?: Record<string, number>;
+      };
+    },
+    enabled: !!sessionId,
+    staleTime: 10_000,
+  });
 
   // Finish Splicing (→ splicing_pending_qa) or a closed session locks the operator
   // out of recording further splices — a one-way gate matching the backend 409.
@@ -294,6 +374,40 @@ export default function SplicingPage() {
   useEffect(() => {
     document.title = `${appConfig.companyShort} | Splicing`;
   }, []);
+
+  // Restore a server-persisted lock (and strike counts) when this changeover is
+  // opened — otherwise logout+login or a reload would silently clear a lock the
+  // supervisor/QA has not yet overridden.
+  const lockRestoredRef = useRef(false);
+  useEffect(() => {
+    lockRestoredRef.current = false;
+  }, [sessionId]);
+
+  useEffect(() => {
+    const state = spliceLockQuery.data;
+    if (!state || lockRestoredRef.current) return;
+    lockRestoredRef.current = true;
+    if (state.locked) {
+      setWorkflowLocked(true);
+      if (state.failure?.step && state.failure?.code) {
+        setWorkflowFailure({
+          step: state.failure.step as WorkflowStep,
+          code: state.failure.code as StepFailure["code"],
+          message: state.failure.message ?? "",
+        });
+      }
+    }
+    const counts = state.retryCounts ?? {};
+    if (Object.values(counts).some((n) => n > 0)) {
+      setRetryCounts((cur) => ({
+        feeder: counts.feeder ?? cur.feeder,
+        oldSpool: counts.oldSpool ?? cur.oldSpool,
+        newSpool: counts.newSpool ?? cur.newSpool,
+        newLot: counts.newLot ?? cur.newLot,
+        confirm: counts.confirm ?? cur.confirm,
+      }));
+    }
+  }, [spliceLockQuery.data, sessionId]);
 
   const bomItems = useMemo(() => (bomQuery.data?.items ?? []).map(normalizeBomLine).filter((item) => item.feederNumber), [bomQuery.data]);
   const bomByFeeder = useMemo(() => new Map(bomItems.map((item) => [item.feederNumber.toUpperCase(), item] as const)), [bomItems]);
@@ -370,7 +484,26 @@ export default function SplicingPage() {
       message: failure.message,
     });
 
-    if (shouldLock) {
+    // Persist the strike (+ lock when this one crosses the limit) server-side so
+    // a reload or logout+login cannot silently reset it. Server is authoritative
+    // when reachable; the local `shouldLock` remains the offline fallback.
+    const persisted = await postSpliceLock(sessionId, "splice-failure", {
+      step: failure.step,
+      code: failure.code,
+      message: failure.message,
+      feederNumber,
+    });
+    const lockedNow = persisted?.locked ?? shouldLock;
+    if (persisted?.retryCounts) {
+      setRetryCounts((cur) => ({ ...cur, ...persisted.retryCounts }));
+    }
+    queryClient.setQueryData(["splice-lock-state", sessionId], {
+      locked: lockedNow,
+      failure: lockedNow ? { step: failure.step, code: failure.code, message: failure.message } : null,
+      retryCounts: persisted?.retryCounts ?? retryCounts,
+    });
+
+    if (lockedNow) {
       setWorkflowLocked(true);
       showErrorAlert(`MAX_RETRY_EXCEEDED - ${failure.message}. Supervisor override required.`, "high");
       return;
@@ -400,6 +533,14 @@ export default function SplicingPage() {
     setRetryCounts({ feeder: 0, oldSpool: 0, newSpool: 0, newLot: 0, confirm: 0 });
     setWorkflowStartedAt(Date.now());
     resetOverrideState();
+    // A splice saved successfully: reset the server-persisted lock + counts so
+    // the next feeder starts clean (matches the local reset above).
+    queryClient.setQueryData(["splice-lock-state", sessionId], {
+      locked: false,
+      failure: null,
+      retryCounts: { feeder: 0, oldSpool: 0, newSpool: 0, newLot: 0, confirm: 0 },
+    });
+    void postSpliceLock(sessionId, "splice-clear", { mode: "save" });
     clearStepInput();
   };
 
@@ -425,7 +566,7 @@ export default function SplicingPage() {
       });
       if (!res.ok) {
         const body = await res.json().catch(() => ({}));
-        setOverrideError(body?.error || "Override verification failed.");
+        setOverrideError(body?.message || body?.error || "Override verification failed.");
         setOverrideVerifying(false);
         return;
       }
@@ -433,11 +574,16 @@ export default function SplicingPage() {
       showSuccessAlert(`Override approved by ${data.approverName} (${data.approverRole}). Workflow unlocked.`, "medium");
       stopAlarm();
       resetStrikes();
+      const unlockedStep = workflowFailure?.step ?? "oldSpool";
       setWorkflowLocked(false);
       setWorkflowFailure(null);
-      setRetryCounts((prev) => ({ ...prev, [workflowFailure?.step ?? "oldSpool"]: 0 }));
-      setStep(workflowFailure?.step ?? "oldSpool");
+      setRetryCounts((prev) => ({ ...prev, [unlockedStep]: 0 }));
+      setStep(unlockedStep);
       resetOverrideState();
+      // Lift the server-persisted lock for this step so the override holds even
+      // after a reload or logout+login.
+      queryClient.setQueryData(["splice-lock-state", sessionId], { locked: false, failure: null });
+      void postSpliceLock(sessionId, "splice-clear", { mode: "override", step: unlockedStep });
     } catch {
       setOverrideError("Network error. Please try again.");
       setOverrideVerifying(false);
@@ -456,8 +602,8 @@ export default function SplicingPage() {
 
     setFinalizing(true);
     try {
-      const newBarcode = String(newSpool[newMatch.field] ?? newSpool.raw).trim();
-      const oldBarcode = String(oldSpool[oldMatch.field] ?? oldSpool.raw).trim();
+      const newBarcode = spoolFieldValue(newSpool, newMatch.field);
+      const oldBarcode = spoolFieldValue(oldSpool, oldMatch.field);
       const capturedDuration = workflowStartedAt
         ? Math.max(0, Math.round((Date.now() - workflowStartedAt) / 1000))
         : 0;
@@ -636,7 +782,7 @@ export default function SplicingPage() {
       // Bypass: accept a feeder that isn't in the BOM as a free-scan line.
       const lockedItem: BomLine = bomItem ?? {
         feederNumber: normalizedFeeder,
-        mpn1: null, mpn2: null, mpn3: null,
+        mpn1: null, mpn2: null, mpn3: null, mpn4: null, mpn5: null, mpn6: null, mpn7: null, mpn8: null,
         internalId: null, description: null, refDes: null,
         quantity: null, supplier: null,
       };
@@ -763,6 +909,24 @@ export default function SplicingPage() {
       registerScanResult(scannedLot, true);
       return;
     }
+  };
+
+  // Operator-approved: the new-spool LOT CODE is OPTIONAL. Skipping records the
+  // splice without a lot code (the server flags NEW_SPOOL_LOT_CODE_MISSING as a
+  // warning instead of rejecting). The lot code feeds traceability, so the skip
+  // is an explicit operator choice, not an accident.
+  const skipLotCode = () => {
+    if (step !== "newLot") return;
+    if (!newSpool || !newMatch) {
+      showErrorAlert("New spool must be confirmed before skipping the lot code.", "high");
+      return;
+    }
+    setNewLotCode("");
+    setStep("confirm");
+    setWorkflowFailure(null);
+    setRetryCounts((current) => ({ ...current, newLot: 0 }));
+    clearStepInput();
+    showSuccessAlert("Lot code skipped — this splice will be recorded without a lot code.", "medium");
   };
 
   const { inputRef, value, setValue, reset, handleKeyDown } = useScanner({
@@ -1058,7 +1222,7 @@ export default function SplicingPage() {
                   <div className="rounded-2xl border border-border/70 bg-background/90 p-4 shadow-sm md:p-6">
                     <div className="mb-2 flex items-center justify-between gap-2 text-[11px] font-bold uppercase tracking-[0.22em] text-muted-foreground">
                       <span>Live scan input</span>
-                      <span>{step === "feeder" ? "Feeder" : step === "oldSpool" ? "Old spool" : step === "newSpool" ? "New spool" : "Lot code"}</span>
+                      <span>{step === "feeder" ? "Feeder" : step === "oldSpool" ? "Old spool" : step === "newSpool" ? "New spool" : "Lot code (optional)"}</span>
                     </div>
                     <Input
                       ref={inputRef}
@@ -1069,7 +1233,7 @@ export default function SplicingPage() {
                         step === "feeder"   ? "Scan feeder number"
                         : step === "oldSpool" ? "Scan old spool label"
                         : step === "newSpool" ? "Scan new spool label"
-                        : "Type LOT CODE then press Enter (manual entry)"
+                        : "Type LOT CODE + Enter — or click 'Skip Lot Code' (optional)"
                       }
                       className="h-24 border-2 border-dashed border-amber-200 bg-background/95 text-center font-mono text-2xl font-semibold tracking-[0.22em] shadow-inner focus-visible:border-amber-500 md:h-28 md:text-3xl lg:h-32 lg:text-4xl"
                       autoComplete="off"
@@ -1091,9 +1255,14 @@ export default function SplicingPage() {
                       </Button>
                     )}
                     {step === "newLot" && (
-                      <Button type="button" className="h-11 bg-amber-600 text-white hover:bg-amber-700" onClick={() => handleWorkflowScan(value)}>
-                        Capture Lot Code
-                      </Button>
+                      <>
+                        <Button type="button" className="h-11 bg-amber-600 text-white hover:bg-amber-700" onClick={() => handleWorkflowScan(value)}>
+                          Capture Lot Code
+                        </Button>
+                        <Button type="button" variant="outline" className="h-11 border-dashed border-border/70 bg-background/80 text-muted-foreground hover:text-foreground" onClick={skipLotCode}>
+                          Skip Lot Code
+                        </Button>
+                      </>
                     )}
                   </div>
                 </div>
@@ -1136,7 +1305,7 @@ export default function SplicingPage() {
                     { label: "BOM Part",     value: summary.bomPart || "-", note: `RefDes: ${summary.bomRefDes}` },
                     { label: "Old Spool ID", value: summary.oldSpoolId, note: `Old Lot / Qty: ${summary.oldLotQty}` },
                     { label: "New Spool ID", value: summary.newSpoolId, note: `New Lot / Qty: ${summary.newLotQty}` },
-                    { label: "New Lot Code", value: summary.newLotCode, note: "Scanned in Step 4" },
+                    { label: "New Lot Code", value: summary.newLotCode, note: newLotCode ? "Captured in Step 4" : "Skipped — no lot recorded" },
                     { label: "Operator ID", value: summary.operatorId, note: "Current operator" },
                     { label: "Timestamp",    value: summary.timestampUtc, note: "UTC time" },
                   ].map((item) => (
@@ -1196,7 +1365,7 @@ export default function SplicingPage() {
 
             {/* Info footer */}
             <div className="rounded-2xl border border-dashed border-border/70 bg-muted/20 p-3 text-xs leading-relaxed text-muted-foreground">
-              Step 1 checks the feeder against the loaded BOM. Step 2 requires the old spool to match one BOM field. Step 3 requires the new spool to match the BOM for that feeder (MPN1, MPN2, MPN3, or Internal ID). Step 4 captures the new spool's LOT CODE — this field requires <b>manual entry</b> (type the value and press Enter, or click "Capture Lot Code"). Auto-scan is disabled for the lot-code step.               Step 5 shows a 5-second preview with a countdown; the splice <b>auto-submits</b> when the timer reaches 0, but the manual <b>Submit & Finalize</b> button and the <b>Enter</b> key both submit immediately.
+              Step 1 checks the feeder against the loaded BOM. Step 2 requires the old spool to match one BOM field. Step 3 requires the new spool to match the BOM for that feeder (MPN1, MPN2, MPN3, or Internal ID). Step 4 captures the new spool's LOT CODE — <b>optional</b>: type the value and press Enter, click "Capture Lot Code", or click <b>"Skip Lot Code"</b> to record the splice without a lot. Auto-scan is disabled for the lot-code step.               Step 5 shows a 5-second preview with a countdown; the splice <b>auto-submits</b> when the timer reaches 0, but the manual <b>Submit & Finalize</b> button and the <b>Enter</b> key both submit immediately.
             </div>
           </CardContent>
         </Card>

@@ -103,6 +103,9 @@ export default function SessionNew() {
   const [lineName, setLineName] = useState("");
   const [bomVerificationSkipped, setBomVerificationSkipped] = useState(false);
   const [verificationMode, setVerificationMode] = useState<"AUTO" | "AUTO_LEGACY">("AUTO");
+  // A 409 from POST /sessions means another changeover is still in progress and
+  // only this one may run; surfaced as a persistent banner (not just an alert).
+  const [blockingNotice, setBlockingNotice] = useState<string | null>(null);
 
   const operatorName = user?.name ?? "";
   // Free Scan Mode bypasses all BOM validation, so only supervisors may enable it.
@@ -165,6 +168,7 @@ export default function SessionNew() {
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
+    setBlockingNotice(null);
     if (!freeScanMode && !bomId) return alert("Please select a BOM or enable Free Scan Mode");
     if (freeScanMode && !freeScanPcbName.trim()) return alert("Please enter the PCB name");
     const resolvedSupervisor = supervisorName === "__other__" ? "" : supervisorName;
@@ -199,10 +203,16 @@ export default function SessionNew() {
     }, {
       onSuccess: (session) => setLocation(`/session/${session.id}`),
       onError: (err: unknown) => {
-        // Surface server-side gates (Module 2.1 max-2-per-line, Module 1 approval
-        // requirements) to the operator instead of failing silently.
-        const data = (err as { data?: { error?: string } })?.data;
+        // Surface server-side gates (single-active-changeover 409, Module 1
+        // approval requirements) to the operator instead of failing silently.
+        const data = (err as { data?: { error?: string; blockingSession?: unknown } })?.data;
         const message = (err as { message?: string })?.message;
+        // A 409 that names the blocking changeover gets a persistent inline
+        // banner; other failures keep the plain alert.
+        if (data?.blockingSession) {
+          setBlockingNotice(data.error ?? "Another changeover is already in progress.");
+          return;
+        }
         alert(data?.error ?? message ?? "Failed to start changeover");
       },
     });
@@ -417,6 +427,17 @@ export default function SessionNew() {
             />
           </div>
         </div>
+
+        {/* Single-active-changeover notice */}
+        {blockingNotice && (
+          <div
+            role="alert"
+            className="rounded-sm border border-destructive/60 bg-destructive/5 px-4 py-3 text-destructive text-sm"
+          >
+            <span className="font-bold">Cannot start — another changeover is running.</span>
+            <div className="mt-1">{blockingNotice}</div>
+          </div>
+        )}
 
         {/* Submit */}
         <div className="pt-4 flex justify-center lg:justify-end">

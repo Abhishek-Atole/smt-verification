@@ -447,13 +447,13 @@ export default function SessionActive() {
 
   const getScannedValueStyle = (row: SessionScanLogRow) => {
     if (row.status === "failed") return "text-[#B91C1C] font-bold";
-    if (row.matchedField === "mpn2" || row.matchedField === "mpn3") return "text-[#B45309] font-bold";
+    if (["mpn2", "mpn3", "mpn4", "mpn5", "mpn6", "mpn7", "mpn8"].includes(row.matchedField ?? "")) return "text-[#B45309] font-bold";
     return "text-[#15803D] font-bold";
   };
 
   const getScannedValueSuffix = (row: SessionScanLogRow) => {
     if (row.status === "failed") return " ✗";
-    if (row.matchedField === "mpn2" || row.matchedField === "mpn3") return " ▲";
+    if (["mpn2", "mpn3", "mpn4", "mpn5", "mpn6", "mpn7", "mpn8"].includes(row.matchedField ?? "")) return " ▲";
     return "";
   };
 

@@ -310,7 +310,12 @@ export default function Reports() {
   const handleExport = async (format: "pdf" | "xlsx" | "csv") => {
     try {
       const result = await ReportApi.exportReport(selectedReport, format, filters);
-      alert(`Report exported successfully!\nFile: ${result.filePath}\nRecords: ${result.recordCount}`);
+      const url = window.URL.createObjectURL(result.blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = result.fileName;
+      a.click();
+      window.URL.revokeObjectURL(url);
     } catch (err) {
       alert(`Export failed: ${err instanceof Error ? err.message : "Unknown error"}`);
     }

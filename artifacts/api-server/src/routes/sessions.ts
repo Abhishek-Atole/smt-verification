@@ -1,7 +1,7 @@
 
 import { Router, type IRouter, type Response, type NextFunction } from "express";
 import { db } from "@workspace/db";
-import { sessionsTable, scanRecordsTable, spliceRecordsTable, bomItemsTable, bomsTable, auditLogsTable, usersTable, changeoverOperatorsTable, type BomItem } from "@workspace/db/schema";
+import { sessionsTable, scanRecordsTable, spliceRecordsTable, bomItemsTable, bomsTable, auditLogsTable, usersTable, changeoverOperatorsTable, splicingLockStateTable, type BomItem } from "@workspace/db/schema";
 import { eq, and, or, sql, desc, isNull, isNotNull, count, inArray } from "drizzle-orm";
 import { z } from "zod";
 import { attachActor, requireRole, requireAuth, type AuthRequest } from "../middleware/auth";
@@ -10,6 +10,7 @@ import { auditLog } from "../lib/auditLogger";
 import { pushNotification } from "../lib/notify";
 import { isUniqueViolation } from "../lib/dbErrors";
 import { formatSmtSessionId } from "../lib/session-id";
+import { findBlockingSession, findEarlierUnfinished } from "./session-guards";
 import { TimestampService } from "../services/timestamp-service";
 import { beginReportArchive } from "../services/report-archive-service";
 import PDFDocument from "pdfkit";
@@ -22,14 +23,14 @@ const router: IRouter = Router();
 
 router.use(attachActor);
 
-// Module 2.2 IDOR guard for by-:sessionId legacy routes. Mirrors the ownership
-// rule GET /sessions already uses (see line ~727): qa/supervisor/admin pass
-// freely; an operator may only touch a changeover they own — via the
-// changeover_operators join (creator or handover co-owner) OR the legacy
-// operator_name == display-name match. NOTE: ownership is keyed on actor.name
-// (display name), not actor.username, because operator_name is the form-supplied
-// display name — the pre-existing requireLegacySessionAccess helper compares
-// against username and would wrongly 403 operators on their own sessions.
+// Module 2.2 IDOR guard for by-:sessionId routes. Mirrors the ownership rule
+// GET /sessions already uses (see line ~830): qa/supervisor/admin pass freely;
+// an operator may only touch a changeover they own — via the changeover_operators
+// join (creator or handover co-owner). The historical operator_name == actor.name
+// fallback is gone: sessions.operator_name stores the operator's employee_id
+// (verified against the live DB — 29/29 rows match employee_id, 0 match a display
+// name), so a display-name comparison could never match and was dead code that
+// only read as if it granted/leaked access.
 async function requireLegacySessionOwnership(
   req: AuthRequest,
   res: Response,
@@ -52,7 +53,7 @@ async function requireLegacySessionOwnership(
   }
 
   const [session] = await db
-    .select({ id: sessionsTable.id, operatorName: sessionsTable.operatorName })
+    .select({ id: sessionsTable.id })
     .from(sessionsTable)
     .where(eq(sessionsTable.id, sessionId));
   if (!session) {
@@ -60,10 +61,6 @@ async function requireLegacySessionOwnership(
     return;
   }
 
-  if (session.operatorName === actor.name) {
-    next();
-    return;
-  }
   const [owned] = await db
     .select({ sessionId: changeoverOperatorsTable.sessionId })
     .from(changeoverOperatorsTable)
@@ -829,9 +826,11 @@ async function buildSessionReportPayload(sessionId: number): Promise<SessionRepo
 router.get("/sessions", requireRole("operator", "qa", "supervisor", "admin"), async (req: AuthRequest, res) => {
   try {
     const actor = req.actor!;
-    // Module 2.2: operators see only changeovers they own (creator or handover
-    // co-owner via changeover_operators), plus legacy rows created under their
-    // name before the join table existed. QA/Supervisor/Admin see everything.
+    // Module 2.2: operators see only changeovers they own — creator or handover
+    // co-owner via changeover_operators (accepted). QA/Supervisor/Admin see
+    // everything. The legacy operator_name == actor.name arm was removed: it
+    // stored employee_ids and never matched a display name (see
+    // requireLegacySessionOwnership).
     const isPrivileged = ["qa", "supervisor", "admin"].includes(actor.role);
 
     let where = isNull(sessionsTable.deletedAt);
@@ -848,10 +847,7 @@ router.get("/sessions", requireRole("operator", "qa", "supervisor", "admin"), as
       const ownedIds = owned.map((o) => o.sessionId);
       where = and(
         isNull(sessionsTable.deletedAt),
-        or(
-          ownedIds.length > 0 ? inArray(sessionsTable.id, ownedIds) : sql`false`,
-          eq(sessionsTable.operatorName, actor.name),
-        ),
+        ownedIds.length > 0 ? inArray(sessionsTable.id, ownedIds) : sql`false`,
       )!;
     }
 
@@ -882,8 +878,8 @@ router.get("/sessions/latest", requireRole("operator", "qa", "supervisor", "admi
   try {
     const actor = req.actor!;
     // Module 2.2: operators only see their own latest changeover (owned via the
-    // changeover_operators join or a legacy operator_name match); privileged
-    // roles see the globally-latest. Mirrors GET /sessions scoping.
+    // changeover_operators join); privileged roles see the globally-latest.
+    // Mirrors GET /sessions scoping.
     const isPrivileged = ["qa", "supervisor", "admin"].includes(actor.role);
     let where = isNull(sessionsTable.deletedAt);
     if (!isPrivileged) {
@@ -899,10 +895,7 @@ router.get("/sessions/latest", requireRole("operator", "qa", "supervisor", "admi
       const ownedIds = owned.map((o) => o.sessionId);
       where = and(
         isNull(sessionsTable.deletedAt),
-        or(
-          ownedIds.length > 0 ? inArray(sessionsTable.id, ownedIds) : sql`false`,
-          eq(sessionsTable.operatorName, actor.name),
-        ),
+        ownedIds.length > 0 ? inArray(sessionsTable.id, ownedIds) : sql`false`,
       )!;
     }
 
@@ -985,20 +978,29 @@ router.post("/sessions", requireRole("operator", "qa", "supervisor", "admin"), a
       }
     }
 
-    // Module 2.1: at most 2 active changeovers per line. A changeover counts as
-    // active until it is completed or cancelled. Blocks the 3rd concurrent start.
-    const [{ value: activeOnLine }] = await db
-      .select({ value: count() })
-      .from(sessionsTable)
-      .where(
-        and(
-          eq(sessionsTable.lineName, lineName),
-          isNull(sessionsTable.deletedAt),
-          sql`${sessionsTable.status} NOT IN ('completed', 'cancelled')`,
-        ),
-      );
-    if (Number(activeOnLine) >= 2) {
-      res.status(409).json({ error: "Please close the previous changeover on this line before starting a new one." });
+    // Single-active-changeover gate, scoped PER LOGIN (replaces the old Module
+    // 2.1 "at most 2 active per line" count). A user may run at most one
+    // changeover at a time: if they already own a session in a BLOCKING status
+    // (active → active_splicing, i.e. before its splicing has been submitted to
+    // QA), they cannot start another. The unlock point is splicing_pending_qa —
+    // once this user has submitted splicing to QA, the next changeover may begin
+    // while QA reviews. Different logins on different lines are independent.
+    const creatingActor = req.actor;
+    const blockingSession = creatingActor?.id ? await findBlockingSession(creatingActor.id) : null;
+    if (blockingSession) {
+      res.status(409).json({
+        error: `You already have a changeover in progress (#${blockingSession.id}${
+          blockingSession.lineName ? ` on ${blockingSession.lineName}` : ""
+        }${
+          blockingSession.panelName ? ` — ${blockingSession.panelName}` : ""
+        }). Submit its splicing to QA before starting the next one.`,
+        blockingSession: {
+          id: blockingSession.id,
+          status: blockingSession.status,
+          lineName: blockingSession.lineName,
+          panelName: blockingSession.panelName,
+        },
+      });
       return;
     }
 
@@ -1013,6 +1015,20 @@ router.post("/sessions", requireRole("operator", "qa", "supervisor", "admin"), a
       ? normalizedMode
       : "AUTO";
 
+    // The operator of a changeover is always the login who started it. Store the
+    // person's REAL name (users.name), not the login/employee id that the client
+    // auth context puts in user.name — otherwise the report's Approvals & Sign-off
+    // shows a username ("4849"/"engineer1") instead of "Suraj Gurav". Supervisor
+    // and QA keep whatever engineer name was chosen from the Approvers roster.
+    let storedOperatorName = operatorName;
+    if (creatingActor?.id) {
+      const [opUser] = await db
+        .select({ name: usersTable.name })
+        .from(usersTable)
+        .where(eq(usersTable.id, creatingActor.id));
+      if (opUser?.name && opUser.name.trim()) storedOperatorName = opUser.name.trim();
+    }
+
     const [session] = await db
       .insert(sessionsTable)
       .values({
@@ -1020,7 +1036,7 @@ router.post("/sessions", requireRole("operator", "qa", "supervisor", "admin"), a
         // Free-scan sessions (no BOM) carry a manually-entered PCB name; BOM
         // sessions leave it null and derive the name from the BOM.
         pcbName: finalBomId === null && typeof pcbName === "string" && pcbName.trim() ? pcbName.trim() : null,
-        operatorName, qaName, engineerName: engineerName ?? null, shiftName, shiftDate, logoUrl,
+        operatorName: storedOperatorName, qaName, engineerName: engineerName ?? null, shiftName, shiftDate, logoUrl,
         productionCount: productionCount ?? 0,
         machineName: machineName ?? null,
         lineName: lineName ?? null,
@@ -1113,7 +1129,7 @@ router.post("/sessions/:sessionId/handover", requireAuth, async (req: AuthReques
     }
 
     const [session] = await db
-      .select({ id: sessionsTable.id, operatorName: sessionsTable.operatorName, status: sessionsTable.status })
+      .select({ id: sessionsTable.id, status: sessionsTable.status })
       .from(sessionsTable)
       .where(and(eq(sessionsTable.id, sessionId), isNull(sessionsTable.deletedAt)));
     if (!session) {
@@ -1138,8 +1154,7 @@ router.post("/sessions/:sessionId/handover", requireAuth, async (req: AuthReques
             eq(changeoverOperatorsTable.status, "accepted"),
           ),
         );
-      const isOwnerByName = session.operatorName === actor.name;
-      if (!owner && !isOwnerByName) {
+      if (!owner) {
         res.status(403).json({ error: "Only an owner of this changeover or a supervisor can initiate handover" });
         return;
       }
@@ -1309,7 +1324,9 @@ router.get("/sessions/:sessionId", requireRole("operator", "qa", "supervisor", "
     }
 
     // Module 2.2: operators may only open changeovers they own (join-table
-    // membership or the legacy creator-by-name match). Privileged roles bypass.
+    // membership). Privileged roles bypass. (requireLegacySessionOwnership above
+    // already enforces this; the check is repeated because this route fetches
+    // extra data and audits the denial.)
     const actor = req.actor!;
     if (!["qa", "supervisor", "admin"].includes(actor.role)) {
       const [membership] = await db
@@ -1322,7 +1339,7 @@ router.get("/sessions/:sessionId", requireRole("operator", "qa", "supervisor", "
             eq(changeoverOperatorsTable.status, "accepted"),
           ),
         );
-      if (!membership && session.operatorName !== actor.name) {
+      if (!membership) {
         await auditLog({
           event: "UNAUTHORIZED_ACCESS",
           operatorId: actor.id,
@@ -1500,6 +1517,20 @@ router.patch("/sessions/:sessionId", requireRole("operator", "qa", "supervisor",
           res.status(409).json({
             error: "Changeover has splices; close it through QA 200% splicing verification, not a direct status update.",
             status: current.status,
+          });
+          return;
+        }
+
+        // FIFO close: an earlier changeover must be fully verified (completed /
+        // cancelled / incomplete) before this one may be closed directly.
+        const earlierUnfinished = await findEarlierUnfinished(sessionId);
+        if (earlierUnfinished) {
+          res.status(409).json({
+            error: `Changeover #${earlierUnfinished.id} must be completed by QA before changeover #${sessionId} can be closed.`,
+            earlierUnfinished: {
+              id: earlierUnfinished.id,
+              status: earlierUnfinished.status,
+            },
           });
           return;
         }
@@ -2443,10 +2474,11 @@ router.post("/sessions/:sessionId/splices", requireRole("operator", "qa", "super
       };
     }
 
-    // === STEP 5: LOT code gate - new spool MUST have a lot code ===
-    // Preference order: 1) explicit newLotCode from the separate step-4 scan,
-    //                   2) newSpoolObj.lotCode from the parsed label,
-    //                   3) legacy lotCode body field.
+    // === STEP 5: LOT code — OPTIONAL (operator may skip). Preference order:
+    // 1) explicit newLotCode from the step-4 capture, 2) newSpoolObj.lotCode from
+    // the parsed label, 3) legacy lotCode body field. Approved change: a missing
+    // new-spool lot code no longer rejects the splice — it is recorded without a
+    // lot and flagged as a warning (the record + QA 200% flow still work).
     const effectiveNewLotCode = String(newLotCode ?? newSpoolObj.lotCode ?? lotCode ?? "").trim() || null;
 
     const validationWarnings: string[] = [];
@@ -2454,13 +2486,9 @@ router.post("/sessions/:sessionId/splices", requireRole("operator", "qa", "super
       validationWarnings.push("OLD_SPOOL_LOT_CODE_MISSING");
     }
     if (!effectiveNewLotCode) {
-      return res.status(400).json({
-        error: "New spool lot code is required. Scan a label that contains lot_no or pass newLotCode/lotCode in the request body.",
-        code: "MISSING_LOT_CODE",
-        missingFrom: "new",
-        status: "failed",
-      });
+      validationWarnings.push("NEW_SPOOL_LOT_CODE_MISSING");
     }
+    const newLotLabel = effectiveNewLotCode ?? "SKIPPED";
 
     const feederWasVerified = feederScans.length > 0;
     const verificationModeValue = String(verificationMode ?? session.verificationMode ?? "AUTO").toUpperCase() === "MANUAL" ? "MANUAL" : "AUTO";
@@ -2547,7 +2575,7 @@ router.post("/sessions/:sessionId/splices", requireRole("operator", "qa", "super
         }),
         newValue: JSON.stringify(auditPayload),
         changedBy: operatorName,
-        description: `Feeder ${normalizedFeeder} splice recorded: ${newMatch.matchedAs} (${newMatch.status.toUpperCase()})${feederWasVerified ? "" : " [before feeder verification]"}${durationSeconds ? ` (Duration: ${durationSeconds}s)` : ""} [LOT: ${effectiveNewLotCode}]`,
+        description: `Feeder ${normalizedFeeder} splice recorded: ${newMatch.matchedAs} (${newMatch.status.toUpperCase()})${feederWasVerified ? "" : " [before feeder verification]"}${durationSeconds ? ` (Duration: ${durationSeconds}s)` : ""} [LOT: ${newLotLabel}]`,
         createdAt: TimestampService.createAuditTimestamp(),
       });
     }
@@ -2565,8 +2593,8 @@ router.post("/sessions/:sessionId/splices", requireRole("operator", "qa", "super
     res.status(idempotentSpliceRetry ? 200 : 201).json({
       ...buildSpliceResponse(splice, bomItem, auditPayload),
       message: feederWasVerified
-        ? `✅ Splice Approved — ${newMatch.matchedAs} (LOT: ${effectiveNewLotCode})`
-        : `⚠ Splice Approved — ${newMatch.matchedAs} (feeder not previously verified) [LOT: ${effectiveNewLotCode}]`,
+        ? `✅ Splice Approved — ${newMatch.matchedAs} (LOT: ${newLotLabel})`
+        : `⚠ Splice Approved — ${newMatch.matchedAs} (feeder not previously verified) [LOT: ${newLotLabel}]`,
       feederVerified: feederWasVerified,
       auditLogged: !idempotentSpliceRetry,
       ...(idempotentSpliceRetry ? { idempotent: true } : {}),
@@ -2988,7 +3016,7 @@ router.get("/sessions/:sessionId/report/pdf", requireRole("qa", "supervisor", "a
       doc.fillColor(C.SLATE_300).font("Helvetica").fontSize(6).text(getModeLabel(), idBoxX + 9, idBoxY + 33, {
         width: idBoxW - 14,
       });
-      doc.fillColor(C.AMBER_700).font("Helvetica-Bold").fontSize(5.5).text(`PAGE 1 OF 1`, idBoxX + 9, idBoxY + 42, {
+      doc.fillColor(C.AMBER_700).font("Helvetica-Bold").fontSize(5.5).text(`PAGE ${_pageNum}`, idBoxX + 9, idBoxY + 42, {
         width: idBoxW - 14,
       });
 
@@ -3213,7 +3241,7 @@ router.get("/sessions/:sessionId/report/pdf", requireRole("qa", "supervisor", "a
       drawLegendChip(left + 1 * chipW,        chipY, C.AMBER_700,   "Alternate — BOM-approved MPN2/MPN3", chipW);
       drawLegendChip(left + 2 * chipW,        chipY, C.RUBY_700,    "Mismatch — rejected (no BOM match)",  chipW);
       drawLegendChip(left + 3 * chipW,        chipY, C.INDIGO_700,  "Expected BOM options (reference)",   chipW);
-      doc.fillColor(C.SLATE_700).font("Helvetica-Bold").fontSize(6).text("Mode: AUTO STRICT — exact match only", left + 4 * chipW, chipY, { width: chipW - 4 });
+      doc.fillColor(C.SLATE_700).font("Helvetica-Bold").fontSize(6).text(getModeLabel(), left + 4 * chipW, chipY, { width: chipW - 4 });
       y += 11;
     };
 
@@ -3521,6 +3549,120 @@ router.delete("/sessions/:sessionId/scans", requireRole("operator", "qa", "super
   } catch (err) {
     req.log.error(err);
     res.status(500).json({ error: "Failed to clear session scans" });
+  }
+});
+
+// --- Changeover splice-workflow lock (server-persisted) -----------------------
+// The Splicing screen locks a changeover after RETRY_LIMIT failed scans on one
+// step. These routes persist that lock against the session so logout/login or a
+// page reload can no longer clear it — only a supervisor/QA override
+// (splice-clear mode=override, which also unlocks the failed step) or a
+// successfully saved splice (mode=save, resets every step) does. Gated exactly
+// like the splice POST above: an operator must own the changeover, privileged
+// roles pass.
+const SPLICE_RETRY_LIMIT = 5; // keep in sync with RETRY_LIMIT in Splicing.tsx
+
+router.get("/sessions/:sessionId/splice-state", requireRole("operator", "qa", "supervisor", "admin"), requireLegacySessionOwnership, async (req: AuthRequest, res) => {
+  try {
+    const sessionId = Number(req.params.sessionId);
+    const [row] = await db.select().from(splicingLockStateTable).where(eq(splicingLockStateTable.sessionId, sessionId));
+    res.json({
+      locked: row?.locked ?? false,
+      failure: row?.locked
+        ? { step: row.step, code: row.code, message: row.message, feederNumber: row.feederNumber }
+        : null,
+      retryCounts: (row?.retryCounts as Record<string, number> | null | undefined) ?? {},
+    });
+  } catch (err) {
+    req.log.error(err);
+    res.status(500).json({ error: "Failed to read splice lock state" });
+  }
+});
+
+router.post("/sessions/:sessionId/splice-failure", requireRole("operator", "qa", "supervisor", "admin"), requireLegacySessionOwnership, async (req: AuthRequest, res) => {
+  try {
+    const sessionId = Number(req.params.sessionId);
+    const body = req.body ?? {};
+    const step = typeof body.step === "string" ? body.step.trim() : "";
+    if (!step || step.length > 60) {
+      res.status(400).json({ error: "step is required" });
+      return;
+    }
+    const code = typeof body.code === "string" ? body.code.slice(0, 120) : "";
+    const message = typeof body.message === "string" ? body.message.slice(0, 500) : "";
+    const feederNumber = typeof body.feederNumber === "string" ? body.feederNumber.slice(0, 120) : "";
+
+    const [existing] = await db.select().from(splicingLockStateTable).where(eq(splicingLockStateTable.sessionId, sessionId));
+    const prev = (existing?.retryCounts as Record<string, number> | null | undefined) ?? {};
+    const next = { ...prev, [step]: (prev[step] ?? 0) + 1 };
+    const crossed = next[step] >= SPLICE_RETRY_LIMIT;
+    // The first step to cross the limit wins the lock; later failures on other
+    // steps keep counting (so a reload can't reset them) but never overwrite
+    // which step/code/message the changeover is locked on.
+    const becameLocked = !existing?.locked && crossed;
+    const now = new Date();
+
+    const values = {
+      locked: existing?.locked || crossed,
+      step: becameLocked ? step : (existing?.step ?? null),
+      code: becameLocked ? code : (existing?.code ?? null),
+      message: becameLocked ? message : (existing?.message ?? null),
+      feederNumber: becameLocked ? feederNumber : (existing?.feederNumber ?? null),
+      retryCounts: next,
+      lockedAt: becameLocked ? now : (existing?.lockedAt ?? null),
+      updatedAt: now,
+    };
+    if (existing) {
+      await db.update(splicingLockStateTable).set(values).where(eq(splicingLockStateTable.sessionId, sessionId));
+    } else {
+      await db.insert(splicingLockStateTable).values({ sessionId, ...values });
+    }
+    res.json({ locked: values.locked, retryCounts: next });
+  } catch (err) {
+    req.log.error(err);
+    res.status(500).json({ error: "Failed to record splice failure" });
+  }
+});
+
+router.post("/sessions/:sessionId/splice-clear", requireRole("operator", "qa", "supervisor", "admin"), requireLegacySessionOwnership, async (req: AuthRequest, res) => {
+  try {
+    const sessionId = Number(req.params.sessionId);
+    const body = req.body ?? {};
+    const mode = body.mode === "override" ? "override" : "save";
+    const step = typeof body.step === "string" ? body.step : "";
+
+    const [existing] = await db.select().from(splicingLockStateTable).where(eq(splicingLockStateTable.sessionId, sessionId));
+    if (!existing) {
+      res.json({ ok: true });
+      return;
+    }
+
+    let retryCounts: Record<string, number>;
+    if (mode === "override" && step) {
+      // Supervisor/QA approved the override: unlock and reset only the failed
+      // step so the operator resumes there; other steps keep their counts.
+      retryCounts = { ...(existing.retryCounts as Record<string, number> | null | undefined) };
+      retryCounts[step] = 0;
+    } else {
+      // A splice was saved (or any non-override clear): the whole feeder is
+      // done, so every step resets and the lock lifts.
+      retryCounts = {};
+    }
+    await db.update(splicingLockStateTable).set({
+      locked: false,
+      step: null,
+      code: null,
+      message: null,
+      feederNumber: null,
+      lockedAt: null,
+      retryCounts,
+      updatedAt: new Date(),
+    }).where(eq(splicingLockStateTable.sessionId, sessionId));
+
+    res.json({ ok: true, retryCounts });
+  } catch (err) {
+    req.log.error(err);
+    res.status(500).json({ error: "Failed to clear splice lock state" });
   }
 });
 

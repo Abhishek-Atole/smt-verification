@@ -21,6 +21,7 @@ import ScanValidationPipeline from "../services/scan-validation-pipeline";
 import { pushNotification } from "../lib/notify";
 import { generateSessionId } from "../lib/generateSessionId";
 import { formatSmtSessionId } from "../lib/session-id";
+import { findEarlierUnfinished } from "./session-guards";
 import { parsePagination, paginate } from "../lib/pagination";
 import { isUniqueViolation } from "../lib/dbErrors";
 import {
@@ -2230,6 +2231,20 @@ router.post(
           const unverifiedSplices = await countUnverifiedSplices(changeoverId);
           if (unverifiedSplices > 0) {
             rejectUnverifiedSplices(res, unverifiedSplices);
+            return;
+          }
+
+          // FIFO close: an earlier changeover must be fully verified
+          // (completed / cancelled / incomplete) before this one may close.
+          const earlierUnfinished = await findEarlierUnfinished(numericId);
+          if (earlierUnfinished) {
+            res.status(409).json({
+              error: `Changeover #${earlierUnfinished.id} must be completed by QA before changeover #${numericId} can be closed.`,
+              earlierUnfinished: {
+                id: earlierUnfinished.id,
+                status: earlierUnfinished.status,
+              },
+            });
             return;
           }
 

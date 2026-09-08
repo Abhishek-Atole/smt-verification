@@ -103,11 +103,10 @@ export interface ReportResponse<T> {
 }
 
 export interface ExportResult {
-  success: boolean;
-  filePath: string;
+  blob: Blob;
+  fileName: string;
   format: "pdf" | "xlsx" | "csv";
   recordCount: number;
-  queryTimeMs: number;
 }
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? "";
@@ -131,7 +130,7 @@ export class ReportApi {
     filters: ReportFilters,
   ): Promise<ReportResponse<FPYReportData[]>> {
     const query = buildQueryString(filters);
-    const response = await fetch(`${API_BASE_URL}/api/reports/fpy?${query}`);
+    const response = await fetch(`${API_BASE_URL}/api/reports/fpy?${query}`, { credentials: "include" });
     if (!response.ok) throw new Error("Failed to fetch FPY report");
     return response.json();
   }
@@ -140,7 +139,7 @@ export class ReportApi {
     filters: ReportFilters,
   ): Promise<ReportResponse<OEEReportData[]>> {
     const query = buildQueryString(filters);
-    const response = await fetch(`${API_BASE_URL}/api/reports/oee?${query}`);
+    const response = await fetch(`${API_BASE_URL}/api/reports/oee?${query}`, { credentials: "include" });
     if (!response.ok) throw new Error("Failed to fetch OEE report");
     return response.json();
   }
@@ -149,7 +148,7 @@ export class ReportApi {
     filters: ReportFilters,
   ): Promise<ReportResponse<OperatorReportData[]>> {
     const query = buildQueryString(filters);
-    const response = await fetch(`${API_BASE_URL}/api/reports/operator?${query}`);
+    const response = await fetch(`${API_BASE_URL}/api/reports/operator?${query}`, { credentials: "include" });
     if (!response.ok) throw new Error("Failed to fetch Operator report");
     return response.json();
   }
@@ -158,7 +157,7 @@ export class ReportApi {
     filters: ReportFilters,
   ): Promise<ReportResponse<{ operators: OperatorComparisonData[] }>> {
     const query = buildQueryString(filters);
-    const response = await fetch(`${API_BASE_URL}/api/reports/operator-comparison?${query}`);
+    const response = await fetch(`${API_BASE_URL}/api/reports/operator-comparison?${query}`, { credentials: "include" });
     if (!response.ok) throw new Error("Failed to fetch Operator Comparison report");
     return response.json();
   }
@@ -167,7 +166,7 @@ export class ReportApi {
     filters: ReportFilters,
   ): Promise<ReportResponse<FeederReportData[]>> {
     const query = buildQueryString(filters);
-    const response = await fetch(`${API_BASE_URL}/api/reports/feeder?${query}`);
+    const response = await fetch(`${API_BASE_URL}/api/reports/feeder?${query}`, { credentials: "include" });
     if (!response.ok) throw new Error("Failed to fetch Feeder report");
     return response.json();
   }
@@ -176,7 +175,7 @@ export class ReportApi {
     filters: ReportFilters,
   ): Promise<ReportResponse<FeederReliabilityData[]>> {
     const query = buildQueryString(filters);
-    const response = await fetch(`${API_BASE_URL}/api/reports/feeder-reliability?${query}`);
+    const response = await fetch(`${API_BASE_URL}/api/reports/feeder-reliability?${query}`, { credentials: "include" });
     if (!response.ok) throw new Error("Failed to fetch Feeder Reliability report");
     return response.json();
   }
@@ -185,7 +184,7 @@ export class ReportApi {
     filters: ReportFilters,
   ): Promise<ReportResponse<AlarmReportData[]>> {
     const query = buildQueryString(filters);
-    const response = await fetch(`${API_BASE_URL}/api/reports/alarm?${query}`);
+    const response = await fetch(`${API_BASE_URL}/api/reports/alarm?${query}`, { credentials: "include" });
     if (!response.ok) throw new Error("Failed to fetch Alarm report");
     return response.json();
   }
@@ -194,7 +193,7 @@ export class ReportApi {
     filters: ReportFilters,
   ): Promise<ReportResponse<ErrorAnalysisData[]>> {
     const query = buildQueryString(filters);
-    const response = await fetch(`${API_BASE_URL}/api/reports/error-analysis?${query}`);
+    const response = await fetch(`${API_BASE_URL}/api/reports/error-analysis?${query}`, { credentials: "include" });
     if (!response.ok) throw new Error("Failed to fetch Error Analysis report");
     return response.json();
   }
@@ -203,7 +202,7 @@ export class ReportApi {
     filters: ReportFilters,
   ): Promise<ReportResponse<ComponentReportData[]>> {
     const query = buildQueryString(filters);
-    const response = await fetch(`${API_BASE_URL}/api/reports/component?${query}`);
+    const response = await fetch(`${API_BASE_URL}/api/reports/component?${query}`, { credentials: "include" });
     if (!response.ok) throw new Error("Failed to fetch Component report");
     return response.json();
   }
@@ -212,7 +211,7 @@ export class ReportApi {
     filters: ReportFilters,
   ): Promise<ReportResponse<LotTraceabilityData[]>> {
     const query = buildQueryString(filters);
-    const response = await fetch(`${API_BASE_URL}/api/reports/lot-traceability?${query}`);
+    const response = await fetch(`${API_BASE_URL}/api/reports/lot-traceability?${query}`, { credentials: "include" });
     if (!response.ok) throw new Error("Failed to fetch Lot Traceability report");
     return response.json();
   }
@@ -221,7 +220,7 @@ export class ReportApi {
     filters: ReportFilters,
   ): Promise<ReportResponse<TrendReportData[]>> {
     const query = buildQueryString(filters);
-    const response = await fetch(`${API_BASE_URL}/api/reports/trend?${query}`);
+    const response = await fetch(`${API_BASE_URL}/api/reports/trend?${query}`, { credentials: "include" });
     if (!response.ok) throw new Error("Failed to fetch Trend report");
     return response.json();
   }
@@ -233,12 +232,23 @@ export class ReportApi {
   ): Promise<ExportResult> {
     const response = await fetch(`${API_BASE_URL}/api/reports/export/${reportType}`, {
       method: "POST",
+      credentials: "include",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ format, filters }),
     });
 
     if (!response.ok) throw new Error("Failed to export report");
-    return response.json();
+
+    // The server now streams the file itself; metadata rides along in headers.
+    const disposition = response.headers.get("Content-Disposition") ?? "";
+    const match = /filename="?([^"]+)"?/.exec(disposition);
+    const fileName = match?.[1] ?? `${reportType}-report.${format}`;
+    return {
+      blob: await response.blob(),
+      fileName,
+      format,
+      recordCount: Number(response.headers.get("X-Record-Count") ?? 0),
+    };
   }
 
   static async getExportHistory(): Promise<
@@ -249,7 +259,7 @@ export class ReportApi {
       downloadedAt: string;
     }>
   > {
-    const response = await fetch(`${API_BASE_URL}/api/reports/exports/history`);
+    const response = await fetch(`${API_BASE_URL}/api/reports/exports/history`, { credentials: "include" });
     if (!response.ok) throw new Error("Failed to fetch export history");
     return response.json();
   }

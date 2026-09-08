@@ -257,6 +257,28 @@ export const changeoverOperatorsTable = pgTable(
   })
 );
 
+// Module: changeover splice-workflow lock. The operator-side Splicing screen
+// locks a changeover after RETRY_LIMIT failed scans on one step of a splice
+// (feeder/old-spool/new-spool/lot/confirm). The lock is written here so it
+// survives logout/login and page reload — it used to be pure client state, so
+// re-logging in simply cleared it and the supervisor/QA override was bypassed.
+// One row per session. Cleared by a successful override (unlocks the failed
+// step) or by a successfully saved splice (resets every step). Mirrors the
+// client's retryCounts so a reload cannot silently lower a strike count.
+export const splicingLockStateTable = pgTable("splicing_lock_state", {
+  sessionId: integer("session_id")
+    .primaryKey()
+    .references(() => sessionsTable.id, { onDelete: "cascade" }),
+  locked: boolean("locked").notNull().default(false),
+  step: text("step"), // RetryKey of the step that locked
+  code: text("code"), // e.g. MAX_RETRY_EXCEEDED / the failure code
+  message: text("message"),
+  feederNumber: text("feeder_number"),
+  retryCounts: jsonb("retry_counts").notNull().default({}),
+  lockedAt: timestamp("locked_at"),
+  updatedAt: timestamp("updated_at").defaultNow().notNull(),
+});
+
 export const insertSessionSchema = createInsertSchema(sessionsTable).omit({ id: true }).extend({
   createdAt: z.date().optional(),
   startTime: z.date().optional(),

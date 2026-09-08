@@ -299,7 +299,11 @@ router.get("/bom/:bomId", requireRole("operator", "qa", "supervisor", "admin"), 
       res.status(403).json({ error: "This BOM revision is locked or on hold." });
       return;
     }
-    // Fetch ALL fields from bomItemsTable (complete data synchronization)
+    // Fetch ALL fields from bomItemsTable (complete data synchronization).
+    // Order by the BOM's sequence number (sr_no) NUMERICALLY, so AUTO_LEGACY's
+    // "serial feeders" auto-advance in the true BOM order (sr_no "00" first).
+    // A plain text sort would be wrong ("1" < "10" < "2"); non-numeric/blank
+    // sr_no rows sink to the end (stable by id).
     const items = await db
       .select()
       .from(bomItemsTable)
@@ -309,6 +313,9 @@ router.get("/bom/:bomId", requireRole("operator", "qa", "supervisor", "admin"), 
           isNull(bomItemsTable.deletedAt),
           sql`COALESCE(${bomItemsTable.isDeleted}, FALSE) = FALSE`,
         ),
+      )
+      .orderBy(
+        sql`CASE WHEN ${bomItemsTable.srNo} ~ '^[0-9]+$' THEN ${bomItemsTable.srNo}::integer ELSE 2147483647 END ASC, ${bomItemsTable.id} ASC`,
       );
     const payload = { ...bom, items };
     setCached("bom", cacheKey, payload);
