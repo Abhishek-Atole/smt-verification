@@ -2248,3 +2248,476 @@ bytes restored, so the live download and its checksum are untouched.
 
 **Git:** not committed — the working tree holds `scripts/package-release.sh` and this entry, pending the
 user's call on whether the tightened payload ships as a re-cut `v2.5.0` asset or a new `v2.5.1`.
+
+## Override password: accept any active supervisor/QA (issue 1a)
+
+**Context:** When a changeover's Splicing workflow locks (RETRY_LIMIT = 5 failed scans on one step), the
+operator must get a supervisor or QA to type their password into the override panel, which POSTs to
+`/api/auth/verify-override`. Operators reported that a correct password was "not accepted". Root causes
+found in the live code: (1) `verify-override` ran `findFirst({ where: role })` — it picked **one
+arbitrary** account of the toggled role (no `order_by`, no `is_active` filter), so with more than one
+supervisor/QA only whichever row Postgres returned first ever worked; (2) a correct QA password failed
+whenever the panel was left on the default "supervisor" role (and vice versa) — the password was compared
+against the wrong account's hash; (3) `verify-override` shared the login per-IP rate-limit bucket
+(20/15 min across logins **and** overrides), so mid-shift a legitimate override could be 429'd and the
+panel rendered the bare `rate_limit_login` body as if the password were wrong.
+
+**Decision & why:** An override is approved by **any active supervisor or QA** whose password matches —
+not by an arbitrary single account of the toggled role. `verify-override` now selects all `is_active`
+users with `role IN ('supervisor','qa')`, `bcrypt.compare`s the supplied password against each, and on a
+match reports **who actually approved** (`approverName`, real `approverRole`) so the audit trail names the
+person. The client's Supervisor/QA toggle becomes a hint about who is expected, not a filter that makes
+the other role's password fail. `verify-override` also moved off the shared login bucket onto its own
+`overrideLimiter` (15/15 min/IP, `middleware/rateLimiters.ts`) so legit overrides aren't collateral of
+login traffic; its 429 now returns a human `message` and the Splicing panel prefers `body.message` when
+surfacing a rejection instead of showing the opaque code. An override still requires an authenticated
+session (`attachActor, requireAuth`) and is per-IP capped, so it is not an unthrottled password oracle.
+
+**Rejected alternatives:** (a) Keep role-filtered matching but add an approver picker (username field) —
+more explicit but pushes the "which account is it?" burden onto a time-pressured operator and needs a UI
+change; the user chose "any active approver". (b) Check the toggled role only, deterministically — still
+rejects a QA password when the panel says supervisor; the guesswork the user reported is exactly this.
+(c) Leave `verify-override` on the shared login limiter — the 429-as-wrong-password confusion is part of
+the bug; separate bucket is the fix.
+
+**Touches:** `artifacts/api-server/src/routes/auth.ts` (verify-override matcher; `and`/`inArray` import),
+`artifacts/api-server/src/middleware/rateLimiters.ts` (new `overrideLimiter`),
+`artifacts/api-server/src/app.ts` (route `verify-override` to `overrideLimiter`),
+`artifacts/feeder-scanner/src/feeder/pages/Splicing.tsx` (error surfacing prefers `body.message`).
+
+**Verification:** api-server `tsc --noEmit` 0 errors; full api-server suite **329 passed / 26 skipped**
+and feeder-scanner **40 passed**. security-hardening's verify-override cases were rewritten to the new
+contract (they previously mocked the old single-`findFirst` lookup): approves across a role-toggle
+mismatch, rejects an empty approver set and a wrong password, 400 on an invalid role before any DB hit,
+429 from its own bucket, 403 without the CSRF header. Live smoke against the rebuilt API confirmed the
+behavior the fix targets: a QA's correct password POSTed with `role:"supervisor"` returned
+`200 { valid:true, approverName:"Smoke QA", approverRole:"qa" }`, and a wrong password returned 401.
+
+**Git:** not committed.
+
+## Changeover splice-workflow lock persists server-side (issue 1b)
+
+**Context:** The Splicing workflow's lockout — `workflowLocked`, `retryCounts`, `workflowFailure` — was
+pure React `useState`, written nowhere. Logging out and back in (or reloading) remounted the screen
+unlocked, so an operator could keep scanning after 5 failures with no supervisor, and the override gate
+was effectively bypassable. User observed "after logout and login it gets restarted" and wants that to
+stop; chose "persist per session (server)".
+
+**Decision & why:** Add a `splicing_lock_state` table (one row per `sessions.id`): `locked`, the locking
+step's `step/code/message/feeder_number`, a `retry_counts` jsonb mirroring the client's per-step counts,
+`locked_at`, `updated_at`. Three routes on the sessions router, gated like the splice POST (operator must
+own the changeover via `requireLegacySessionOwnership`, privileged roles pass): `GET
+/sessions/:id/splice-state` (restore on mount), `POST /sessions/:id/splice-failure` (server increments
+that step's count and locks when it crosses RETRY_LIMIT=5; the first step to cross wins the lock, later
+failures keep counting but never overwrite what it is locked on), `POST /sessions/:id/splice-clear`
+(`mode=override` unlocks and zeroes only the failed step; `mode=save` resets every step after a recorded
+splice). The Splicing client reads the state once on mount and re-enters the locked overlay, posts each
+failure, and clears on a successful override or save — so a reload or logout+login can no longer silently
+clear a lock the supervisor/QA has not overridden. Server is authoritative when reachable; the client's
+local `shouldLock` remains the offline fallback. `setup.sh` creates the table via `drizzle-kit push`,
+same as every other schema change, so a client install/upgrade picks it up automatically.
+
+**Rejected alternatives:** (a) Persist only in `localStorage` — survives logout/login on one PC but is
+bypassable by clearing browser data or moving to another terminal; user rejected browser-only. (b) Store
+lock columns directly on `sessions` — wider hot row for a concern only Splicing reads; a dedicated table
+keeps it off the session's update path. (c) Persist the lock but not the per-step counts — a reload after
+4 failures would still dodge the threshold; the counts are cheap to mirror and make the control real.
+
+**Touches:** `lib/db/src/schema/sessions.ts` (new `splicingLockStateTable`),
+`artifacts/api-server/src/routes/sessions.ts` (three routes),
+`artifacts/feeder-scanner/src/feeder/pages/Splicing.tsx` (restore-on-mount effect, persist on failure,
+clear on override/save, `postSpliceLock` helper). DB table to be created on dev via `drizzle-kit push`.
+
+**Verification:** api-server + feeder-scanner typecheck 0 errors; full suites green (api-server **329
+passed / 26 skipped**, feeder-scanner **40 passed**). The `splicing_lock_state` table was created on the
+dev DB (additive DDL matching the drizzle definition — `drizzle-kit push` wanted a TTY over a pre-existing
+schema-name conflict unrelated to this table, so the exact table SQL was applied directly; clean-client
+push is unaffected). Live smoke of the three routes (temp qa on the rebuilt API, session 59): `POST
+splice-failure` incremented `retry_counts` 1→5 and set `locked:true` on the 5th with the locking
+step/code/message; `splice-clear mode=override` unlocked and zeroed only that step while a second step kept
+its own count; `mode=save` reset everything; `GET splice-state` returned the persisted state on every
+read-back. Smoke users, lock rows and the scratch server were removed afterwards.
+
+**Git:** not committed.
+
+## Query cache cleared on logout so operators never see another user's sessions (issue 2a)
+
+**Context:** An operator dashboard "sometimes" showed every completed session. The sessions-list query
+key is a **static** `["/api/sessions"]` — it carries no user identity — and `logout()` never cleared the
+React Query cache. Logout is a client-side navigation (wouter), not a full reload. So when a
+QA/supervisor (who legitimately sees all sessions) logged out on a shared terminal and an operator logged
+in, the operator's dashboard mounted and read the cached all-sessions payload (fresh for up to the 30 s
+`staleTime`, and stale-while-revalidate keeps showing old data during a background refetch) — the "all
+completed sessions" symptom, intermittent exactly like a cache hit. Server-side scoping (`GET /sessions`
+filters non-privileged roles to owned changeovers) was never even reached for that operator.
+
+**Decision & why:** Clear the React Query cache at the start of logout. `QueryClientProvider` already
+wraps `AuthProvider`, so `logout()` (inside `AuthProvider`) calls `useQueryClient().clear()` before
+dropping the user state. After a logout, no server-state from the previous user can leak to the next; the
+next login refetches cold, and every list query (sessions, BOMs, splices, dashboards) is rebuilt for the
+actual logged-in user. This is the minimal fix for the cross-user leak and needs no query-key rework.
+
+**Rejected alternatives:** (a) Key every query by `user.id` — invasive across the generated API client
+and pointless once the cache is cleared on the only cross-user boundary (logout). (b) Clear only
+`["/api/sessions"]` — the leak is not limited to that key (any user-scoped query with a static key leaks);
+a blanket clear is simpler and safer. (c) Force a full page reload on logout — masks the issue by throwing
+away the SPA, heavier than clearing one in-memory cache.
+
+**Touches:** `artifacts/feeder-scanner/src/context/auth-context.tsx` (`useQueryClient` import, hook in
+`AuthProvider`, `queryClient.clear()` in `logout`).
+
+**Verification:** api-server + feeder-scanner typecheck 0 errors; full suites green (as above). The
+behavior is structural: `logout()` now calls `queryClient.clear()` before dropping the user, so on a shared
+terminal the next login refetches every list for the actual user instead of reading the previous user's
+cached `["/api/sessions"]` payload (the static-key leak that caused the "sometimes all completed sessions"
+symptom).
+
+**Git:** not committed.
+
+## Session ownership → strict changeover_operators join (issue 2b)
+
+**Context:** Reported alongside issue 2a. The server scoped an operator's list to `changeover_operators`
+membership **or** the legacy `sessions.operator_name == actor.name` arm. Live-DB confirmation resolved the
+question the design was held on: `sessions.operator_name` stores the **employee_id** (29/29 non-deleted
+rows match a user's `employee_id`; **0** match a display `name`), so the `operator_name == actor.name`
+(display-name) comparison could **never** match — it was inert dead code that neither granted nor leaked
+access. Duplicate display names exist among operators (`Integration Operator` ×3, `Suraj Gurav` ×2) but
+are irrelevant to the arm because `operator_name` is not a name. Every non-deleted session already has an
+accepted `changeover_operators` owner (0 orphans), and the named operator is an accepted owner on all of
+their own sessions (engineer1 22/22, 4849 5/5, 4847 2/2).
+
+**Decision & why:** Remove the dead `operator_name == actor.name` fallback everywhere an operator's
+ownership is decided and rely on the `changeover_operators` join only (creator or accepted handover). This
+is behavior-neutral on the live DB (the arm never matched) but removes a trap: if `operator_name` ever
+starts holding display names, the arm would silently cross-show between operators who share a display
+name. Touched sites: `requireLegacySessionOwnership`, `GET /sessions`, `GET /sessions/latest`, the
+handover authorization, and the `GET /sessions/:sessionId` detail guard — all now join-only, with the
+misleading "keyed on display name" comments rewritten. No backfill migration is needed: 0 orphan sessions
+and the named operator already holds accepted ownership everywhere.
+
+**Rejected alternatives:** (a) Keep the name arm — it is dead code today and a latent duplicate-name
+cross-show if the data ever shifts to display names; the user chose strict join. (b) Backfill
+`changeover_operators` from `operator_name` before dropping the arm — unnecessary: the introspection
+showed 0 orphans and full named-operator membership, so there is nothing to migrate. (c) Compare
+`operator_name` to `actor.username` instead — that would be the *correct* identifier (both are
+employee_ids), but with 0 orphans no operator depends on it today, so it would add a second, redundant
+access path for no current benefit.
+
+**Touches:** `artifacts/api-server/src/routes/sessions.ts` (five sites: ownership helper comment+body,
+`GET /sessions` where-clause, `GET /sessions/latest` where-clause, handover authz, `:sessionId` detail
+guard). `.dev-docs/decision.md` (this entry).
+
+**Verification:** api-server `tsc --noEmit` 0 errors; full api-server suite **329 passed / 26 skipped**,
+feeder-scanner **40 passed**. DB introspection: users table, duplicate-name census, operator_name
+vs employee_id/name match counts, per-operator accepted-owner membership, orphan count — all as quoted
+above. Live smoke (temp qa on the rebuilt API) re-confirmed GET /sessions scoping shape and that a
+privileged role passes; smoke users and lock rows removed afterwards.
+
+**Git:** not committed.
+
+## browserslist → ^4.28.7 override (Dependabot: 2 high alerts)
+
+**Context:** Two high-severity Dependabot alerts targeted `browserslist` (resolved 4.28.2 in the tree).
+`browserslist` is a build-time dependency only (vite/babel target resolution); it does not ship in any
+runtime bundle, so the blast radius is the build, not the running server.
+
+**Decision & why:** Add `"browserslist": "^4.28.7"` to root `package.json` `pnpm.overrides` and land it
+with `pnpm update browserslist -r`, per the established overrides workflow (overrides go in root
+package.json, not pnpm-workspace.yaml). It resolved to **4.28.8** — one version across the whole tree, at
+or above the 4.28.7 alert floor. Chose a caret range over a pin so patch bumps within 4.28.x flow without
+another override edit.
+
+**Rejected alternatives:** (a) Pin `4.28.7` exactly — unnecessarily rigid for a build-time tool with a
+clean patch line; the caret already floors the alert. (b) Bump only the direct dependents — the alert is
+against the transitive `browserslist` itself, so an override is the correct single lever.
+
+**Touches:** `package.json` (`pnpm.overrides`), `pnpm-lock.yaml` (regenerated). No source changes.
+
+**Verification:** override recorded in `pnpm-lock.yaml` (`browserslist: ^4.28.7`), resolves to 4.28.8 at
+all sites, no duplicate versions. Renderer `vite build` (feeder-scanner) succeeds; the dynamic/static
+import and chunk-size warnings are pre-existing and unrelated. The pnpm peer-dependency warnings
+(vitest/esbuild/electron-builder) are pre-existing and not introduced by this change.
+
+**Git:** not committed.
+
+## Report APIs not calling properly + final PDF formatting
+
+**Context:** The Analytics & Reporting page and both export paths were broken end-to-end.
+`services/reportApi.ts` issued every request with a bare `fetch()` and **no `credentials: "include"`** —
+the `main.tsx` fetch patch injects only the `X-Requested-With` CSRF header, not the auth cookie — so all 11
+analytics GETs plus the export POST and the history GET 401'd against `requireRole("qa","supervisor","admin")`.
+The export POST (`/api/reports/export/:reportType`) wrote the file to server disk and returned a JSON
+`filePath`; `reports.tsx` then `alert()`'d that server-side path, which the browser can never open — no
+download/stream endpoint existed anywhere. BOM Excel export (`bom-report.tsx` → `/api/reports/export/bom`)
+hit a route whose `validReportTypes` list had no `"bom"`, so it 400'd (and also omitted credentials). On the
+shipped server PDF (`GET /sessions/:id/report/pdf`), the header ID box printed a literal `PAGE 1 OF 1` while a
+real running counter `_pageNum` was already tracked and used in the footer, and the table legend printed a
+literal `Mode: AUTO STRICT — exact match only` even for MANUAL sessions, though `getModeLabel()` already
+computed the correct `Mode: AUTO|MANUAL — STRICT`.
+
+**Decision & why:**
+- **reportApi.ts:** add `credentials: "include"` to all 13 calls (11 GETs, export POST, history GET). This is
+  the single root cause of "APIs not calling proper" — the cookie is required by the role gate.
+- **Export delivery (user-chosen: stream in same response):** `res.download()` the generated file with a
+  sanitized `Content-Disposition` filename, and move the metadata the UI showed (`recordCount`, `queryTimeMs`)
+  onto `X-Record-Count` / `X-Query-Time-Ms` headers. File is still persisted + recorded for history. Client
+  `exportReport` now returns `{ blob, fileName, format, recordCount }` and `reports.tsx` triggers a real blob
+  download instead of alerting a path.
+- **BOM export (user-chosen: add server handler):** add a `"bom"` case to the export route keyed by `bomId`
+  (not date filters); it pulls live `bom_items` (excluding soft-deleted) and flattens to the UI's columns, then
+  flows through the same `res.download()` path. Added `credentials: "include"` to the BOM client call.
+- **Server PDF:** replace `PAGE 1 OF 1` with `PAGE ${_pageNum}` (the counter already maintained) and replace the
+  hardcoded legend mode string with `getModeLabel()` so MANUAL sessions read correctly.
+
+**Rejected alternatives:** (a) A separate `GET /reports/download/:id` endpoint — heavier (two round-trips, more
+surface) with no benefit for the single-shot export the UI does; the user chose single-response streaming.
+(b) Point BOM export at the existing BOM API + generate xlsx client-side — diverges from the server-consistent
+export path; the user chose a server `bom` handler. (c) Injecting `credentials` globally in the `main.tsx` fetch
+patch — too broad a blast radius (touches every fetch in every portal); the targeted per-call fix matches how
+`lib/api.ts` already opts in. (d) Fixing the dead client `exportPDF` off-by-one column coloring and 168mm width
+(session-report.tsx) — deferred: that function is unreachable dead code (the PDF button calls `exportServerPdf`);
+flagged, not touched, per surgical-change discipline.
+
+**Touches:** `artifacts/feeder-scanner/src/services/reportApi.ts` (13 calls + `ExportResult` shape),
+`artifacts/feeder-scanner/src/pages/reports.tsx` (`handleExport` blob download),
+`artifacts/feeder-scanner/src/pages/bom-report.tsx` (credentials),
+`artifacts/api-server/src/routes/reports.ts` (`bom` type + handler, `res.download` response, imports),
+`artifacts/api-server/src/routes/sessions.ts` (PDF `_pageNum` + `getModeLabel`).
+
+**Verification:** `tsc --noEmit` clean for both api-server and feeder-scanner. api-server tests 329 passed /
+26 skipped (33 files); feeder-scanner tests 40 passed (3 files). Not runtime-verified against the live server —
+the API service still needs a restart to pick up the rebuilt bundle before a manual export smoke test.
+
+**Git:** not committed.
+
+## Single active changeover + staged workflow (splice-submit start gate & FIFO close)
+
+**Context:** Reported live bug: two changeover sessions can run at once — the second one started *overrides*
+the first. Verified root cause: `POST /sessions` only enforced **"at most 2 active per line"** (Module 2.1),
+counting every non-`completed`/`cancelled` session by `lineName`, so nothing stopped a second changeover while
+the first was mid-flight; the newest session then won the UI's active slot and the first was orphaned.
+
+**Decision & why (requirements confirmed via AskUserQuestion):** one changeover at a time, globally.
+- **BLOCKING statuses** = `active, pending_qa, qa_in_review, qa_confirmed, active_splicing` (mid operator/QA
+  work). A session in one blocks starting the next.
+- **Unlock point** = `splicing_pending_qa` (operator submitted splicing to QA). Once reached, the next
+  changeover may start while QA reviews. Matches the requested workflow exactly.
+- **FIFO close** = an earlier changeover (smaller id) must reach a terminal status (`completed`/`cancelled`/
+  `incomplete`) before a later one may be completed.
+- Applies to **all session types** (normal, Trial skip-BOM, Free Scan).
+
+Implemented two guards via a shared helper (`session-guards.ts`): (1) `POST /sessions` now 409s if
+`findBlockingSession()` finds any non-deleted session in a BLOCKING status — message names the blocking
+changeover + `blockingSession` payload; (2) the two completion paths — the no-splice direct PATCH close in
+`sessions.ts` and the QA 200% splicing close in `verification.ts` — 409 if `findEarlierUnfinished(id)` finds
+an older open session. `findEarlierUnfinished` matches the known *open* statuses positively (not `NOT IN`
+terminal) so legacy NULL/free-text status rows never block. `cancelled`/`incomplete` transitions are NOT
+gated so a stuck session can always be cleared to unblock. NewSession surfaces the blocking 409 as a
+persistent banner. Existing overlapping rows on the client are reconciled manually after deploy (ops step).
+
+**Rejected alternatives:** (a) Per-line/per-operator single-active — user chose **global**; per-line already
+failed. (b) Unlock only after full QA completion — would idle the operator waiting for QA; user chose the
+`splicing_pending_qa` unlock. (c) DB partial-unique-index backstop
+(`WHERE status NOT IN (splicing_pending_qa, completed, cancelled, incomplete)`) — would fail to create on the
+client DB's existing overlapping pair and needs a destructive pre-clean; code guard resolves the
+single-operator case; deferred as future hardening. (d) Rearchitecting the two session-context providers /
+`verification/sessions/active` — unnecessary: with the guard in place a second blocking session cannot exist.
+
+**Touches:** `artifacts/api-server/src/routes/session-guards.ts` (new: BLOCKING/TERMINAL/UNFINISHED sets,
+`findBlockingSession`, `findEarlierUnfinished`), `artifacts/api-server/src/routes/sessions.ts` (START gate
+replacing Module 2.1 count; FIFO gate on the no-splice PATCH close), `artifacts/api-server/src/routes/verification.ts`
+(FIFO gate on the splicing QA close), `artifacts/feeder-scanner/src/feeder/pages/NewSession.tsx` (409 banner +
+`blockingSession` parsing), new `artifacts/api-server/src/__tests__/integration/single-active-changeover.test.ts`
+(6 tests). Scratch DB `smtverification_test` created + schema pushed to run the integration file.
+
+**Verification:** api-server + feeder-scanner `tsc --noEmit` clean. api-server default suite **329 passed / 32
+skipped** (integration gated). New integration file run against the isolated scratch DB: **6 passed** (create
+with no blocking → 201; create while `active` exists → 409 naming it; create allowed when the only open
+session is `splicing_pending_qa`; later changeover cannot complete while an earlier is open → 409; earlier
+closes first then later closes → both 200; create allowed once all terminal). feeder-scanner suite **40
+passed**. Not yet runtime-verified against the client (deploy + two-browser smoke pending).
+**Git:** not committed.
+## Single-active changeover — scope corrected from GLOBAL to PER LOGIN
+
+**Context:** After deploying the global single-active changeover rule, the user asked "so the individual
+login can start only one session, correct?" — which revealed the intended scope was **per login**, not
+global. The global rule would have blocked a second operator on a different line from running a changeover
+while the first operator's session was open, which is not what the factory does.
+
+**Decision & why:** Re-scope both guards to the actor who **owns** the session, using the app's existing
+accepted-ownership model (`changeover_operators` membership — creator or accepted handover co-owner; the
+same join the scoped session list / latest / detail reads already use).
+- **Start gate (`findBlockingSession(actorId)`, `POST /sessions`):** a login may start a new changeover only
+  when *they* own no session in a BLOCKING status. A different login on another line is **not** blocked.
+- **FIFO close (`findEarlierUnfinished(sessionId)`, unchanged signature):** the earlier session now must
+  **share an accepted owner** with the session being closed — so one login's changeovers close oldest-first
+  without coupling to another login's independent lines. Both completion sites (no-splice PATCH close and the
+  QA 200% close) are unchanged except through the re-scoped helper.
+- Statuses still matched positively (BLOCKING / UNFINISHED sets) so legacy NULL-status rows never block.
+- Message reworded: "You already have a changeover in progress (#…). Submit its splicing to QA before
+  starting the next one." The NewSession banner from the prior entry is reused as-is.
+
+**Rejected alternatives:** (a) Keep GLOBAL — rejects a second operator running a parallel line; user's
+question showed that is wrong. (b) Scope by line/machine — user chose per-login, not per-line. (c) Key the
+start gate on the `creator` role only (not accepted co-owners) — would let a handover recipient also start a
+fresh session while holding the handed-over one (double responsibility); accepted-ownership mirrors how the
+app already scopes session access. Note: because ownership persists for the sender after a handover, a
+sender who hands off mid-active still counts the handed session until it is terminal — flagged as a possible
+future refinement if shift handovers need the sender freed earlier.
+
+**Touches:** `artifacts/api-server/src/routes/session-guards.ts` (`findBlockingSession(actorId)`,
+owner-scoped `findEarlierUnfinished`; joins `changeover_operators`), `artifacts/api-server/src/routes/sessions.ts`
+(create gate passes `req.actor.id` + message). Integration test
+`single-active-changeover.test.ts` extended to 8 tests (adds: different login may start while A's active;
+B's session closes while A's earlier session is open).
+
+**Verification:** api-server `tsc --noEmit` clean. Integration file vs isolated scratch DB **8 passed**;
+api-server default suite **329 passed / 34 skipped**. Not yet re-deployed at time of writing.
+**Git:** not committed.
+## Report approvals show login/username — store the operator's real name at creation
+
+**Context:** The changeover report's Approvals & Sign-off (on-screen + PDF) printed usernames under
+OPERATOR/QA/SUPERVISOR. Root cause, verified in code + dev data: the report reads the stored columns
+verbatim (`buildSessionReportPayload` legacy branch → `operatorName: session.operatorName` etc.; PDF
+`drawApprovals` renders them), and at creation the operator column was filled with the **login** —
+`auth-context.tsx` sets `user.name = session.username`, New Session sent `operatorName = user.name`, so
+`sessions.operator_name` held the employee id/login ("4849", "engineer1"). QA/Supervisor held whatever was
+chosen from the Approvers roster (the real engineer names). Dev sample: session operator_name `engineer1` /
+`4849` while users.name = `Supervisor 1` / `Suraj Gurav` and users.employee_id = the login.
+
+**Decision & why (confirmed via AskUserQuestion):** store the operator's REAL name going forward; QA and
+Supervisor keep the Approvers-roster engineer name; applies to both the report and the PDF (both read the
+stored columns, so fixing the stored value fixes both).
+- Server `POST /sessions` now resolves the operator of record from `users.name` by the **actor id** (the
+  person who started the changeover is always the operator) and stores that instead of the body's
+  `operatorName` (which the client fills with the login). Supervisor/QA names are unchanged (roster names).
+- Chosen over "resolve at render": the user picked store-the-real-name, not a render-time remap, so existing
+  sessions keep their stored value (see ops note below for backfilling if wanted).
+
+**Rejected alternatives:** (a) Render-time lookup (map stored login → users.name) — fixes old + new reports
+but leaves the stored column wrong and adds a users join on every report; user did not pick it. (b) Change
+`auth-context` so `user.name` = real name — broader blast radius (Signed-in-as label, client identity
+semantics) for a value the server can resolve at the one write site.
+
+**Touches:** `artifacts/api-server/src/routes/sessions.ts` (create route resolves + stores `users.name` for
+the operator), integration test `single-active-changeover.test.ts` (asserts stored operatorName = actor's
+users.name, overriding the body value).
+
+**Verification:** api-server `tsc --noEmit` clean; integration file vs isolated scratch DB **8 passed**;
+api-server default suite **329 passed / 34 skipped**. Not yet deployed.
+**Git:** not committed.
+## AUTO_LEGACY serial order — sort BOM items by sr_no (numeric), not DB row order
+
+**Context:** User asked which sequence the changeover flow uses — the BOM sequence or random. Verified: AUTO
+mode lets the operator scan any feeder in any order (by design); AUTO_LEGACY auto-advances "serially in BOM
+order", but it loads feeders from `GET /api/bom/:id`, which returned `bom_items` with **no ORDER BY** — i.e.
+raw DB insertion/row order. Real dev data (BOM id 3) proved the mismatch: feeder `YSMF020` (sr_no `00`, the
+BOM's first feeder) was returned 13th, interleaved after YSMF021–032, because it was inserted later. So the
+serial scan order was deterministic but NOT the intended BOM sequence, and would drift if items were edited.
+
+**Decision & why (confirmed via AskUserQuestion):** order by the BOM item's sequence number (`sr_no`)
+**numerically**, applied at the single source `GET /api/bom/:id`. AUTO_LEGACY then auto-advances in the true
+BOM order (sr_no `00` first). Numeric sort matters: sr_no is text and a plain text sort is wrong
+(`1 < 10 < 2`); `bom-comprehensive.ts` already casts `sr_no` to integer elsewhere. Implementation: drizzle
+`.orderBy(sql\`CASE WHEN sr_no ~ '^[0-9]+$' THEN sr_no::integer ELSE 2147483647 END ASC, id ASC\`)` — numeric
+rows in sequence, blank/non-numeric sunk last, stable by id. Verified on BOM id 3: returns exactly
+YSMF020(00), 021…032, 134…149.
+
+**Rejected alternatives:** (a) Order by `feeder_number` text — lexicographic gives F1,F10,F11…, usually not
+the intended order. (b) Sort only in the Loading screen — other BOM listings would stay in insertion order;
+user chose the single server source. (c) Leave as DB row order — user confirmed wrong for BOMs not inserted
+in sequence. Note: the identical items-fetch in `PATCH /bom/:id` (editor echo) was left unordered — cosmetic,
+surgical scope.
+
+**Touches:** `artifacts/api-server/src/routes/bom.ts` (`GET /bom/:bomId` items query gains the numeric sr_no
+`.orderBy`).
+
+**Verification:** api-server `tsc --noEmit` clean; the same ORDER BY SQL run against dev returns BOM id 3 in
+exact sr_no sequence; api-server default suite **329 passed / 35 skipped**. Not built/deployed (deploys paused
+by the user; part of the pending batch).
+**Git:** not committed.
+## Splicing — new-spool LOT CODE becomes optional (operator may skip)
+
+**Context:** Walking the splice flow against the user's mental model (feeder-in-BOM → old-spool BOM match → new-spool BOM match → lot code), the lot step was the only mismatch: Splicing forced a lot code (empty rejected client-side; server returned `400 MISSING_LOT_CODE`) while the Loading step allowed "ENTER=SKIP". User picked (c): allow a true skip — record the splice without a lot code and stop rejecting server-side.
+
+**Decision & why:** Make the new-spool lot code optional end-to-end.
+- **Server** (`POST /sessions/:id/splices` STEP 5): a missing lot code no longer returns `400 MISSING_LOT_CODE`; it pushes `NEW_SPOOL_LOT_CODE_MISSING` onto `validation_warnings` and records the splice with `new_spool_lot`/`new_spool_lot_code` null. Audit + response messages show `LOT: SKIPPED` instead of an empty/null. The splice record + QA 200% flow are unaffected (null lot is fine — `splice_records.new_spool_lot` is nullable).
+- **Client** (`Splicing.tsx` Step 4): added a **"Skip Lot Code"** button next to Capture; the confirm summary and help text mark the lot as optional / skipped. Skipping sets lot to "" (client already sends `newLotCode || null`). Manual capture and auto-scan behavior unchanged.
+- Tradeoff acknowledged: the lot code feeds the report and lot-traceability, so a skipped lot is an explicit operator choice (flagged as a warning), not an accident.
+
+**Rejected alternatives:** (a) UI-skip but server still requires — would show a false success then reject. (b) Keep lot required — user chose to allow skip.
+
+**Touches:** `artifacts/api-server/src/routes/sessions.ts` (STEP 5 no longer rejects; warning + `newLotLabel` "SKIPPED"), `artifacts/feeder-scanner/src/feeder/pages/Splicing.tsx` (Skip Lot Code handler/button, optional labels, confirm + help text).
+
+**Verification:** api-server + feeder-scanner `tsc --noEmit` clean; api-server default suite **329 passed / 36 skipped**; feeder-scanner **40 passed**. No test asserted the removed `MISSING_LOT_CODE`. Not built/deployed (deploys paused).
+**Git:** not committed.
+## BOM MPN4..MPN8 — client now verifies every MPN the BOM allows (was capped at 3)
+
+**Context:** User reported the BOM editor lets you add up to 8 MPNs but verification only used the first
+three. Verified: the server always matched all 8 (`verifyMPN` sessions.ts:142 for Loading, `verifySpliceMpn`
+sessions.ts:200 for splicing), but the CLIENT capped at 3 — `buildCandidates` in `mpnUtils.ts` read only
+mpn1..3 (+ internal id), which feeds AUTO Loading scanning/alternate selection and the legacy-splice
+candidates; and `Splicing.tsx findMatch` + `SpoolField` were typed to mpn1..3 + internal id. So a valid
+alternate in mpn4..8 was offered/never accepted on screen even though the server would accept it.
+
+**Decision & why (confirmed via AskUserQuestion: Loading + Splicing, classification unchanged):**
+- `mpnUtils.buildCandidates` iterates `mpn1..mpn8` (+ `make1..8`) so AUTO Loading offers/scans all of them.
+  Internal part number handling unchanged (full value + tokens last).
+- `Splicing.tsx`: `BomLine` + `normalizeBomLine` now carry mpn4..8; `findMatch` compares the scanned spool's
+  recognised value(s) against ALL target MPNs (`mpn1..mpn8` then internal id, primary-first) instead of the
+  old per-field mpn1..3 compare — so an old/new spool equal to MPN4..8 is accepted. A scanned spool label
+  never carries MPN4..8 keys, so barcode extraction falls back to the raw label text via `spoolFieldValue`.
+- Classification is unchanged: MPN1 = verified/primary; MPN2..8 = alternate. `ActiveSession` amber "▲" accent
+  extended to mpn2..8. The dead client PDF (session-report.tsx) left untouched.
+- New unit test `mpnUtils.test.ts` locks MPN1..8 emission + snake_case keys + internal-id tokens.
+
+**Rejected alternatives:** (a) Loading-only — user chose both. (b) Leave per-field findMatch and just widen
+types — would still never match MPN4..8 (labels don't carry those keys); the union compare is what makes it
+work. (c) Rewriting spool-label parsing to carry 8 fields — unnecessary; labels hold one part value.
+
+**Touches:** `artifacts/feeder-scanner/src/utils/mpnUtils.ts` (buildCandidates 1..8),
+`artifacts/feeder-scanner/src/feeder/pages/Splicing.tsx` (BomLine/normalize mpn4..8, findMatch union over
+TARGET_FIELDS, FIELD_LABELS, spoolFieldValue helper, removed SpoolField/getFieldValue),
+`artifacts/feeder-scanner/src/feeder/pages/ActiveSession.tsx` (alternate accent mpn2..8),
+`artifacts/feeder-scanner/src/utils/__tests__/mpnUtils.test.ts` (new, 3 tests).
+
+**Verification:** feeder-scanner `tsc --noEmit` clean; renderer suite **43 passed** (was 40; +3 new). Server
+unchanged this item. Not built/deployed (deploys paused).
+**Git:** not committed.
+## Report saving broken by legacy `reports` table drift — reconcile DB to ORM (2026-09-08)
+
+**Context:** User reported "report saving stage in the admin path not working properly". Reproduced against the
+live dev API: `POST /api/reports/export/bom` (supervisor) returned **500 "Failed to export report"** while the
+file itself was written under `exports/reports/`. Every aggregate report type (fpy/oee/bom/component/…) shares
+this one export endpoint. Direct SQL reproduced the exact DB error — `column "query_time" of relation "reports"
+does not exist` — i.e. the drizzle `reportsTable` insert (sessions.ts route) references `query_time`, which the
+real `reports` table does not have. Root cause traced to two conflicting historical definitions of `reports`:
+`0002_smooth_stone_men.sql` created an OLD shape (`query_execution_time`, `file_size`, `session_id`/`bom_id`
+NOT NULL, `filters json`); the later `0006_add_reporting_tables.sql` declares the ORM shape (`query_time`,
+`filters jsonb default {}`, nullable session/bom) but used `CREATE TABLE IF NOT EXISTS`, so it silently skipped
+wherever 0002 had already run. The drizzle reconciling migration referenced in the meta snapshots
+(`0004_spicy_diamondback`) was never applied (its .sql is absent). `report_exports` was correctly reconciled
+earlier; only `reports` drifted. Per-session PDF (`GET /sessions/:id/report/pdf`) was unaffected — 200, 107 KB.
+Server archive write also verified working (enable archive → PDF → file at `<root>/2026/09/session/…`).
+
+**Decision & why (confirmed via AskUserQuestion: reconcile DB table to ORM):** the drizzle schema is the
+canonical target — fresh installs already build `reports` correctly via `drizzle push` — so existing databases
+must be upgraded to match it, not the schema demoted to the legacy 0002 shape. New idempotent ops migration
+`migrations/ops/0006_reconcile_reports_table.sql` (matching the ops/0005 convention: "only for upgrading
+EXISTING databases", safe to re-run) drops legacy-only `file_size`/`query_execution_time`, adds
+`query_time integer DEFAULT 0`, lifts NOT NULL from `session_id`/`bom_id`, sets the ORM column defaults, and
+casts `filters` json→jsonb with default `'{}'`. No TypeScript change — the ORM and export handler were already
+correct and stay untouched.
+
+**Rejected alternatives:** (a) Rewrite `reportsTable`/handler to the legacy 0002 columns — bakes a wrong shape
+into new installs (drizzle push generates from the schema). (b) Drop the reports/report_exports history insert
+entirely and only stream the file — simplest, but loses export history. (c) A one-off dev ALTER without a
+committed script — the client and any other existing DB would stay broken.
+
+**Touches:** `migrations/ops/0006_reconcile_reports_table.sql` (new, idempotent). No code files.
+
+**Verification:** applied to the dev DB twice (idempotent) — `reports` now matches the ORM (query_time,
+jsonb filters, nullable session/bom). Re-ran the previously-failing export: BOM xlsx 200 (8,378 bytes,
+record_count 24, query_time populated); `reports` row id=1 and `report_exports` id=1 written; history GET
+returns it. Smoke across bom csv/pdf, component xlsx, fpy pdf all 200. Typecheck + api-server suite clean.
+**Git:** not committed. Client DB not yet migrated (client unreachable) — apply the same script there on deploy.
