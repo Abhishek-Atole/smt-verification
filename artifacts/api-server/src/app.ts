@@ -11,7 +11,7 @@ import router from "./routes";
 import { logger } from "./lib/logger";
 import { validateEnv } from "./lib/validateEnv";
 import { requireXmlHttpRequest } from "./middleware/csrf";
-import { scanLimiter } from "./middleware/rateLimiters";
+import { scanLimiter, overrideLimiter } from "./middleware/rateLimiters";
 import { db } from "@workspace/db";
 import { sql } from "drizzle-orm";
 import adminRouter from "./routes/admin";
@@ -191,9 +191,10 @@ app.use(express.urlencoded({ extended: true, limit: "10kb" }));
 app.use("/api/", requireXmlHttpRequest);
 
 app.use("/api/auth/login", loginLimiter);
-// verify-override is a password check too — same bucket as login so it can't
-// be used as a side-channel to amortize bcrypt CPU cost past the login cap.
-app.use("/api/auth/verify-override", loginLimiter);
+// verify-override gets its own bucket (middleware/rateLimiters.ts): sharing the
+// login cap throttled legitimate supervisor/QA overrides during shift traffic,
+// which the UI then showed as a wrong password. It is still per-IP rate-limited.
+app.use("/api/auth/verify-override", overrideLimiter);
 // verify-password (step-up confirm for BOM writes) is also a bcrypt check — same bucket.
 app.use("/api/auth/verify-password", loginLimiter);
 app.use("/api/verification/scan", scanLimiter);

@@ -1,6 +1,6 @@
 import { Router, type IRouter, type Request, type Response } from "express";
 import bcrypt from "bcryptjs";
-import { eq, sql } from "drizzle-orm";
+import { eq, and, inArray, sql } from "drizzle-orm";
 
 import { db } from "@workspace/db";
 import { usersTable, loginEventsTable } from "@workspace/db/schema";
@@ -529,23 +529,40 @@ router.post("/auth/verify-override", attachActor, requireAuth, async (req: AuthR
       res.status(400).json({ error: "password and role (supervisor|qa) are required" });
       return;
     }
-    const userRecord = await db.query.usersTable.findFirst({ where: eq(usersTable.role, role) });
-    if (!userRecord) {
-      res.status(401).json({ error: "Invalid credentials" });
-      return;
+    // Accept the password if it matches ANY active supervisor/QA. The old
+    // findFirst-by-role matched one arbitrary account of the toggled role: with
+    // several supervisors/QAs most correct passwords were rejected (only the
+    // row Postgres happened to return first worked), and a correct QA password
+    // failed whenever the panel was left on "supervisor" — or vice versa. Match
+    // the full active approver set and report who actually approved.
+    const approvers = await db
+      .select({
+        id: usersTable.id,
+        name: usersTable.name,
+        role: usersTable.role,
+        passwordHash: usersTable.password_hash,
+      })
+      .from(usersTable)
+      .where(and(inArray(usersTable.role, ["supervisor", "qa"]), eq(usersTable.is_active, true)));
+
+    let approver: (typeof approvers)[number] | undefined;
+    for (const candidate of approvers) {
+      if (await bcrypt.compare(password, candidate.passwordHash ?? "")) {
+        approver = candidate;
+        break;
+      }
     }
-    const passwordValid = await bcrypt.compare(password, userRecord.password_hash ?? "");
-    if (!passwordValid) {
+    if (!approver) {
       res.status(401).json({ error: "Invalid credentials" });
       return;
     }
     await auditLog({
       event:      "SCAN_VERIFIED",
-      operatorId: userRecord.id,
-      detail:     `Manual override approval by ${userRecord.name} (${role})`,
+      operatorId: approver.id,
+      detail:     `Manual override approval by ${approver.name} (${approver.role})`,
       ip:         req.ip,
     });
-    res.json({ valid: true, approverName: userRecord.name, approverRole: role });
+    res.json({ valid: true, approverName: approver.name, approverRole: approver.role });
   } catch (err) {
     req.log.error(err);
     res.status(500).json({ error: "Verification failed" });

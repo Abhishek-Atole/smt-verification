@@ -13,3 +13,18 @@ export const scanLimiter = rateLimit({
   standardHeaders: true,
   legacyHeaders: false,
 });
+
+// Manual-override password gate (POST /api/auth/verify-override). Its OWN
+// bucket rather than the shared login bucket: verify-override is a supervisor/
+// QA password check that happens mid-shift, often right after several real
+// logins on the same IP, and the shared 20/15-min login bucket would 429 a
+// legitimate override as if the password were wrong. A dedicated per-IP cap
+// still bounds bcrypt guessing (the password is checked against the active
+// approver set) without making legit overrides collateral of login traffic.
+export const overrideLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 15,
+  message: { error: "rate_limit_override", message: "Too many override attempts from this PC. Please wait 15 minutes." },
+  standardHeaders: true,
+  legacyHeaders: false,
+});

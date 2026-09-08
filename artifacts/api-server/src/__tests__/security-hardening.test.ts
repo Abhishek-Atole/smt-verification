@@ -19,6 +19,7 @@ const XHR = "XMLHttpRequest";
 
 const mocks = vi.hoisted(() => ({
   findFirst: vi.fn(),
+  selectWhere: vi.fn(),
   execute: vi.fn(),
   auditLog: vi.fn().mockResolvedValue(undefined),
   parseCsvBuffer: vi.fn(),
@@ -35,7 +36,12 @@ vi.mock("@workspace/db", () => ({
       })),
     })),
     update: vi.fn(),
-    select: vi.fn(),
+    // select() → from() → where() resolves to whatever the test configures on
+    // mocks.selectWhere (verify-override now reads the active approver set via
+    // db.select instead of db.query.usersTable.findFirst).
+    select: vi.fn(() => ({
+      from: vi.fn(() => ({ where: mocks.selectWhere })),
+    })),
     delete: vi.fn(),
     execute: mocks.execute,
     $transaction: vi.fn(),
@@ -105,6 +111,8 @@ function makeAuthCookie(
 
 beforeEach(() => {
   mocks.findFirst.mockReset();
+  mocks.selectWhere.mockReset();
+  mocks.selectWhere.mockResolvedValue([]);
   mocks.execute.mockReset();
   mocks.auditLog.mockClear();
   mocks.parseCsvBuffer.mockReset();
@@ -176,37 +184,36 @@ describe("login handler hardening", () => {
   });
 });
 describe("verify-override approval (step-up password check)", () => {
-  test("approves with a valid password for the requested role", async () => {
-    const passwordHash = await bcrypt.hash("qa-approve", 4);
+  test("approves when the password matches ANY active approver, regardless of the role toggled in the panel", async () => {
     const { cookie } = makeAuthCookie("operator");
 
-    mocks.findFirst.mockResolvedValue({
-      id: randomUUID(),
-      name: "QA One",
-      username: "qa1",
-      role: "qa",
-      password_hash: passwordHash,
-    });
+    // Two active approvers; the approving person is the QA, but the operator
+    // left the override panel on "supervisor". The old findFirst-by-role would
+    // compare the QA password against the supervisor hash and reject it.
+    mocks.selectWhere.mockResolvedValue([
+      { id: randomUUID(), name: "Supervisor One", role: "supervisor", passwordHash: await bcrypt.hash("sup-ok", 4) },
+      { id: randomUUID(), name: "QA One", role: "qa", passwordHash: await bcrypt.hash("qa-approve", 4) },
+    ]);
 
     const response = await request(app)
       .post("/api/auth/verify-override")
       .set("Cookie", cookie)
       .set("X-Requested-With", XHR)
       .set("X-Forwarded-For", "203.0.113.20")
-      .send({ password: "qa-approve", role: "qa" });
+      .send({ password: "qa-approve", role: "supervisor" });
 
     expect(response.status).toBe(200);
     expect(response.body.valid).toBe(true);
     expect(response.body.approverName).toBe("QA One");
     expect(response.body.approverRole).toBe("qa");
     expect(mocks.auditLog).toHaveBeenCalledWith(
-      expect.objectContaining({ event: "SCAN_VERIFIED" }),
+      expect.objectContaining({ event: "SCAN_VERIFIED", operatorId: expect.any(String) }),
     );
   });
 
-  test("rejects when no user holds the requested approver role", async () => {
+  test("rejects when no active approver holds the supplied password", async () => {
     const { cookie } = makeAuthCookie("operator");
-    mocks.findFirst.mockResolvedValue(null);
+    mocks.selectWhere.mockResolvedValue([]);
 
     const response = await request(app)
       .post("/api/auth/verify-override")
@@ -219,15 +226,11 @@ describe("verify-override approval (step-up password check)", () => {
     expect(response.body).toEqual({ error: "Invalid credentials" });
   });
 
-  test("rejects a wrong password for the approver role", async () => {
+  test("rejects a wrong password for the approver", async () => {
     const { cookie } = makeAuthCookie("operator");
-    mocks.findFirst.mockResolvedValue({
-      id: randomUUID(),
-      name: "Supervisor One",
-      username: "sup1",
-      role: "supervisor",
-      password_hash: await bcrypt.hash("correct-password", 4),
-    });
+    mocks.selectWhere.mockResolvedValue([
+      { id: randomUUID(), name: "Supervisor One", role: "supervisor", passwordHash: await bcrypt.hash("correct-password", 4) },
+    ]);
 
     const response = await request(app)
       .post("/api/auth/verify-override")
@@ -240,7 +243,7 @@ describe("verify-override approval (step-up password check)", () => {
     expect(response.body).toEqual({ error: "Invalid credentials" });
   });
 
-  test("rejects an invalid approver role with 400", async () => {
+  test("rejects an invalid approver role with 400 before hitting the DB", async () => {
     const { cookie } = makeAuthCookie("operator");
 
     const response = await request(app)
@@ -251,12 +254,12 @@ describe("verify-override approval (step-up password check)", () => {
       .send({ password: "whatever", role: "operator" });
 
     expect(response.status).toBe(400);
-    expect(mocks.findFirst).not.toHaveBeenCalled();
+    expect(mocks.selectWhere).not.toHaveBeenCalled();
   });
 
-  test("shares the login rate-limit bucket (429 after repeated attempts from one IP)", async () => {
+  test("429s after repeated override attempts from one IP (dedicated override bucket)", async () => {
     const { cookie } = makeAuthCookie("operator");
-    mocks.findFirst.mockResolvedValue(null);
+    mocks.selectWhere.mockResolvedValue([]);
 
     let sawLimit = false;
     for (let attempt = 0; attempt < 25; attempt += 1) {
