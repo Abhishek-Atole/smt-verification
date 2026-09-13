@@ -34,6 +34,7 @@ let usersTable: typeof import("@workspace/db/schema")["usersTable"];
 let bomsTable: typeof import("@workspace/db/schema")["bomsTable"];
 let changeoverSessionsTable: typeof import("@workspace/db/schema")["changeoverSessionsTable"];
 let sessionsTable: typeof import("@workspace/db/schema")["sessionsTable"];
+let changeoverOperatorsTable: typeof import("@workspace/db/schema")["changeoverOperatorsTable"];
 
 const opAId = randomUUID();
 let signAccessToken: typeof import("../../lib/authTokens")["signAccessToken"];
@@ -63,6 +64,7 @@ describe.runIf(runIntegration)("L3 ownership guards (real DB)", () => {
     usersTable = schema.usersTable;
     bomsTable = schema.bomsTable;
     changeoverSessionsTable = schema.changeoverSessionsTable;
+    changeoverOperatorsTable = schema.changeoverOperatorsTable;
     sessionsTable = schema.sessionsTable;
 
     app.set("trust proxy", 1);
@@ -82,6 +84,11 @@ describe.runIf(runIntegration)("L3 ownership guards (real DB)", () => {
       operatorName: OP_A_NAME, shiftName: "A", shiftDate: "2026-01-01",
     }).returning({ id: sessionsTable.id });
     legacySessionId = legacy.id;
+    // Ownership is a strict changeover_operators join (decision 2026-08-10, "2b"):
+    // operator_name alone no longer grants access, so the owner needs a row.
+    await db.insert(changeoverOperatorsTable).values({
+      sessionId: legacySessionId, operatorId: opAId, role: "creator", status: "accepted",
+    });
 
     cookieA = cookie("operator", opAId, OP_A_NAME);
     cookieB = cookie("operator", randomUUID(), "L3 Operator B");
@@ -92,7 +99,10 @@ describe.runIf(runIntegration)("L3 ownership guards (real DB)", () => {
   afterAll(async () => {
     if (!db) return;
     await db.delete(changeoverSessionsTable).where(eq(changeoverSessionsTable.id, changeoverId));
-    if (legacySessionId) await db.delete(sessionsTable).where(eq(sessionsTable.id, legacySessionId));
+    if (legacySessionId) {
+      await db.delete(changeoverOperatorsTable).where(eq(changeoverOperatorsTable.sessionId, legacySessionId));
+      await db.delete(sessionsTable).where(eq(sessionsTable.id, legacySessionId));
+    }
     if (bomId) await db.delete(bomsTable).where(eq(bomsTable.id, bomId));
     await db.delete(usersTable).where(eq(usersTable.id, opAId));
   });
@@ -150,7 +160,7 @@ describe.runIf(runIntegration)("L3 ownership guards (real DB)", () => {
   describe("legacy session ownership (integer session)", () => {
     const url = () => `/api/sessions/${legacySessionId}`;
 
-    test("owner operator (name matches operator_name) clears the guard (not 403)", async () => {
+    test("owner operator (accepted changeover_operators row) clears the guard (not 403)", async () => {
       const res = await request(app).get(url()).set("Cookie", cookieA);
       expect(res.status).not.toBe(403);
     });
