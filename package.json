@@ -10,7 +10,8 @@
     "build:all": "pnpm run build:renderer && pnpm run build:server",
     "start:server": "node --enable-source-maps artifacts/api-server/dist/index.mjs",
     "typecheck:libs": "tsc --build",
-    "typecheck": "pnpm run typecheck:libs && pnpm -r --filter \"./artifacts/**\" --filter \"./feeder-verification\" --filter \"./scripts\" --if-present run typecheck"
+    "typecheck": "pnpm run typecheck:libs && pnpm -r --filter \"./artifacts/**\" --filter \"./scripts\" --if-present run typecheck",
+    "smoke": "node scripts/smoke-endpoints.mjs"
   },
   "private": true,
   "engines": {

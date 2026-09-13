@@ -229,3 +229,9 @@ release/
 # out of band; shipping a previous version's updater inside the tarball only
 # confuses whoever is doing the install.
 update-client-v*.sh
+
+# Server-side report archive (generated at runtime; never commit report PDFs)
+/report-archive/
+
+# Stale compiled twins accidentally committed under the TS source tree
+artifacts/api-server/src/**/*.js

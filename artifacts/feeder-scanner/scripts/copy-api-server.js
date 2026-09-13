@@ -30,7 +30,6 @@ const runtimeDeps = {
     "bcryptjs": "^3.0.3",
     "jsonwebtoken": "^9.0.3",
     "pg": "^8.20.0",
-    "pg-cursor": "^2.20.0",
     "drizzle-orm": "0.45.2",
     "pino": "^9",
     "pino-http": "^10",

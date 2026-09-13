@@ -31,7 +31,6 @@ minimumReleaseAgeExclude: []
 
 packages:
   - artifacts/*
-  - feeder-verification
   - lib/*
   - lib/integrations/*
   - scripts

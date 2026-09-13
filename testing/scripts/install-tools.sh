@@ -22,5 +22,4 @@ check_tool 0x
 
 echo
 echo "If a tool is missing, install it outside the implementation tree before running the tests."
-echo "Recommended app context: feeder-verification"
 echo "Recommended app URL: http://localhost:3000"

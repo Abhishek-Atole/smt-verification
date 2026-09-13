@@ -1,10 +1,10 @@
 {
   "name": "infizent-technology-suite",
   "productName": "Infizent Technology",
-  "description": "Infizent Technology — Production Line Management Suite",
+  "description": "Infizent Technology \u2014 Production Line Management Suite",
   "version": "1.0.0",
   "author": "Abhishek Himmatrao Atole",
-  "copyright": "Copyright © 2026 Abhishek Himmatrao Atole. All rights reserved.",
+  "copyright": "Copyright \u00a9 2026 Abhishek Himmatrao Atole. All rights reserved.",
   "homepage": "https://infizent.com",
   "private": true,
   "type": "module",
@@ -76,7 +76,6 @@
     "bwip-js": "4.11.4",
     "jspdf": "^4.2.1",
     "jspdf-autotable": "^5.0.7",
-    "jszip": "^3.10.1",
     "node-machine-id": "^1.1.12",
     "papaparse": "^5.5.3",
     "zustand": "^5.0.12"
@@ -84,7 +83,7 @@
   "build": {
     "appId": "com.infizenttechnology.suite",
     "productName": "Infizent Technology",
-    "copyright": "Copyright © 2026 Abhishek Himmatrao Atole. All rights reserved.",
+    "copyright": "Copyright \u00a9 2026 Abhishek Himmatrao Atole. All rights reserved.",
     "directories": {
       "output": "release"
     },
@@ -119,7 +118,7 @@
       "icon": "build/icons",
       "category": "Development",
       "maintainer": "Abhishek Himmatrao Atole <abhishek@infizent.com>",
-      "description": "Infizent Technology — Production Line Management Suite",
+      "description": "Infizent Technology \u2014 Production Line Management Suite",
       "executableName": "infizent-technology"
     },
     "deb": {

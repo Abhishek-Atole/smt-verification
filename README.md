@@ -9,7 +9,6 @@ SMTVerification/
 ├── artifacts/                  # Source code (TypeScript/React)
 │   ├── api-server/            # Express.js backend API
 │   ├── feeder-scanner/        # React frontend application
-│   └── mockup-sandbox/        # UI mockup components
 │
 ├── lib/                        # Shared libraries
 │   └── db/                     # Database schema and migrations (Drizzle ORM)
@@ -44,19 +43,6 @@ SMTVerification/
 2. **Deployment**: Check [docs/setup/DEPLOYMENT_SETUP.md](docs/setup/DEPLOYMENT_SETUP.md)
 3. **API Reference**: See [docs/guides/API_REFERENCE.md](docs/guides/API_REFERENCE.md)
 4. **BOM Management**: View [docs/features/bom/](docs/features/bom/) for BOM guides
-
-## Next.js Feeder Verification App
-
-The root workspace now includes a separate Next.js implementation at [feeder-verification/](feeder-verification/).
-
-```bash
-cd feeder-verification
-pnpm install
-pnpm prisma:generate
-pnpm prisma:migrate:dev
-pnpm prisma:seed
-pnpm dev
-```
 
 ## 📚 Documentation
 

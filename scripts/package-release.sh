@@ -50,13 +50,6 @@ rm -rf "$ROOT/.dev-docs" \
        "$ROOT/docs/VERIFICATION_16_FIELD_IMPLEMENTATION.sh" \
        "$ROOT/README.md"
 
-# Dev-only workspaces. mockup-sandbox is a design sandbox; feeder-verification is
-# an abandoned Next.js/Prisma prototype (it also carries a 1.7 MB zip of the whole
-# repo in its public/ dir, which must never leave the dev machine). Neither is
-# imported by api-server or feeder-scanner.
-rm -rf "$ROOT/artifacts/mockup-sandbox" \
-       "$ROOT/feeder-verification"
-
 # Prisma leftovers from that prototype. Nothing in the runtime imports Prisma —
 # build.mjs only names @prisma/client in its esbuild `external` list.
 rm -rf "$ROOT/prisma" "$ROOT/prisma.config.ts"
