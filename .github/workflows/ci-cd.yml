@@ -480,7 +480,9 @@ jobs:
       - name: Dependency vulnerability scan
         run: |
           echo "Running pnpm audit..."
-          pnpm audit --audit-level=high 2>&1 | tee /tmp/audit.txt
+          # RUNTIME deps only — the Electron packaging devDependency chain is
+          # not shipped (dist-only deploy) and its advisories live in Dependabot.
+          pnpm audit --prod --audit-level=high 2>&1 | tee /tmp/audit.txt
           # Fail on HIGH or CRITICAL vulnerabilities
           if grep -qiE "(high|critical)" /tmp/audit.txt; then
             echo "❌ HIGH or CRITICAL vulnerabilities found:"

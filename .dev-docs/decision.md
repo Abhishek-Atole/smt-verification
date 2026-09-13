@@ -2891,3 +2891,25 @@ the test's title states the real rule. That was the only failure: **36 passed / 
 scratch-DB integration `6 files passed, 36 passed / 4 skipped`; workspace typecheck clean; api suite **349
 passed**. CI job YAML parses but has **not been executed** (no CI runner here) — first CI run will confirm it.
 **Git:** not committed.
+
+## CI security gate: audit RUNTIME deps only (2026-09-13)
+
+**Context:** The first push after this session's work revealed the pipeline has been red since at least Sep 3: the
+`Security Audit` job failed and every downstream job (Build, Unit, Type Check, the new Integration+Smoke) was
+skipped. Cause: `pnpm audit --audit-level=high` reported 32 vulnerabilities (11 critical, 14 high) whose paths all
+run through the Electron PACKAGING devDependency chain
+(`artifacts/feeder-scanner > electron-builder > app-builder-lib > js-yaml | plist > @xmldom/xmldom`).
+`pnpm audit --prod --audit-level=high` in the same tree reports **0 high/critical (3 moderate)** — i.e. nothing we
+ship is implicated; the failures were build-time tooling the dist-only client deploy never executes.
+
+**Decision & why (user chose):** scope BOTH workflows' gates to runtime deps
+(`pnpm audit --prod --audit-level=high`) so the pipeline gates on what actually ships, and leave the build-tool
+advisories to Dependabot (which still reports them). Rejected: patching the ~30 transitive advisories now (kept
+available as the usual tiered dep-PR work), and dropping the Electron packaging path outright (product decision —
+`dist`/`dist:linux` scripts remain for a future packaged build).
+
+**Touches:** `.github/workflows/ci.yml`, `.github/workflows/ci-cd.yml`.
+
+**Verification:** both workflow YAMLs parse; local `pnpm audit --prod --audit-level=high` exits clean of
+high/critical. Next push should let Build → Unit → Integration+Smoke run for the first time.
+**Git:** committed with the CI change.

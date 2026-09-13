@@ -18,7 +18,12 @@ jobs:
           node-version: "20"
           cache: pnpm
       - run: pnpm install --frozen-lockfile
-      - run: pnpm audit --audit-level=high
+      # Scope the gate to RUNTIME deps. The Electron packaging chain
+      # (electron-builder > app-builder-lib > js-yaml/plist/@xmldom/xmldom) is a
+      # devDependency tree our dist-only client deploy never runs, and its
+      # advisories were failing this gate and skipping every downstream job.
+      # Those stay visible in Dependabot. Prod deps: 0 high/critical.
+      - run: pnpm audit --prod --audit-level=high
 
   build:
     name: Build
