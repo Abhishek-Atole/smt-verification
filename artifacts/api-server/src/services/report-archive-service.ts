@@ -1,5 +1,5 @@
 import { createReadStream, createWriteStream } from "node:fs";
-import { mkdir, stat, unlink } from "node:fs/promises";
+import { copyFile, mkdir, stat, unlink } from "node:fs/promises";
 import { createHash } from "node:crypto";
 import path from "node:path";
 import { and, eq, sql } from "drizzle-orm";
@@ -172,6 +172,59 @@ export async function beginReportArchive(
     return { stream, filePath, finalize };
   } catch (err) {
     logger.error({ err, reportType, entityId }, "report archive setup failed");
+    return null;
+  }
+}
+
+/**
+ * Archive an ALREADY-WRITTEN report file (the aggregate exports written by
+ * ExportService) into the same fixed archive as session reports, so every
+ * server-generated report lands in one server-side directory regardless of the
+ * operator's browser. Deduped per (reportType, entityId) like beginReportArchive;
+ * `entityId` is the reports-table row id (one archive file per export).
+ * Failures are swallowed and logged — archival must never break a download.
+ */
+export async function archiveExistingFile(
+  reportType: string,
+  entityId: string,
+  sourcePath: string,
+  format: string,
+): Promise<string | null> {
+  try {
+    const root = await effectiveArchiveRoot();
+    if (!root) {
+      logger.error(
+        "No report archive root configured — report archival DISABLED (downloads still work). " +
+          "Set it on the admin Report Output page, or via REPORT_ARCHIVE_ROOT.",
+      );
+      return null;
+    }
+    if (await alreadyArchived(reportType, entityId)) return null;
+
+    const now = new Date();
+    const dir = path.join(root, String(now.getFullYear()), String(now.getMonth() + 1).padStart(2, "0"), reportType);
+    await mkdir(dir, { recursive: true });
+    await warnIfSameDisk(root);
+
+    const ts = now.toISOString().replace(/[:.]/g, "-");
+    const dest = path.join(dir, `${entityId}_${ts}.${format}`);
+    await copyFile(sourcePath, dest);
+
+    const { size } = await stat(dest);
+    const checksum = await sha256File(dest);
+    const inserted = await db
+      .insert(reportArchiveRecordTable)
+      .values({ reportType, relatedEntityId: entityId, filePath: dest, fileSizeBytes: size, checksum })
+      .onConflictDoNothing()
+      .returning({ id: reportArchiveRecordTable.id });
+    // Lost the dedup race — drop our redundant copy.
+    if (inserted.length === 0) {
+      await unlink(dest).catch(() => undefined);
+      return null;
+    }
+    return dest;
+  } catch (err) {
+    logger.error({ err, reportType, entityId }, "report archive (existing file) failed");
     return null;
   }
 }

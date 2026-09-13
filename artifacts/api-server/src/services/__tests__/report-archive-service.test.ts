@@ -1,4 +1,4 @@
-import { mkdtemp, rm, stat, readdir } from "node:fs/promises";
+import { mkdtemp, rm, stat, readdir, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
@@ -49,7 +49,7 @@ vi.mock("../../lib/reportOutputStore", () => ({
   getEffectiveArchiveRoot: () => Promise.resolve(process.env.REPORT_ARCHIVE_ROOT?.trim() || null),
 }));
 
-const { beginReportArchive } = await import("../report-archive-service");
+const { beginReportArchive, archiveExistingFile } = await import("../report-archive-service");
 
 let dir = "";
 
@@ -125,5 +125,41 @@ describe("beginReportArchive", () => {
     expect(mocks.warn).not.toHaveBeenCalled();
     sink!.stream.end();
     await sink!.finalize();
+  });
+});
+
+describe("archiveExistingFile (aggregate exports)", () => {
+  test("copies an already-written report into {root}/{year}/{month}/{type}/ and records it", async () => {
+    const src = path.join(dir, "src-report.xlsx");
+    await writeFile(src, "fake xlsx bytes");
+    const dest = await archiveExistingFile("bom", "77", src, "xlsx");
+    expect(dest).not.toBeNull();
+    expect(dest!.startsWith(dir)).toBe(true);
+    expect(dest!).toContain(`${path.sep}bom${path.sep}77_`);
+    expect(dest!.endsWith(".xlsx")).toBe(true);
+    const st = await stat(dest!);
+    expect(st.size).toBeGreaterThan(0);
+    const values = mocks.insertedValues as { reportType: string; relatedEntityId: string; fileSizeBytes: number; checksum: string };
+    expect(values.reportType).toBe("bom");
+    expect(values.relatedEntityId).toBe("77");
+    expect(values.checksum).toMatch(/^[0-9a-f]{64}$/);
+    // source is left in place (it is streamed to the client afterwards)
+    expect((await stat(src)).size).toBeGreaterThan(0);
+  });
+
+  test("returns null when the entity is already archived (dedup)", async () => {
+    const src = path.join(dir, "dup.pdf");
+    await writeFile(src, "x");
+    mocks.selectResult = [{ id: "existing" }];
+    expect(await archiveExistingFile("bom", "77", src, "pdf")).toBeNull();
+    expect(await readdir(dir)).toEqual(["dup.pdf"]);
+  });
+
+  test("returns null and logs loudly when the archive root is unset", async () => {
+    const src = path.join(dir, "noroot.pdf");
+    await writeFile(src, "x");
+    delete process.env.REPORT_ARCHIVE_ROOT;
+    expect(await archiveExistingFile("bom", "77", src, "pdf")).toBeNull();
+    expect(mocks.error).toHaveBeenCalled();
   });
 });

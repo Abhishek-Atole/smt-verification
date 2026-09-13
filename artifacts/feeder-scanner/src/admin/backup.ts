@@ -80,3 +80,31 @@ export function analyzeStorage(): {
     largestKeys: allKeys.slice(0, 10),
   };
 }
+
+/**
+ * Download every localStorage key on this origin as the JSON payload that
+ * restoreBackup() consumes. This is what makes Restore usable end-to-end — the
+ * file produced here can be selected back in. Note: the checksum field is
+ * intentionally omitted because restoreBackup() hashes the WHOLE file, so a
+ * self-referential checksum cannot match; the version+data payload round-trips.
+ */
+export function exportLocalSnapshot(): void {
+  const data: Record<string, string> = {};
+  for (let i = 0; i < localStorage.length; i++) {
+    const key = localStorage.key(i)!;
+    const value = localStorage.getItem(key);
+    if (value != null) data[key] = value;
+  }
+  const payload = { version: "1", createdAt: new Date().toISOString(), data };
+  const content = JSON.stringify(payload, null, 2);
+  const blob = new Blob([content], { type: "application/json" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = `smt-admin-local-${new Date().toISOString().slice(0, 10)}.json`;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  window.setTimeout(() => URL.revokeObjectURL(url), 10_000);
+  logAudit("data_exported", `Exported ${Object.keys(data).length} localStorage keys`, "success");
+}

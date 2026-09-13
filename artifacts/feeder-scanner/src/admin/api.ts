@@ -55,7 +55,7 @@ export const adminApi = {
     call<{ users: AdminUser[] }>("GET", "/admin/users"),
   createUser: (input: { name: string; employeeId: string; role: UserRole; password: string }) =>
     call<AdminUser>("POST", "/admin/users", input),
-  updateUser: (id: string, patch: { name?: string; role?: UserRole; isActive?: boolean }) =>
+  updateUser: (id: string, patch: { name?: string; employeeId?: string; role?: UserRole; isActive?: boolean }) =>
     call<{ id: string }>("PATCH", `/admin/users/${id}`, patch),
   resetPassword: (id: string, password: string) =>
     call<{ id: string }>("POST", `/admin/users/${id}/reset-password`, { password }),
@@ -93,6 +93,29 @@ export const adminApi = {
     call<{ runs: BackupRunRow[] }>("GET", "/admin/backups"),
   runBackup: () =>
     call<BackupRunRow>("POST", "/admin/backups/run"),
+  getBackupStorage: () =>
+    call<BackupStorage>("GET", "/admin/backups/storage"),
+  /** Stream a completed backup's .sql so it can be copied off the machine. */
+  downloadBackup: async (id: string) => {
+    const res = await fetch(`/api/admin/backups/${id}/file`, {
+      credentials: "include",
+      headers: { "X-Requested-With": "XMLHttpRequest" },
+    });
+    if (!res.ok) {
+      let detail = res.statusText;
+      try {
+        const json = (await res.json()) as { error?: string; message?: string };
+        detail = json.error ?? json.message ?? detail;
+      } catch { /* ignore */ }
+      throw new ApiError(res.status, detail);
+    }
+    const blob = await res.blob();
+    let fileName = `backup-${id}.sql`;
+    const cd = res.headers.get("content-disposition") ?? "";
+    const m = /filename="?([^";]+)"?/.exec(cd);
+    if (m) fileName = m[1];
+    return { blob, fileName };
+  },
 
   // ─── Access Control (Module 10) ──────────────────────────────────────
   listDevices: () =>
@@ -116,7 +139,7 @@ export const adminApi = {
 
   // Module 15b — report output destinations.
   getReportOutputSettings: () =>
-    call<{ settings: ReportOutputSettings | null; envArchiveRoot: string | null }>(
+    call<{ settings: ReportOutputSettings | null; envArchiveRoot: string | null; suggestedArchiveRoot: string | null }>(
       "GET",
       "/admin/report-output-settings",
     ),
@@ -187,6 +210,18 @@ export interface BackupRunRow {
   filePath: string | null;
   sizeBytes: number | null;
   errorMessage: string | null;
+}
+
+/** GET /admin/backups/storage — backup-storage health + schedule for the UI. */
+export interface BackupStorage {
+  configured: boolean;
+  dir: string | null;
+  sameDisk: boolean;
+  allowSameDisk: boolean;
+  reason: string | null;
+  retentionDays: number;
+  scheduledHourLocal: number;
+  nextScheduledAt: string;
 }
 
 export interface AuditLogRow {

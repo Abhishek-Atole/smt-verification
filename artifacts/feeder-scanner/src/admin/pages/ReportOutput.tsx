@@ -47,6 +47,7 @@ const row: React.CSSProperties = { display: "flex", alignItems: "center", gap: 8
 export default function ReportOutput() {
   const [settings, setSettings] = useState<ReportOutputSettings | null>(null);
   const [envRoot, setEnvRoot] = useState<string | null>(null);
+  const [suggestedRoot, setSuggestedRoot] = useState<string | null>(null);
   const [folder, setFolder] = useState<FolderStatus | null>(null);
   const [archiveRootDraft, setArchiveRootDraft] = useState("");
   const [labelDraft, setLabelDraft] = useState("");
@@ -59,7 +60,8 @@ export default function ReportOutput() {
       const res = await adminApi.getReportOutputSettings();
       setSettings(res.settings);
       setEnvRoot(res.envArchiveRoot);
-      setArchiveRootDraft(res.settings?.archiveRoot ?? "");
+      setSuggestedRoot(res.suggestedArchiveRoot ?? null);
+      setArchiveRootDraft(res.settings?.archiveRoot ?? res.suggestedArchiveRoot ?? "");
       setLabelDraft(res.settings?.folderLabel ?? "");
     } catch (e) {
       setErr(e instanceof ApiError ? e.message : "Failed to load settings");
@@ -205,13 +207,19 @@ export default function ReportOutput() {
             <input
               style={input}
               value={archiveRootDraft}
-              placeholder="/var/lib/smtverification/reports"
+              placeholder={suggestedRoot ?? "/var/lib/smtverification/reports"}
               onChange={(e) => setArchiveRootDraft(e.target.value)}
             />
+            {suggestedRoot && archiveRootDraft.trim() !== suggestedRoot && (
+              <button style={btnMuted} onClick={() => setArchiveRootDraft(suggestedRoot)} title="Use the default folder inside the app directory on this host">
+                Use suggested
+              </button>
+            )}
             <button style={btn} onClick={() => void patch({ archiveRoot: archiveRootDraft })}>Save</button>
           </div>
           <p style={{ ...hint, marginTop: 6, marginBottom: 0 }}>
-            Files land in <code style={{ color: "#00d4ff" }}>&lt;root&gt;/year/month/session/</code>. The
+            Files land in <code style={{ color: "#00d4ff" }}>&lt;root&gt;/year/month/&lt;report type&gt;/</code> —
+            session reports <em>and</em> every export (BOM, FPY, OEE, …). The
             folder must exist and be writable by the API service. Prefer a second disk or a NAS mount:
             an archive on the database's own disk dies with it.
             {envRoot && (

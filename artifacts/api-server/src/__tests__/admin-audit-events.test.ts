@@ -28,7 +28,17 @@ const mocks = vi.hoisted(() => {
     update: vi.fn(() => ({ set: () => ({ where: () => ({ returning }) }) })),
     del: vi.fn(() => ({ where: () => ({ returning }) })),
     execute: vi.fn(() => Promise.resolve({ rows: [{ id: "11111111-1111-1111-1111-111111111111" }] })),
-    select: vi.fn(),
+    // PATCH/DELETE /users/:id now fetch the target row first (for the self +
+    // last-admin guards). Default to an existing NON-admin target so those
+    // routes reach their auditLog() call; the audit-log viewer overrides this
+    // per-call with mockImplementationOnce.
+    select: vi.fn((): any => ({
+      from: (): any => ({
+        where: (): any =>
+          Promise.resolve([{ id: TARGET_ID, name: "Target", role: "operator", employeeId: "EMP1", isActive: true }]),
+        orderBy: (): any => ({ limit: (): any => Promise.resolve([]) }),
+      }),
+    })),
   };
 });
 

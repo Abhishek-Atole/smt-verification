@@ -1,8 +1,10 @@
 import { Router, type IRouter, type Request, type Response } from "express";
 import bcrypt from "bcryptjs";
 import path from "node:path";
+import { existsSync } from "node:fs";
 import { and, desc, eq, gt, isNull, sql } from "drizzle-orm";
 import { db, pool } from "@workspace/db";
+import { getBackupStorageStatus, backupDir, estimateNextBackupAt } from "../services/backup-service";
 import {
   usersTable,
   loginEventsTable,
@@ -42,6 +44,23 @@ const DEVICE_STATUSES: DeviceStatus[] = ["active", "blocked", "pending"];
 
 function invalidateUserCache(): void {
   invalidatePrefix(userCache, "user:");
+}
+
+// Number of active admins OTHER than `userId`. Used by the last-admin guard:
+// a change that removes an active admin is rejected when it would leave ZERO
+// active admins (everyone locked out of the portal).
+async function activeAdminCountExcluding(userId: string): Promise<number> {
+  const [row] = await db
+    .select({ c: sql<number>`count(*)::int` })
+    .from(usersTable)
+    .where(
+      and(
+        eq(usersTable.role, "admin"),
+        eq(usersTable.is_active, true),
+        sql`${usersTable.id} <> ${userId}`,
+      ),
+    );
+  return row?.c ?? 0;
 }
 
 const router: IRouter = Router();
@@ -298,25 +317,110 @@ router.post("/users", requireAdminAuth, slideAdminCookie, async (req: AdminAuthR
 
 router.patch("/users/:id", requireAdminAuth, slideAdminCookie, async (req: AdminAuthRequest, res: Response) => {
   const id = String(req.params.id);
-  const body = req.body as { name?: unknown; role?: unknown; isActive?: unknown } | null;
+  const body = req.body as { name?: unknown; role?: unknown; isActive?: unknown; employeeId?: unknown } | null;
+
+  // The target row is needed both for guards (self / last-admin) and for a
+  // clear 404, so read it before building the UPDATE.
+  const [target] = await db
+    .select({
+      id: usersTable.id,
+      name: usersTable.name,
+      role: usersTable.role,
+      employeeId: usersTable.employee_id,
+      isActive: usersTable.is_active,
+    })
+    .from(usersTable)
+    .where(eq(usersTable.id, id));
+  if (!target) { res.status(404).json({ error: "User not found" }); return; }
+
   const sets: Array<ReturnType<typeof sql>> = [];
+
   if (typeof body?.name === "string" && body.name.trim()) sets.push(sql`name = ${body.name.trim()}`);
-  if (typeof body?.role === "string" && ["operator","qa","supervisor","admin","storekeeper"].includes(body.role)) sets.push(sql`role = ${body.role}::"UserRole"`);
+
+  // Role is validated first so the guard below reasons about a valid value.
+  let roleChange: string | null = null;
+  if (body?.role !== undefined) {
+    if (typeof body.role !== "string" || !["operator","qa","supervisor","admin","storekeeper"].includes(body.role)) {
+      res.status(400).json({ error: "invalid_role" });
+      return;
+    }
+    roleChange = body.role;
+  }
+
+  const disable = body?.isActive === false;
+
+  // employeeId (login) — editable per admin; enforce case-insensitive uniqueness.
+  let employeeIdChange: string | null = null;
+  if (body?.employeeId !== undefined) {
+    if (typeof body.employeeId !== "string" || !body.employeeId.trim() || body.employeeId.trim().length > 255) {
+      res.status(400).json({ error: "invalid_employee_id", message: "employeeId must be a non-empty string up to 255 chars." });
+      return;
+    }
+    employeeIdChange = body.employeeId.trim();
+    const [dup] = await db
+      .select({ id: usersTable.id })
+      .from(usersTable)
+      .where(
+        and(
+          sql`upper(${usersTable.employee_id}) = ${employeeIdChange.toUpperCase()}`,
+          sql`${usersTable.id} <> ${id}`,
+        ),
+      )
+      .limit(1);
+    if (dup) { res.status(409).json({ error: "conflict_employee_id", message: "Another user already uses that Employee ID." }); return; }
+  }
+
+  // Self guard: an admin may fix their own name/employee ID but must not be able
+  // to disable or demote their own account (would lock themselves out).
+  const actorIsTarget = req.admin?.adminId === id;
+  if (actorIsTarget && (disable || roleChange !== null)) {
+    res.status(409).json({ error: "self_modification", message: "You cannot disable or change the role of your own account." });
+    return;
+  }
+
+  // Last-admin guard: removing an ACTIVE admin is only allowed when another
+  // active admin would remain.
+  const removingActiveAdmin =
+    target.isActive && target.role === "admin" && (disable || (roleChange !== null && roleChange !== "admin"));
+  if (removingActiveAdmin && (await activeAdminCountExcluding(id)) === 0) {
+    res.status(409).json({ error: "last_admin", message: "Cannot remove the last active admin account." });
+    return;
+  }
+
+  if (roleChange !== null) sets.push(sql`role = ${roleChange}::"UserRole"`);
+  // user_type mirrors role (create sets it; keep them consistent on role edits).
+  if (roleChange !== null) sets.push(sql`user_type = ${roleChange}`);
   if (typeof body?.isActive === "boolean") {
     sets.push(sql`is_active = ${body.isActive}`);
     // Disabling a user must also revoke their live token.
     if (body.isActive === false) revokeUser(id);
   }
+  // Demoting a current admin removes their admin access immediately (otherwise
+  // the still-valid admin cookie would last up to its absolute TTL).
+  if (target.role === "admin" && roleChange !== null && roleChange !== "admin") revokeUser(id);
+
+  if (employeeIdChange !== null) sets.push(sql`employee_id = ${employeeIdChange}`);
+
   if (sets.length === 0) {
     res.status(400).json({ error: "No valid fields to update" });
     return;
   }
-  const updated = await db.execute<{ id: string }>(
-    sql`UPDATE users SET ${sql.join(sets, sql`, `)} WHERE id = ${id} RETURNING id`,
+  const changedFields = [
+    typeof body?.name === "string" ? "name" : null,
+    roleChange !== null ? "role" : null,
+    typeof body?.isActive === "boolean" ? "is_active" : null,
+    employeeIdChange !== null ? "employee_id" : null,
+  ].filter(Boolean).join(",");
+  await db.execute<{ id: string }>(
+    sql`UPDATE users SET ${sql.join(sets, sql`, `)} WHERE id = ${id}`,
   );
-  if (updated.rows.length === 0) { res.status(404).json({ error: "User not found" }); return; }
   invalidateUserCache();
-  await auditLog({ event: "USER_UPDATED", operatorId: req.admin?.adminId, detail: `user_updated:${id}`, ip: req.ip });
+  await auditLog({
+    event: "USER_UPDATED",
+    operatorId: req.admin?.adminId,
+    detail: `user_updated:${id} fields=${changedFields}`,
+    ip: req.ip,
+  });
   res.json({ id });
 });
 
@@ -344,6 +448,22 @@ router.post("/users/:id/reset-password", requireAdminAuth, slideAdminCookie, asy
 
 router.delete("/users/:id", requireAdminAuth, slideAdminCookie, async (req: AdminAuthRequest, res: Response) => {
   const id = String(req.params.id);
+  const actorId = req.admin?.adminId;
+  const [target] = await db
+    .select({ id: usersTable.id, role: usersTable.role, isActive: usersTable.is_active })
+    .from(usersTable)
+    .where(eq(usersTable.id, id));
+  if (!target) { res.status(404).json({ error: "User not found" }); return; }
+  // Self guard: an admin must not delete their own account.
+  if (actorId === id) {
+    res.status(409).json({ error: "self_modification", message: "You cannot delete your own account." });
+    return;
+  }
+  // Last-admin guard.
+  if (target.role === "admin" && target.isActive && (await activeAdminCountExcluding(id)) === 0) {
+    res.status(409).json({ error: "last_admin", message: "Cannot remove the last active admin account." });
+    return;
+  }
   try {
     const deleted = await db.delete(usersTable).where(eq(usersTable.id, id)).returning({ id: usersTable.id });
     if (deleted.length === 0) { res.status(404).json({ error: "User not found" }); return; }
@@ -425,6 +545,14 @@ router.get("/backups", requireAdminAuth, slideAdminCookie, async (_req, res) => 
 
 router.post("/backups/run", requireAdminAuth, slideAdminCookie, async (req: AdminAuthRequest, res: Response) => {
   const { runBackupNow } = await import("../services/backup-service");
+  // Without BACKUP_DIR, runBackupNow() throws and we'd 500. Surface it clearly
+  // instead — the Data Management page already shows the red "backups OFF"
+  // banner, so a create attempt here should explain rather than look broken.
+  const status = await getBackupStorageStatus();
+  if (!status.configured) {
+    res.status(409).json({ error: "backup_dir_unset", message: "BACKUP_DIR is not configured on this server." });
+    return;
+  }
   try {
     const run = await runBackupNow({ triggeredBy: req.admin!.adminId });
     res.status(202).json(run);
@@ -433,6 +561,55 @@ router.post("/backups/run", requireAdminAuth, slideAdminCookie, async (req: Admi
     res.status(500).json({ error: "backup_failed" });
   }
 });
+
+// Backup storage health for the Data Management page: is BACKUP_DIR set, is it
+// on the same disk as the DB, what is the retention window and next scheduled
+// run. Admin-only; the page renders it as a health banner.
+router.get("/backups/storage", requireAdminAuth, slideAdminCookie, async (_req, res) => {
+  const status = await getBackupStorageStatus();
+  const retentionDays = Number(process.env.BACKUP_RETENTION_DAYS ?? 30);
+  const scheduledHourLocal = Number(process.env.BACKUP_HOUR_LOCAL ?? 2);
+  res.json({
+    ...status,
+    retentionDays,
+    scheduledHourLocal,
+    nextScheduledAt: estimateNextBackupAt(scheduledHourLocal).toISOString(),
+  });
+});
+
+// Download a completed backup's .sql so an admin can copy it off the machine
+// (NAS/USB). Guarded: only a `success` run, resolved path must stay inside
+// BACKUP_DIR, and the file must still exist on disk.
+router.get("/backups/:id/file", requireAdminAuth, slideAdminCookie, async (req: AdminAuthRequest, res: Response) => {
+  const id = String(req.params.id);
+  const [run] = await db
+    .select({ status: backupRunsTable.status, filePath: backupRunsTable.filePath })
+    .from(backupRunsTable)
+    .where(eq(backupRunsTable.id, id));
+  if (!run || run.status !== "success" || !run.filePath) {
+    res.status(404).json({ error: "backup_file_not_found", message: "No completed backup exists for that id." });
+    return;
+  }
+  let dir: string;
+  try {
+    dir = backupDir();
+  } catch {
+    res.status(409).json({ error: "backup_dir_unset", message: "BACKUP_DIR is not configured on this server." });
+    return;
+  }
+  const resolvedDir = path.resolve(dir);
+  const file = path.resolve(run.filePath);
+  if (!file.startsWith(resolvedDir + path.sep)) {
+    res.status(404).json({ error: "backup_file_not_found" });
+    return;
+  }
+  if (!existsSync(file)) {
+    res.status(404).json({ error: "backup_file_missing", message: "The file is no longer on disk (e.g. pruned by retention)." });
+    return;
+  }
+  res.download(file, path.basename(file));
+});
+
 
 // ─── Module 10.2 — Device / IP allow-list management ────────────────────
 // CRUD over the devices table. Every mutation invalidates the deviceStore
@@ -601,7 +778,12 @@ router.patch("/security-settings", requireAdminAuth, slideAdminCookie, async (re
 //     report-archive-service.ts. Overrides REPORT_ARCHIVE_ROOT.
 router.get("/report-output-settings", requireAdminAuth, slideAdminCookie, async (_req, res) => {
   const [row] = await db.select().from(reportOutputSettingsTable).where(eq(reportOutputSettingsTable.id, true));
-  res.json({ settings: row ?? null, envArchiveRoot: process.env.REPORT_ARCHIVE_ROOT?.trim() || null });
+  // Sensible default the UI can prefill so an admin doesn't have to know the
+  // host layout: a report-archive folder inside the app directory on THIS host.
+  // Derived from the running bundle (dist/.. = deploy root), which is the same
+  // shape on the dev repo and the client install.
+  const suggestedArchiveRoot = path.join(path.resolve(__dirname, ".."), "report-archive");
+  res.json({ settings: row ?? null, envArchiveRoot: process.env.REPORT_ARCHIVE_ROOT?.trim() || null, suggestedArchiveRoot });
 });
 
 router.patch("/report-output-settings", requireAdminAuth, slideAdminCookie, async (req: AdminAuthRequest, res: Response) => {

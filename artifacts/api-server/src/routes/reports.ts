@@ -3,8 +3,9 @@ import { db } from "@workspace/db";
 import { reportsTable, reportExportsTable, auditLogsTable, bomItemsTable } from "@workspace/db/schema";
 import { eq, desc, and, not } from "drizzle-orm";
 import { ReportService } from "../services/report-service";
-import { FilterService, ReportFilters } from "../services/filter-service";
+import { ReportFilters } from "../services/filter-service";
 import { ExportService } from "../services/export-service";
+import { archiveExistingFile } from "../services/report-archive-service";
 import { attachActor, requireRole, type AuthRequest } from "../middleware/auth";
 
 const router: IRouter = Router();
@@ -523,6 +524,14 @@ router.post("/reports/export/:reportType", requireRole("qa", "supervisor", "admi
         generatedBy: req.actor?.id ?? "system",
       })
       .returning({ id: reportsTable.id });
+
+    // Module 15 — capture every server-generated report into the fixed server
+    // archive directory, so all reports are stored server-side no matter which
+    // browser/PC requested them. Deduped per export row; best-effort (never
+    // blocks the download).
+    if (reportRecord?.id) {
+      await archiveExistingFile(reportType as string, String(reportRecord.id), filePath, String(format));
+    }
 
     // Record export in audit table
     if (reportRecord?.id) {

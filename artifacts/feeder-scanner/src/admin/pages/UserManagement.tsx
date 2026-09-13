@@ -25,8 +25,41 @@ export default function UserManagement() {
   const [showResetModal, setShowResetModal] = useState<string | null>(null);
   const [showDeleteModal, setShowDeleteModal] = useState<AdminUser | null>(null);
   const [disablePrompt, setDisablePrompt] = useState<AdminUser | null>(null);
+  const [editTarget, setEditTarget] = useState<{ id: string; name: string; employeeId: string; role: UserRole } | null>(null);
   const [generatedPassword, setGeneratedPassword] = useState("");
   const [error, setError] = useState("");
+
+  function openEdit(u: AdminUser) {
+    setError("");
+    setEditTarget({ id: u.id, name: u.name, employeeId: u.employeeId ?? "", role: u.role });
+  }
+
+  function describe409(e: ApiError): string {
+    switch (e.message) {
+      case "conflict_employee_id": return "Another user already uses that Employee ID.";
+      case "self_modification": return "You cannot disable or change the role of your own account.";
+      case "last_admin": return "Cannot remove the last active admin account.";
+      default: return "That change was rejected by the server.";
+    }
+  }
+
+  async function handleSaveEdit() {
+    if (!editTarget) return;
+    const name = editTarget.name.trim();
+    const employeeId = editTarget.employeeId.trim();
+    if (!name || !employeeId) {
+      setError("Name and Employee ID are required.");
+      return;
+    }
+    try {
+      await adminApi.updateUser(editTarget.id, { name, employeeId, role: editTarget.role });
+      setEditTarget(null);
+      setError("");
+      await refreshAll();
+    } catch (e) {
+      setError(e instanceof ApiError && e.status === 409 ? describe409(e) : (e instanceof ApiError ? e.message : "Failed to update user."));
+    }
+  }
 
   const filtered = useMemo(() => {
     let items = users;
@@ -214,6 +247,10 @@ export default function UserManagement() {
                 </td>
                 <td style={{ padding: "0.5rem 0.75rem" }}>
                   <div style={{ display: "flex", gap: 4 }}>
+                    <button onClick={() => openEdit(u)}
+                      style={{ ...tinyBtn, color: "#00d4ff" }} title="Edit name, employee ID, role">
+                      Edit
+                    </button>
                     <button onClick={() => handleResetPassword(u.id)}
                       style={tinyBtn} title="Reset password">
                       Reset PW
@@ -284,6 +321,50 @@ export default function UserManagement() {
               <button onClick={handleCreate}
                 style={{ padding: "0.5rem 1rem", background: "#00d4ff", border: "none", borderRadius: 6, color: "#0a0e1a", fontSize: 13, fontWeight: 600, cursor: "pointer", fontFamily: "inherit" }}>
                 Create User
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {editTarget && (
+        <div
+          style={{
+            position: "fixed", inset: 0, background: "rgba(0,0,0,0.7)", display: "flex",
+            alignItems: "center", justifyContent: "center", zIndex: 10000,
+          }}
+          onClick={() => setEditTarget(null)}
+        >
+          <div
+            style={{ width: 400, maxWidth: "90vw", background: "#111827", borderRadius: 12, border: "1px solid #1e2a3a", padding: "1.5rem" }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <h2 style={{ fontSize: 16, fontWeight: 600, margin: "0 0 1rem", color: "#e2e8f0" }}>Edit User</h2>
+            <div style={{ marginBottom: "0.75rem" }}>
+              <div style={{ fontSize: 12, color: "#64748b", marginBottom: 4 }}>Name *</div>
+              <input value={editTarget.name} onChange={(e) => setEditTarget({ ...editTarget, name: e.target.value })}
+                style={inputStyle} placeholder="Full name" />
+            </div>
+            <div style={{ marginBottom: "0.75rem" }}>
+              <div style={{ fontSize: 12, color: "#64748b", marginBottom: 4 }}>Employee ID * (login)</div>
+              <input value={editTarget.employeeId} onChange={(e) => setEditTarget({ ...editTarget, employeeId: e.target.value })}
+                style={inputStyle} placeholder="e.g. operator3" />
+            </div>
+            <div style={{ marginBottom: "1rem" }}>
+              <div style={{ fontSize: 12, color: "#64748b", marginBottom: 4 }}>Role</div>
+              <select value={editTarget.role} onChange={(e) => setEditTarget({ ...editTarget, role: e.target.value as UserRole })}
+                style={selectStyle}>
+                {ROLES.map((r) => <option key={r} value={r}>{r}</option>)}
+              </select>
+            </div>
+            <div style={{ display: "flex", justifyContent: "flex-end", gap: 8 }}>
+              <button onClick={() => setEditTarget(null)}
+                style={{ padding: "0.5rem 1rem", background: "transparent", border: "1px solid #1e2a3a", borderRadius: 6, color: "#94a3b8", fontSize: 13, cursor: "pointer", fontFamily: "inherit" }}>
+                Cancel
+              </button>
+              <button onClick={handleSaveEdit}
+                style={{ padding: "0.5rem 1rem", background: "#00d4ff", border: "none", borderRadius: 6, color: "#0a0e1a", fontSize: 13, fontWeight: 600, cursor: "pointer", fontFamily: "inherit" }}>
+                Save changes
               </button>
             </div>
           </div>

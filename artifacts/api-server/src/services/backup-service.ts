@@ -22,7 +22,7 @@ import { auditLog } from "../lib/auditLogger";
 //   • pruneOldBackups() never deletes the most-recent successful snapshot (§12.2).
 //   • Every run (start/success/failure) and every prune deletion is audit-logged (§12.3).
 
-function backupDir(): string {
+export function backupDir(): string {
   const dir = process.env.BACKUP_DIR;
   if (!dir || !dir.trim()) {
     // No silent ./backups fallback: that would put snapshots on the same disk
@@ -237,4 +237,55 @@ function executeDump(runId: string, file: string): Promise<DumpResult | DumpFail
       resolve(st ? { ok: true, sizeBytes: st.size } : { ok: false, error: "dump file missing" });
     });
   });
+}
+
+export interface BackupStorageStatus {
+  configured: boolean;
+  dir: string | null;
+  /** The dir and the DB data directory share a physical disk. */
+  sameDisk: boolean;
+  allowSameDisk: boolean;
+  reason: string | null;
+}
+
+/**
+ * Non-logging read of backup storage health, for the admin Data Management page.
+ * Mirrors verifyBackupStorage() (which logs at startup) but returns a status the
+ * UI renders instead of emitting an error per page view.
+ */
+export async function getBackupStorageStatus(): Promise<BackupStorageStatus> {
+  let dir: string;
+  try {
+    dir = backupDir();
+  } catch {
+    return { configured: false, dir: null, sameDisk: false, allowSameDisk: false, reason: "BACKUP_DIR unset" };
+  }
+  const allowSameDisk = process.env.BACKUP_ALLOW_SAME_DISK === "true";
+  const dataDir = await dbDataDirectory();
+  if (!dataDir) {
+    // Remote DB / no privilege — cannot prove same-disk; treat as safe.
+    return { configured: true, dir, sameDisk: false, allowSameDisk, reason: null };
+  }
+  const [backupStat, dataStat] = await Promise.all([
+    stat(dir).catch(() => null),
+    stat(dataDir).catch(() => null),
+  ]);
+  const sameDisk = backupStat != null && dataStat != null && backupStat.dev === dataStat.dev;
+  if (sameDisk) {
+    return {
+      configured: true, dir, sameDisk: true, allowSameDisk,
+      reason: allowSameDisk
+        ? "BACKUP_DIR is on the same disk as the DB (running via BACKUP_ALLOW_SAME_DISK=true) — copy backups off this machine."
+        : "BACKUP_DIR is on the same disk as the DB — scheduled backups are DISABLED until it is moved or BACKUP_ALLOW_SAME_DISK=true is set.",
+    };
+  }
+  return { configured: true, dir, sameDisk: false, allowSameDisk, reason: null };
+}
+
+/** Next occurrence of the configured scheduled hour (local), from `from`. */
+export function estimateNextBackupAt(scheduledHourLocal: number, from: number = Date.now()): Date {
+  const next = new Date(from);
+  next.setHours(Math.max(0, Math.min(23, Math.trunc(scheduledHourLocal))), 0, 0, 0);
+  if (next.getTime() <= from) next.setTime(next.getTime() + 24 * 60 * 60 * 1000);
+  return next;
 }
