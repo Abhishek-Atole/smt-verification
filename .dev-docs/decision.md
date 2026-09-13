@@ -2721,3 +2721,173 @@ jsonb filters, nullable session/bom). Re-ran the previously-failing export: BOM 
 record_count 24, query_time populated); `reports` row id=1 and `report_exports` id=1 written; history GET
 returns it. Smoke across bom csv/pdf, component xlsx, fpy pdf all 200. Typecheck + api-server suite clean.
 **Git:** not committed. Client DB not yet migrated (client unreachable) — apply the same script there on deploy.
+## Admin User & Device Edit — build out missing edit operations + self/last-admin guard (2026-09-09)
+
+**Context:** User reported the Admin dashboard needed a proper "edit user" and "edit device" option and proper
+operations. Verified in the renderer: User Management had Create/Reset PW/Enable-Disable/Delete but no way to
+change an existing user's name, role, or login; Access Control→Devices had Add/Block/Delete but no way to fix a
+device's type/name/allowed IP/MAC — the invalid-IP badge even instructs "edit and re-save", with no Edit button.
+Server PATCH routes already supported most fields (`admin.ts` PATCH /users/:id name/role/isActive; PATCH
+/devices/:id full set + isValidIpOrCidr re-validation). Confirmed via AskUserQuestion: (1) Employee ID (login)
+is editable, (2) add a self + last-admin lock-out guard.
+
+**Decision & why:**
+- **Server `PATCH /users/:id`**: additionally accepts `employeeId`, trimmed ≤255; uniqueness enforced app-side
+  (case-insensitive `upper(employee_id)` excluding self) → 409 `conflict_employee_id`. `role` edits also sync
+  `user_type` (create sets both; role edits had drifted). Guards before applying: an admin may not disable/demote
+  their OWN account (409 `self_modification`; own name/employee-id edits stay allowed), and removing an ACTIVE
+  admin (disable or demote) is refused when zero active admins would remain (409 `last_admin`, via
+  `activeAdminCountExcluding`). Demoting a current admin also `revokeUser`s so the old admin cookie cannot outlive
+  the demotion. `DELETE /users/:id` gains the same self + last-admin guards. Audit detail now lists changed fields.
+- **No DB unique index** was added for `employee_id`: migrations carry none and existing data may already hold
+  duplicates, so a unique index could fail to create on a live DB (same reasoning as earlier decisions) — the
+  app-level check is the safe gate.
+- **Renderer**: User Management gains an Edit button → modal (Name / Employee ID / Role) via the existing
+  `updateUser`. Access Control gains an Edit button → modal (Type/Name/Allowed IP/MAC/Status) via `updateDevice`
+  (this is the path to fix a flagged-invalid IP; server re-validates). Device Delete and Force-logout moved from
+  `window.confirm` to the shared ConfirmModal (danger + type-to-confirm for delete), matching User Management.
+
+**Rejected alternatives:** (a) leave Employee ID immutable — user explicitly wants it editable; risk accepted
+(login-history rows keep the old text id). (b) DB partial unique index — see above. (c) Server-side "cannot edit
+self" entirely (UI-only hiding) — server is the authority; the UI surfaces the 409 text.
+
+**Touches:** `artifacts/api-server/src/routes/admin.ts` (user PATCH/DELETE guards + employee_id + user_type sync),
+`artifacts/feeder-scanner/src/admin/api.ts` (updateUser patch +employeeId),
+`artifacts/feeder-scanner/src/admin/pages/UserManagement.tsx` (Edit modal),
+`artifacts/feeder-scanner/src/admin/pages/AccessControl.tsx` (Edit modal + ConfirmModal delete/force-logout),
+`artifacts/api-server/src/__tests__/admin-users-devices.test.ts` (new, mocked-DB route tests).
+
+**Verification:** IDE diagnostics clean on api-server + feeder-scanner. Typecheck + api-server suite pending
+(Bash tool intermittently unavailable); new test file covers update success, duplicate employee id, invalid role,
+404, self-demote/self-disable, last-admin demote/delete (block vs allow), device PATCH success + invalid-IP 400.
+**Git:** not committed. Client deploy deferred (client offline) — ships in next batch.
+## Data Management rework — DB backup safety + de-couple browser-local tools (2026-09-09)
+
+**Context:** User asked to improve the data-management system; confirmed scope (AskUserQuestion) = DB backup
+safety + separating browser-local tools first (in-UI restore-to-new-DB and master-data screens deferred). Admin
+Data Management mixed server pg_dump runs with localStorage Restore/Analysis under misleading tabs, offered no way
+to download a backup off the machine (critical on the single-disk client), surfaced no storage-health (BACKUP_DIR
+unset / same-disk), and its Restore consumed a .json that nothing on the page could produce.
+
+**Decision & why:** rebuild Data Management as one page with two clearly separated groups — **Server database**
+(backups + health + guided manual restore) and **This browser (local only)** (round-trip export/restore/analysis/
+purge). New server surface (admin-cookie + CSRF): `GET /api/admin/backups/storage` returns non-logging storage
+health (new `getBackupStorageStatus()` + `estimateNextBackupAt()` in backup-service.ts) plus retention/schedule;
+`GET /api/admin/backups/:id/file` streams a `success` run's .sql with containment (resolved path must stay under
+BACKUP_DIR) + file-exists guard so an admin can copy backups to a NAS/USB. Renderer: `adminApi.getBackupStorage()`
+and `downloadBackup(id)`; `backup.ts exportLocalSnapshot()` makes localStorage restore usable end-to-end (checksum
+field intentionally omitted — restore hashes the whole file, so a self-referential checksum cannot match).
+Restore stays manual psql (PRD §8), now guided in the UI with a copyable command.
+
+**Rejected alternatives:** (a) Add a server restore endpoint now — deferred (higher risk) per user; PRD §8 keeps
+restore manual. (b) Include a self-checksum in exportLocalSnapshot — would fail restoreBackup's whole-file hash;
+omitted instead. (c) Keep tabs — they made browser-local tools look like server backup/restore.
+
+**Touches:** `artifacts/api-server/src/services/backup-service.ts` (status + estimate exports),
+`artifacts/api-server/src/routes/admin.ts` (two GET routes),
+`artifacts/feeder-scanner/src/admin/api.ts` (getBackupStorage, downloadBackup, BackupStorage type),
+`artifacts/feeder-scanner/src/admin/backup.ts` (exportLocalSnapshot),
+`artifacts/feeder-scanner/src/admin/pages/DataManagement.tsx` (two-group rework),
+`artifacts/api-server/src/__tests__/admin-users-devices.test.ts` (storage/file/estimate tests appended).
+
+**Verification:** tsc clean (api-server + feeder-scanner); api-server suite (341 → 347 expected) and feeder-scanner
+(43) green; new tests cover storage-unset, file 404s, and estimateNextBackupAt. Manual on dev admin portal per
+plan (health banner when BACKUP_DIR unset, create→download round-trip, browser group export→restore).
+**Git:** not committed. Client deploy deferred (client offline) — next batch.
+## Reports captured server-side (all report types) — not per-PC folder picking (2026-09-11)
+
+**Context:** The admin Report Output page's "This PC" card showed "This browser does not support the folder
+picker (Chrome, Edge, Brave or Opera required)". User directive: do NOT configure a folder one PC at a time —
+capture report data on the server and store it into a particular directory on the server PC. Root cause of the
+message: the per-PC client folder uses the File System Access API, available only in Chromium AND a secure context
+(https/localhost) — the shop-floor client is plain HTTP (192.168.10.114), where it can never work.
+
+**Decision & why (confirmed via AskUserQuestion: app-folder directory, ALL report types):** make the SERVER the
+capture point. The existing Module 15 archive (report_output_settings.archiveRoot, `<root>/YYYY/MM/<type>/`) already
+captured the per-session report PDF; extend it to every server-generated report:
+- New `archiveExistingFile(reportType, entityId, sourcePath, format)` in `report-archive-service.ts` — copies an
+  already-written export (the file ExportService produces for BOM/FPY/OEE/etc.) into the same archive, records
+  path+size+sha256 in `report_archive_record`, deduped per (reportType, entityId); never throws (archival must not
+  break a download).
+- `routes/reports.ts` export handler now calls it for every export, with `entityId` = the `reports` row id (one
+  archived file per export, so repeated exports each keep their own copy).
+- Directory configured to `<app>/report-archive` (dev: repo root; client: `/home/ucalelectronics98/smt-verification/report-archive`)
+  via `archiveEnabled=true` + `archiveRoot` in `report_output_settings`; the dir is git-ignored (runtime data).
+- The per-PC client-folder feature is left in place but is no longer the mechanism; no per-PC setup is required.
+
+**Rejected alternatives:** (a) Keep the per-PC folder picker — impossible on the HTTP client and needs a Chromium
+browser per PC. (b) Save As / normal Downloads only — leaves no server-side copy. (c) Per-report-type directories
+keyed by business id (bomId etc.) — chose the export row id so every export is retained and dedupe is unambiguous.
+
+**Touches:** `artifacts/api-server/src/services/report-archive-service.ts` (archiveExistingFile + copyFile import),
+`artifacts/api-server/src/routes/reports.ts` (archive every export),
+`artifacts/api-server/src/services/__tests__/report-archive-service.test.ts` (+3 tests), `.gitignore`
+(`/report-archive/`), runtime: created `<app>/report-archive` + enabled the DB setting.
+
+**Verification:** tsc clean; api-server suite **349 passed** (was 346) / 36 skipped. Live: BOM xlsx export archived
+to `report-archive/2026/09/bom/6_…xlsx` (8,377 B) and session 65 PDF to `report-archive/2026/09/session/65_…pdf`
+(~108 KB), matching the delivered bytes.
+**Git:** not committed. Client: set the same archive root on deploy (client offline).
+## Report Output — suggested archive root prefill + client deploy payload staged (2026-09-11)
+
+**Context:** Follow-up to "reports captured server-side". On the client the archive root must be set via the Admin
+Report Output page (Option A), but typing a host-specific absolute path is error-prone. Also the client is offline,
+so the all-report-types archiving cannot be deployed yet.
+
+**Decision & why:** have the server SUGGEST the default so Option A is one click:
+- `GET /admin/report-output-settings` now also returns `suggestedArchiveRoot` = `<deploy root>/report-archive`,
+  derived from the running bundle (`path.resolve(__dirname, "..")`), which resolves to the repo root on dev and the
+  install root on the client — no hard-coded host path.
+- The Report Output page prefills the archive-root field with it (when unset), shows it as the placeholder, and adds
+  a **"Use suggested"** button. Hint text updated: files land in `<root>/year/month/<report type>/` for session
+  reports AND every export (BOM/FPY/OEE/…).
+- Client deploy payload staged (dist only, runtime files, source maps excluded) at `/tmp/smt-client-dist.tgz`
+  (dist/index.mjs + dist/public/**) for the next reachable window; client serves `/report-archive` after the admin
+  sets the root (or clicks Use suggested).
+
+**Rejected alternatives:** (a) Hard-code the client path server-side — breaks dev/repo installs and any relocation.
+(b) Auto-enable archiving with a default root on first boot — silently starts writing PDFs to a path an operator
+never chose; kept explicit via the admin toggle.
+
+**Touches:** `artifacts/api-server/src/routes/admin.ts` (suggestedArchiveRoot),
+`artifacts/feeder-scanner/src/admin/api.ts` (response type),
+`artifacts/feeder-scanner/src/admin/pages/ReportOutput.tsx` (prefill + "Use suggested" + hint).
+
+**Verification:** tsc clean (both packages); api-server **349 passed** / 36 skipped; dev API rebuilt + restarted
+(health 200). Client tarball built (2.4 MB, 22 files). Archive capture already verified live (bom + session files).
+**Git:** not committed. Client deploy + archive-root setup pending (client offline).
+## Deep endpoint testing: scratch-DB integration run + CI smoke job (2026-09-13)
+
+**Context:** User asked to deep-test the whole app, every endpoint. A live sweep of all 213 routes (unauthenticated,
+every method) + an authenticated GET pass found **no 5xx** and correct guards — but it deliberately skipped
+authenticated *mutations*, and CI never ran the real-DB tests (no postgres service; integration files are gated on
+DATABASE_URL_TEST, so they were skipped in every run).
+
+**Decision & why:** close both gaps by reusing tooling that already exists rather than writing new frameworks:
+- **Scratch-DB integration run**: create `smtverification_smoke`, `pnpm --filter @workspace/db run push-force`
+  (drizzle schema), `pnpm --filter @workspace/api-server run seed:users` (the repo's own seeder, honours
+  DATABASE_URL_TEST), then `run test:integration`. That exercises the authenticated write paths (create session,
+  handover, QA complete, notifications, ownership) against a disposable DB. Scratch DB dropped afterwards.
+- **`scripts/smoke-endpoints.mjs`** (new): discovers every route from `src/routes/*.ts`, hits each one paced
+  (default 400 ms so the 200/min api limiter isn't tripped by ~210 requests), optional authenticated GET pass,
+  and **fails only on 5xx**. Mutations are sent with an EMPTY body so handlers must reject with 4xx before writing —
+  the sweep never mutates data, so it is safe against any server. Root script: `pnpm smoke`.
+- **CI job `integration`** (`.github/workflows/ci.yml`): postgres:16 service → `typecheck:libs` → db push-force →
+  seed → `test:integration` → build → boot API → `smoke-endpoints.mjs` (operator1) → dump API log on failure.
+
+**Fix found by the scratch run:** `ownership-l3.test.ts` "legacy session ownership" fixture only set
+`operator_name` and expected the owner to pass — stale since the strict `changeover_operators` join (decision
+2026-08-10 "2b"). Fixture now inserts an accepted ownership row (and deletes it before the session in afterAll);
+the test's title states the real rule. That was the only failure: **36 passed / 4 skipped**.
+
+**Rejected:** (a) authenticated-mutation sweep against the dev DB — would write garbage to real data.
+(b) Parsing the Express router stack for the route list — source regex is simpler and already proven (213 routes).
+(c) Adding a new test framework/dependency — node fetch + the existing vitest harness cover it.
+
+**Touches:** `scripts/smoke-endpoints.mjs` (new), `package.json` (root `smoke` script), `.github/workflows/ci.yml`
+(integration job), `artifacts/api-server/src/__tests__/integration/ownership-l3.test.ts` (fixture fix).
+
+**Verification:** local sweep `routes=213 requests=326 statuses {200:54,400:2,401:225,403:35,404:10} SMOKE_OK`;
+scratch-DB integration `6 files passed, 36 passed / 4 skipped`; workspace typecheck clean; api suite **349
+passed**. CI job YAML parses but has **not been executed** (no CI runner here) — first CI run will confirm it.
+**Git:** not committed.
