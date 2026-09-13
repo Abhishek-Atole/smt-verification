@@ -2913,3 +2913,18 @@ available as the usual tiered dep-PR work), and dropping the Electron packaging 
 **Verification:** both workflow YAMLs parse; local `pnpm audit --prod --audit-level=high` exits clean of
 high/critical. Next push should let Build → Unit → Integration+Smoke run for the first time.
 **Git:** committed with the CI change.
+
+## Release pipeline: frontend bundle budget 3 MB → 4 MB (2026-09-13)
+
+**Context:** With the audit gate scoped to prod deps, the release pipeline (ci-cd.yml) advanced and failed at
+"Stage 6 — Production Build → Check build sizes": the single client JS chunk is 3,492,536 bytes against a 3 MB cap.
+Everything else in that pipeline (lint/typecheck, unit, integration, security audit) passes.
+
+**Decision & why (user chose):** raise the budget to 4 MB. The admin portal is bundled into the same chunk as the
+operator UI (no code-splitting), so the SPA sits ~3.5 MB; the app is served over the shop-floor LAN where size
+affects first load only. Rejected for now: lazy-loading the admin routes to hold the 3 MB budget — that is the
+real fix and is left as a follow-up task.
+
+**Touches:** `.github/workflows/ci-cd.yml` (MAX_SIZE 3 MB → 4 MB + comment).
+
+**Verification:** YAML parses; re-push should turn Stage 6 green so stages 7–8 can run.
