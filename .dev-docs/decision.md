@@ -2947,3 +2947,18 @@ deferred to keep this change reviewable.
 **Verification:** `pnpm audit --prod --audit-level=high` → **"No known vulnerabilities found"** (was 3 moderate).
 Workspace typecheck clean; api suite 349 passed; feeder-scanner 43 passed; both bundles rebuild; dev API restarted
 healthy. Dependabot will still list the 29 dev/build advisories until Tiers 2–3.
+
+## Dependency advisories — Tier 2: test tooling (2026-09-13)
+
+**Context:** After Tier 1 cleared the shipped advisories, the remaining board included 2 medium advisories in the
+test runner (`vitest` + `@vitest/mocker` < 4.1.11), both dev-only.
+
+**Decision & why (user chose Tier 2 as the next slice):** `pnpm update vitest @vitest/coverage-v8 -r` → vitest
+4.1.11 (subpackages follow), which clears those two. No runtime impact; suites re-run because the runner itself
+changed. Tier 3 (orval codegen + the Electron chain: js-yaml / @xmldom/xmldom / fast-uri) still pending.
+
+**Touches:** `artifacts/api-server/package.json`, `artifacts/feeder-scanner/package.json`, `pnpm-lock.yaml`.
+
+**Verification:** api suite 349 passed; feeder-scanner 43 passed on vitest 4.1.11. Full `pnpm audit` 32 → **27**
+(remaining 11 critical + 14 high + 2 moderate are all build/codegen tooling: orval, @xmldom/xmldom, fast-uri,
+js-yaml). Prod audit remains clean.
