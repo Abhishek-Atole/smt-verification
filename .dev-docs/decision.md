@@ -2928,3 +2928,22 @@ real fix and is left as a follow-up task.
 **Touches:** `.github/workflows/ci-cd.yml` (MAX_SIZE 3 MB → 4 MB + comment).
 
 **Verification:** YAML parses; re-push should turn Stage 6 green so stages 7–8 can run.
+
+## Dependency advisories — Tier 1: the shipped deps (2026-09-13)
+
+**Context:** Dependabot showed 32 open alerts (11 critical / 14 high / 7 medium) on the default branch, all labelled
+"runtime" — misleading: pnpm has a single workspace lockfile, so Dependabot cannot tell dev from prod. pnpm's own
+`audit --prod` showed the truth: **3 moderate ship** (`qs` ×2 advisories, `fflate`); the other 29 come from build/test
+tooling (`orval` codegen 12, `@xmldom/xmldom` 8, `fast-uri` 4, `js-yaml` 1, `vitest`/`@vitest/mocker` 2).
+
+**Decision & why (user chose Tier 1 only):** fix what ships and stop there for now — root `pnpm.overrides`
+`qs >= 6.16.0`, `fflate >= 0.8.3` (the existing `qs: ^6.15.2` entry was replaced). Overrides live in the ROOT
+package.json per the established workflow, then `pnpm install` to land them in the lockfile.
+Rejected for now: Tiers 2–3 (vitest bump; orval 8.22 + js-yaml/@xmldom/fast-uri overrides) — dev-only exposure,
+deferred to keep this change reviewable.
+
+**Touches:** `package.json` (root overrides), `pnpm-lock.yaml` (qs 6.16.0, fflate 0.8.3).
+
+**Verification:** `pnpm audit --prod --audit-level=high` → **"No known vulnerabilities found"** (was 3 moderate).
+Workspace typecheck clean; api suite 349 passed; feeder-scanner 43 passed; both bundles rebuild; dev API restarted
+healthy. Dependabot will still list the 29 dev/build advisories until Tiers 2–3.
