@@ -42,6 +42,7 @@ import { useNotificationStore } from "@/store/useNotificationStore";
 import type { FeederScan, SplicingRecord } from "@/types";
 import { AppLogo } from "@/components/AppLogo";
 import { buildCandidates, normalizeMpn } from "@/utils/mpnUtils";
+import { compareBomOrder, pickNextLegacyFeeder } from "@/utils/bomOrder";
 import { logger } from "@/lib/logger";
 import { ACCEPT_TOKEN, isAcceptToken } from "@/lib/accept-token";
 import { registerScanResult, resetStrikes, signalError, signalSuccess } from "@/utils/indication";
@@ -494,12 +495,12 @@ export default function SessionActive() {
     if (!legacyMode) return;
     if (session?.status !== "active" || activeTab !== "loading") return;
     if (scanStep !== "feeder" || pendingFeeder) return;
-    const nextFeeder = verificationProgress.remainingFeeders[0];
+    const nextFeeder = pickNextLegacyFeeder(verificationProgress.remainingFeeders, bomDetail?.items);
     if (!nextFeeder) return;
     setPendingFeeder(nextFeeder);
     setFeederScanTime(Date.now());
     setScanStep("spool");
-  }, [legacyMode, session?.status, activeTab, scanStep, pendingFeeder, verificationProgress.remainingFeeders]);
+  }, [legacyMode, session?.status, activeTab, scanStep, pendingFeeder, verificationProgress.remainingFeeders, bomDetail]);
 
   const clearSplicingRecords = useSplicingStore((state) => state.clearRecords);
   const hydrateSplicingRecords = useSplicingStore((state) => state.hydrateRecords);
@@ -514,8 +515,13 @@ export default function SessionActive() {
       return;
     }
 
+    // AUTO_LEGACY walks verificationBomEntries in order, so their sequence IS the
+    // changeover's serial order. Sort explicitly (same rule as the server's GET /bom/:id)
+    // rather than trusting whatever order the array happened to arrive in — the API had no
+    // ORDER BY in released builds, so this order was silently DB row order.
+    // Copy first: bomItems is the react-query cache array.
     const grouped = new Map<string, { primary: any[]; alternates: any[] }>();
-    bomItems.forEach((item) => {
+    [...bomItems].sort(compareBomOrder).forEach((item) => {
       const feederNumber = item.feederNumber.trim().toUpperCase();
       if (!grouped.has(feederNumber)) {
         grouped.set(feederNumber, { primary: [], alternates: [] });
@@ -767,9 +773,13 @@ export default function SessionActive() {
         }
 
         if (!lockedFeeder) {
+          // Clear the feeder too, otherwise the AUTO_LEGACY auto-lock effect stays blocked
+          // on a stale/absent feeder (its guard bails while pendingFeeder is set) and the
+          // changeover can never recover without a page reload.
           showErrorAlert("No feeder locked — restart from feeder scan", "high");
           playBuzzer("error");
           setScanStep("feeder");
+          setPendingFeeder("");
           clearScanInput();
           return;
         }

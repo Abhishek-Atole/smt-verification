@@ -2962,3 +2962,98 @@ changed. Tier 3 (orval codegen + the Electron chain: js-yaml / @xmldom/xmldom / 
 **Verification:** api suite 349 passed; feeder-scanner 43 passed on vitest 4.1.11. Full `pnpm audit` 32 → **27**
 (remaining 11 critical + 14 high + 2 moderate are all build/codegen tooling: orval, @xmldom/xmldom, fast-uri,
 js-yaml). Prod audit remains clean.
+
+## AUTO_LEGACY — serial order, progress count, and multi-row validation
+
+**Context:** The client reported AUTO_LEGACY "shows a feeder selected but nothing works serially". Traced on the
+dev server, not inferred. AUTO_LEGACY never scans a feeder barcode: a client effect (`ActiveSession.tsx:493-502`)
+auto-locks the next un-verified feeder, drawn from `verificationProgress.remainingFeeders[0]`, whose order comes
+entirely from the order of the `bomDetail.items` array (`ActiveSession.tsx:511-542` preserves API order in a Map).
+`GET /api/bom/:id` had **no ORDER BY** in any released version, so that array was raw DB row order. Reproduced
+with the real `buildCandidates` module against real BOM 3 data: HEAD locks `YSMF020` (sr_no `"00"`, the true
+first feeder) and advances; the v2.5.1 order locks `YSMF021` while the operator physically loads `YSMF020`, so no
+MPN ever matches and the feeder never advances. The sr_no ORDER BY fix (`cceb3c9`, Sep 8) is in **no release
+tag** — latest is v2.5.1 (Sep 3) — so every client install has this. Three further defects surfaced:
+`GET /sessions/:id` computed `bomItemCount` with a non-distinct `count()` (live bug: BOM 12 has 11 rows / 10
+distinct feeders, so the client's progress could never reach 100% and `isComplete` never went true);
+`buildLegacyCandidates` offers every row's MPNs for a feeder while the server validated only `primaryItems[0]`
+(client-accepted → server-rejected → stuck feeder); and the client split internal part numbers on `/[\s/]+/`
+while the server split on `/\s+/`. All three AUTO_LEGACY sessions in the dev DB (13, 25, 45) sit in `active`
+with zero scans.
+
+**Decision & why (four explicit user choices):** (1) Fix tiers A+B+C together. (2) Enforce the serial order
+**both** server- and client-side — the server's ORDER BY already existed in HEAD, but the client's serial engine
+trusting network array order is the actual defect, so `compareBomOrder` now sorts explicitly before grouping.
+(3) `sr_no` is nullable and several BOMs have it blank, where the numeric-sr_no ORDER BY changes nothing — so
+blank/non-numeric rows fall back to a **numeric-aware feeder_number sort** (F2 before F10), not insertion order.
+(4) Reconcile the multi-row asymmetry **server-side** by validating against every row of the feeder when no
+`selectedItemId` is named (one change in the shared path, and it matches what the client already offers); an
+explicit selection keeps the strict single-row check, so AUTO's alternate-picker semantics are untouched. The
+matched row is now also used for the recorded `partNumber`/`description`/`location`, so an accepted alternate is
+not attributed to the primary row. `hasExpectedMpn` intentionally still reflects the recorded row, leaving
+"does this feeder require an MPN at all" unchanged.
+
+**Touches:** `artifacts/api-server/src/routes/bom.ts` (ORDER BY gains the feeder_number fallback),
+`artifacts/api-server/src/routes/sessions.ts` (`bomItemCount` → `count(distinct feeder_number)`, matching
+`verificationService.ts:305` and the pending_qa auto-transition; the scan handler's `feederRows` union;
+`tokenizeInternalPartNumber` split regex), `artifacts/feeder-scanner/src/utils/bomOrder.ts` (new, mirrors the
+server ORDER BY), `artifacts/feeder-scanner/src/feeder/pages/ActiveSession.tsx` (sorts before grouping).
+
+**Verification:** api-server `tsc --noEmit` and feeder-scanner `tsc --noEmit` both clean. api-server default
+suite **349 passed / 42 skipped**; feeder-scanner **49 passed** (6 new `bomOrder` cases). New integration file
+`src/__tests__/integration/autolegacy-ordering.test.ts` (6 tests) passes against a real Postgres, and was
+confirmed to **fail 4/6 on the stashed pre-fix code** (`['F10','F2','F8']` ≠ `['F2','F8','F10']`, `3` ≠ `2`,
+`'reject'` ≠ `'ok'` twice) — so it guards the actual regressions. Not deployed: reaching a client needs a new
+tag through `scripts/package-release.sh` + the client update script, which is why the original fix never landed.
+
+**Note for future integration tests:** the existing `feederFlow.test.ts` template hand-signs a JWT with a
+22-char `JWT_SECRET` fallback, but `getJwtSecret()` (`authTokens.ts:25`) throws below 32 chars, so that template
+401s unless a ≥32-char secret is supplied. CI sets one (`ci-integration-jwt-secret-0123456789`); locally the
+secret must be set explicitly to run integration tests.
+
+## AUTO_LEGACY — correction: the actual root cause was a first-paint race, not ordering
+
+**Supersedes the diagnosis in the entry above.** Driving the real UI settled it. The operator's screen
+genuinely read `AUTO LEGACY — FEEDER F01 AUTO-LOADED · SCAN MPN / INTERNAL ID` / `Feeder F01 selected`, and the
+browser console showed why, in order:
+
+```
+[DEBUG] BOM ID: 14
+[DEBUG] BOM loading: true
+[DEBUG] BOM detail: undefined        <- the auto-lock effect fires here
+[BOM FEEDERS] ["FR-22","FR-23","FR-24","FR-25","FR-27","FR-30","FR-32","FR-35"]
+```
+
+`verificationProgress.remainingFeeders` is backed by `useVerificationStore.bomEntries`, which **starts as the
+bundled sample BOM** (`useVerificationStore.ts:191`, `BOM_DATA = [F01, F02]`) and is only replaced once
+`bomDetail` arrives — and the auto-lock effect is declared *before* the effect that replaces it, so on the first
+commit where the real BOM lands the effect still sees the sample entries. It locked `F01`, a feeder BOM 14 does
+not contain. From then on it was unrecoverable: setting `pendingFeeder` makes the effect's own guard
+(`if (scanStep !== "feeder" || pendingFeeder) return`) bail out forever, so it never re-locked, and
+`handleScanBarcode` could never resolve `lockedFeeder` for a feeder absent from the BOM. That is the whole
+failure: "shows a feeder selected but nothing works serially", with zero scans in `scan_records` for all three
+of the day's test sessions (80, 81, 82). The ordering gap and the count/validation bugs above are real and
+still worth having fixed, but they were **not** what stopped the dev server — BOM 14 has `sr_no` filled in, so
+ordering was already correct there.
+
+**Decision & why:** two guards, both at the shared point. (1) `pickNextLegacyFeeder(remainingFeeders, bomItems)`
+in `bomOrder.ts` returns the first un-verified feeder that **exists in the loaded BOM**, so the sample fallback
+can never be locked; extracted as a pure function rather than left inline so the subtlety is unit-tested.
+(2) the `!lockedFeeder` recovery path now also clears `pendingFeeder`, so a session already stranded on a
+phantom feeder self-heals on the next scan instead of needing a page reload. Verified live: the label now reads
+`FEEDER FR-22 AUTO-LOADED`, and a full browser walkthrough advanced FR-22 → FR-23 → FR-24 → FR-25 (lot skipped
+with Enter), each scan persisting as `ok` in `scan_records`, then resumed at FR-25 → FR-27 after a reload.
+
+**Also note — the dev server was running a stale build.** `smtverify-api` runs `dist/index.mjs` and restarting
+it does *not* rebuild, so the previously compiled bundle (built 2026-09-13 16:02) was serving without any of the
+server-side changes. `pnpm --filter @workspace/api-server run build` + `systemctl restart smtverify-api` is
+required for source changes to take effect on the dev server. Verified after the rebuild on live data:
+`GET /api/bom/12` → `F8,F16,F17,F18,F18,F19,F32,F61,F71,F74,F97` (natural fallback order) and
+`GET /api/sessions/76` → `bomItemCount = 10` (was 11).
+
+**Touches:** `artifacts/feeder-scanner/src/utils/bomOrder.ts` (`pickNextLegacyFeeder`),
+`artifacts/feeder-scanner/src/feeder/pages/ActiveSession.tsx` (effect uses it; `!lockedFeeder` clears
+`pendingFeeder`), tests in `src/utils/__tests__/bomOrder.test.ts`.
+
+**Verification:** feeder-scanner `tsc --noEmit` clean, **54 passed** (5 new `pickNextLegacyFeeder` cases).
+Browser walkthrough on session 82 (BOM 14) via Playwright against the running dev server.

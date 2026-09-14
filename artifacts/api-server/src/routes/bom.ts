@@ -302,8 +302,11 @@ router.get("/bom/:bomId", requireRole("operator", "qa", "supervisor", "admin"), 
     // Fetch ALL fields from bomItemsTable (complete data synchronization).
     // Order by the BOM's sequence number (sr_no) NUMERICALLY, so AUTO_LEGACY's
     // "serial feeders" auto-advance in the true BOM order (sr_no "00" first).
-    // A plain text sort would be wrong ("1" < "10" < "2"); non-numeric/blank
-    // sr_no rows sink to the end (stable by id).
+    // A plain text sort would be wrong ("1" < "10" < "2").
+    // Blank/non-numeric sr_no (a BOM that was never sequenced) falls back to a
+    // numeric-aware sort of feeder_number — F2 before F10, not insertion order —
+    // so AUTO_LEGACY still advances in a meaningful series. Keep this in lockstep
+    // with the client's compareBomOrder (feeder-scanner/src/utils/bomOrder.ts).
     const items = await db
       .select()
       .from(bomItemsTable)
@@ -315,7 +318,11 @@ router.get("/bom/:bomId", requireRole("operator", "qa", "supervisor", "admin"), 
         ),
       )
       .orderBy(
-        sql`CASE WHEN ${bomItemsTable.srNo} ~ '^[0-9]+$' THEN ${bomItemsTable.srNo}::integer ELSE 2147483647 END ASC, ${bomItemsTable.id} ASC`,
+        sql`CASE WHEN ${bomItemsTable.srNo} ~ '^[0-9]+$' THEN 0 ELSE 1 END ASC,
+            CASE WHEN ${bomItemsTable.srNo} ~ '^[0-9]+$' THEN ${bomItemsTable.srNo}::integer END ASC,
+            COALESCE(NULLIF(regexp_replace(${bomItemsTable.feederNumber}, '[^0-9]', '', 'g'), '')::bigint, 9223372036854775807) ASC,
+            ${bomItemsTable.feederNumber} ASC,
+            ${bomItemsTable.id} ASC`,
       );
     const payload = { ...bom, items };
     setCached("bom", cacheKey, payload);

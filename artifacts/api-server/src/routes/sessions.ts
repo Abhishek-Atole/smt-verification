@@ -134,7 +134,10 @@ function normalizeExact(value: string | null | undefined): string {
 
 function tokenizeInternalPartNumber(value: string | null | undefined): string[] {
   return String(value ?? "")
-    .split(/\s+/)
+    // Split on "/" as well as whitespace: the client offers these same tokens as valid
+    // scans (buildCandidates in mpnUtils.ts), so a slash-separated internal part number
+    // was accepted on screen and rejected here. Keep the two in lockstep.
+    .split(/[\s/]+/)
     .map((token) => token.trim().toUpperCase())
     .filter(Boolean);
 }
@@ -1361,8 +1364,13 @@ router.get("/sessions/:sessionId", requireRole("operator", "qa", "supervisor", "
       const [bom] = await db.select().from(bomsTable).where(eq(bomsTable.id, session.bomId));
       bomName = bom?.name ?? "";
       
+      // DISTINCT feeders, not raw item rows. The client uses this as its progress
+      // denominator and scans are keyed per feeder, so a BOM with a duplicated
+      // feeder_number would otherwise make 100% unreachable — and it would disagree
+      // with the pending_qa auto-transition below and with getSessionProgress,
+      // which both count distinct. Same expression as verificationService.ts:305.
       const [{ count: itemCount }] = await db
-        .select({ count: count() })
+        .select({ count: sql<number>`count(distinct ${bomItemsTable.feederNumber})` })
         .from(bomItemsTable)
         .where(and(eq(bomItemsTable.bomId, session.bomId), isNull(bomItemsTable.deletedAt)));
       bomItemCount = Number(itemCount ?? 0);
@@ -1934,9 +1942,38 @@ router.post("/sessions/:sessionId/scans", scanLimiter, requireRole("operator", "
         scanStatus = "reject";
         message = `❌ FEEDER NOT FOUND: ${normalizedFeeder} NOT in BOM — REJECTED`;
       } else {
-        expectedMpnValues = buildExpectedMpnValues(selectedItem);
-        const hasExpectedMpn = expectedMpnValues.length > 0;
-        verificationMatch = normalizedMpnId ? verifyMPN(normalizedMpnId, selectedItem) : null;
+        // Several rows can share one feeder number — a duplicated row, or alternates.
+        // The client offers every one of those rows' MPNs for the feeder
+        // (buildLegacyCandidates), so checking only primaryItems[0] rejected scans the
+        // operator's screen had already accepted, and an AUTO_LEGACY feeder could never
+        // advance past it. With no row named explicitly — AUTO_LEGACY never names one —
+        // accept any row of this feeder; an explicit selectedItemId keeps the strict
+        // single-row check. hasExpectedMpn deliberately still reflects the recorded row,
+        // so "does this feeder require an MPN at all" is unchanged.
+        const feederRows = selectedItemId ? [selectedItem] : [...primaryItems, ...alternateItems];
+        const hasExpectedMpn = buildExpectedMpnValues(selectedItem).length > 0;
+        expectedMpnValues = Array.from(
+          new Set(feederRows.flatMap((row) => buildExpectedMpnValues(row))),
+        );
+
+        let matchedRow: BomItem | null = null;
+        if (normalizedMpnId) {
+          for (const row of feederRows) {
+            const result = verifyMPN(normalizedMpnId, row);
+            if (result) {
+              matchedRow = row;
+              verificationMatch = result;
+              break;
+            }
+          }
+        }
+
+        // Attribute the scan to the row it actually matched, so an accepted alternate is
+        // not recorded against the primary row (partNumber/description/location below).
+        if (matchedRow && matchedRow !== selectedItem) {
+          selectedItem = matchedRow;
+          usedAlternate = matchedRow.isAlternate ?? false;
+        }
 
         // Trial Session (skip-BOM, data collection): feeder exists (checked above);
         // accept ANY MPN — no part-number match required.
