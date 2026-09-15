@@ -178,15 +178,45 @@ Operator closes with production quantity + cycle time (client closure dialog). `
 `status` (validated against the lifecycle list), `totalProductionQuantity`, `currentCycleTime`; the server
 derives `total_output_units = qty × bom.cavity_count`.
 
-## 9. Handover ⚠️
+## 9. Handover ✅
 
-Operator-to-operator shift handover, not a QA step. The outgoing operator nominates an incoming one, creating a
-`changeover_operators` row with `status='pending'` and `fromOperatorId`. The incoming operator accepts/rejects:
+Operator-to-operator shift handover, not a QA step. Ownership lives in `changeover_operators`, not on the
+session row.
 
-- `GET /verification/handover/operators` · `/pending` · `/verification/handover/:id`
-- `POST /verification/handover/:id/accept` → row `accepted` + `accepted_at`, audited `handover_accepted`.
-  The `(sessionId, actor)` lookup on a pending row **is** the authorization check.
-- `POST /verification/handover/:id/reject`
+**Initiate** — `POST /api/sessions/:id/handover` (`sessions.ts:1117`). The actor must be an owner with an
+`accepted` row, or qa/supervisor/admin. Refused only for `completed`/`cancelled` — **any other status is
+allowed**, including `qa_confirmed` and `active_splicing`. Upserts the incoming operator's row as
+`role='handover', status='pending', fromOperatorId=actor.id` (+ notes); an optional supervisor recipient is
+inserted directly as `accepted` (supervisors bypass ownership filters anyway). Audits `handover_added` and
+pushes a notification targeted at the recipient.
+
+**Discover** — the incoming operator's **dashboard** polls `GET /verification/handover/pending` every **30 s**
+and renders accept/reject (`pages/dashboard.tsx:268`, `:284`, `:299`). There is no indicator on the session page
+itself.
+
+**Accept** — `POST /verification/handover/:id/accept`. Looks up the caller's `pending` row for that session; that
+lookup **is** the authorization check. Flips it to `accepted` + `acceptedAt` and audits `handover_accepted`.
+No status guard, so it works mid-splicing.
+
+**Reject** — `POST /verification/handover/:id/reject` marks the caller's row `rejected`. The sender keeps their
+own `accepted` row, so the session simply stays with them — no session state to revert.
+
+Other endpoints: `GET /verification/handover/operators` (the picker list), `GET /verification/handover/:id`.
+
+### Known gaps in this workflow (verified, not yet fixed)
+
+1. **`sessions.operator_name` is never updated on handover.** It is written once at creation and read-only
+   thereafter (the only later references are notification text). The accept path touches only
+   `changeover_operators`. So after an accepted handover the report's **Operator** field names the operator who
+   handed the changeover over, not the one who finished it — the same class of defect as the QA-name bug.
+2. **Nothing is paused.** `HandoverModal` tells the operator "The session will be paused until the incoming
+   operator accepts the handover." No status is set anywhere in the initiate path; the outgoing operator's
+   client keeps scanning. The copy is wrong.
+3. **The single-active-changeover guard is not handover-aware.** `findBlockingSession` →
+   `ownedSessionIds` = `changeover_operators` rows with `status='accepted'`. Handover *adds* an accepted row for
+   the incoming operator (correctly blocking them) but never removes the outgoing operator's, so the person
+   handing over stays blocked until the session reaches `splicing_pending_qa` or closes. Whether that is
+   intended is a product decision, but it undercuts the shift-change case handover exists for.
 
 ## 10. Cross-cutting ⚠️
 
@@ -216,7 +246,6 @@ Operator-to-operator shift handover, not a QA step. The outgoing operator nomina
 
 - QA-queue internals: rescan, discrepancy, complete-time checks.
 - Splicing QA approval/rejection logic and the live per-splice state.
-- Handover rejection and the operator-nomination flow.
 - Closure edge cases.
 - Reports, dashboards, analytics, admin portal, document control, trash/soft-delete.
 - Offline/connection-loss behaviour in the scanner client.
