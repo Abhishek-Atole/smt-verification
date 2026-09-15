@@ -13,6 +13,7 @@ import { useNotification } from "@/hooks/use-notification";
 import { ScanNotification } from "@/components/notifications/ScanNotification";
 import { LogPanel } from "@/components/LogPanel";
 import { AppLogo } from "@/components/AppLogo";
+import { HandoverModal } from "@/feeder/HandoverModal";
 import { appConfig } from "@/lib/appConfig";
 import { parseSpoolLabel, type SpoolLabel } from "@/lib/spoolLabel";
 import { useAuth } from "@/context/auth-context";
@@ -286,6 +287,12 @@ export default function SplicingPage() {
   const { activeSession, loading: sessionLoading } = useSession();
   const sessionId = Number(activeSession?.id ?? 0);
   const bomId = Number(activeSession?.bomId ?? 0);
+  const [showHandoverModal, setShowHandoverModal] = useState(false);
+  // Handover transfers the changeover to the incoming operator, so it is offered while
+  // the operator is actually working the splicing phase — the same window in which this
+  // page is reachable as a tab. Gated on status because the standalone /feeder/splicing
+  // route renders this page for a session in any state.
+  const canHandover = ["qa_confirmed", "active_splicing"].includes(String(activeSession?.status));
 
   const sessionQuery = useGetSession(sessionId, {
     query: { enabled: !!sessionId, queryKey: getGetSessionQueryKey(sessionId) },
@@ -1058,7 +1065,16 @@ export default function SplicingPage() {
                 </p>
               </div>
             </div>
-            <div className="shrink-0">
+            <div className="flex shrink-0 items-center gap-2">
+              {canHandover && (
+                <Button
+                  variant="secondary"
+                  className="border-white/10 bg-white/10 text-white hover:bg-white/20"
+                  onClick={() => setShowHandoverModal(true)}
+                >
+                  ⇄ H/O
+                </Button>
+              )}
               <Button
                 variant="secondary"
                 className="border-white/10 bg-white/10 text-white hover:bg-white/20"
@@ -1477,6 +1493,15 @@ export default function SplicingPage() {
       </div>{/* end scrollable column */}
 
       <ScanNotification notifications={notifications} onDismiss={dismissNotification} />
+
+      <HandoverModal
+        open={showHandoverModal}
+        onOpenChange={setShowHandoverModal}
+        sessionId={String(activeSession?.id ?? sessionId)}
+        onSuccess={() => {
+          queryClient.invalidateQueries({ queryKey: getGetSessionQueryKey(sessionId) });
+        }}
+      />
     </div>
   );
 }

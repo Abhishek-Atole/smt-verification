@@ -41,6 +41,18 @@ function toNumber(value: unknown): number {
   return Number(value);
 }
 
+// `qa_name` means "the QA engineer on this changeover" — it is what the final report
+// prints under QA Engineer (the PDF approvals block and the XLSX "QA" row) and what the
+// on-screen report shows. Every QA confirmation route also admits supervisors and admins
+// (`requireRole("qa", "supervisor", "admin")`), and they used to stamp the ACTING user's
+// name into qa_name, so a supervisor's confirmation made the report show a supervisor as
+// the QA engineer. Only a QA login replaces the assigned QA; a supervisor's or admin's
+// confirmation keeps the QA chosen at creation and is recorded in the audit entry's
+// `verifiedBy` instead.
+function qaNamePatch(actor: { role: string; name: string }): { qaName?: string } {
+  return actor.role === "qa" ? { qaName: actor.name } : {};
+}
+
 async function getEnrichedScansForSession(sessionId: string, limit?: number) {
   const [session] = await db
     .select({ id: changeoverSessionsTable.id, bomId: changeoverSessionsTable.bomId })
@@ -1824,7 +1836,7 @@ router.post(
             .update(sessionsTable)
             .set({
               status: "qa_confirmed",
-              qaName: actor.name,
+              ...qaNamePatch(actor),
             })
             .where(eq(sessionsTable.id, numericId));
 
@@ -2251,7 +2263,7 @@ router.post(
           await db.transaction(async (tx) => {
             await tx
               .update(sessionsTable)
-              .set({ status: "completed", qaName: actor.name, endTime: new Date() })
+              .set({ status: "completed", endTime: new Date(), ...qaNamePatch(actor) })
               .where(eq(sessionsTable.id, numericId));
 
             await tx.insert(auditLogsTable).values({
@@ -2285,7 +2297,7 @@ router.post(
             .update(sessionsTable)
             .set({
               status: "qa_confirmed",
-              qaName: actor.name,
+              ...qaNamePatch(actor),
             })
             .where(eq(sessionsTable.id, numericId));
 

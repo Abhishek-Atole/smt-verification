@@ -3057,3 +3057,62 @@ required for source changes to take effect on the dev server. Verified after the
 
 **Verification:** feeder-scanner `tsc --noEmit` clean, **54 passed** (5 new `pickNextLegacyFeeder` cases).
 Browser walkthrough on session 82 (BOM 14) via Playwright against the running dev server.
+
+## QA name in the report showed the supervisor — confirmations were stamping the actor
+
+**Context:** Reported as "in the report, instead of the QA name the supervisor name is there — and everywhere".
+The report's QA field was reading `sessions.qa_name`, so the fault was the value being written there. Traced to
+the three QA-confirmation writes in `routes/verification.ts`, all of which did `.set({ ..., qaName: actor.name })`
+— the ACTING user's name — while the routes they belong to are gated `requireRole("qa", "supervisor", "admin")`.
+So whenever a supervisor performed the confirmation, `qa_name` was overwritten with the supervisor's name, and
+every QA-labelled surface then printed it: the PDF approvals block (`drawApprovals`, role "QA ENGINEER"), the
+info grid, the XLSX "QA" row, and the on-screen report (`session-report.tsx`). Dev data proves it — session 83
+has `supervisor_name` "Maroti Biradar" but `qa_name` "Supervisor 1", confirmed by a `qa_manual_confirm` audit
+entry whose `verifiedBy` is the supervisor's user id.
+
+**Decision & why:** one helper, `qaNamePatch(actor)` in `verification.ts`, returns `{ qaName: actor.name }` only
+when the actor's role is `"qa"`, and `{}` otherwise — spread into all three `.set({...})` calls. So a QA login
+still stamps the QA who verified (unchanged behaviour), while a supervisor's or admin's confirmation leaves the
+QA chosen at creation intact. Deliberately **not** stamping for supervisors: `qa_name` means "the QA engineer on
+this changeover", the assigned QA is the correct value for a report field labelled QA Engineer, and the
+confirmer is already recorded in the audit entry's `verifiedBy`. No schema change; the status transition itself
+is untouched.
+
+**Touches:** `artifacts/api-server/src/routes/verification.ts` (`qaNamePatch` + 3 call sites: manual-confirm,
+complete, and the review-complete branch).
+
+**Verification:** new integration file `src/__tests__/integration/qa-name-attribution.test.ts` (3 tests, real
+Postgres): a supervisor's confirmation keeps the assigned QA name, a QA's confirmation still stamps their own
+name, and the session still reaches `qa_confirmed` either way. **Confirmed to fail on the pre-fix code** —
+`expected 'it-supervisor' to be 'Assigned QA Person'` — and pass after. api-server `tsc --noEmit` clean; suite
+**349 passed / 45 skipped**. Live on the dev server after rebuild + restart.
+
+**Data note:** session 83's `qa_name` is already clobbered and the original is NOT recoverable — the
+`changeover_created` audit entry stores only `{id, lineName, bomId, bomName, verificationMode}`, no QA name.
+
+## Handover was only reachable from the loading tab — now in splicing too
+
+**Context:** "the handover is available only in the loading, add this into the splicing also". The `⇄ H/O`
+button and `HandoverModal` existed only in `ActiveSession.tsx`'s loading view (guarded by `status === "active"`),
+so once a changeover moved into splicing the operator could no longer hand it over — even though a splicing
+phase can run long enough to cross a shift boundary, which is exactly what handover is for.
+
+**Decision & why:** added to the shared place — `SplicingPage` (`feeder/pages/Splicing.tsx`) — because that one
+component renders BOTH as the Splicing tab inside `ActiveSession` and as the standalone `/feeder/splicing`
+route, so a single change covers both surfaces. The button sits in the page's title bar next to "Back To
+Verification" and reuses the existing `HandoverModal` unchanged (`{open, onOpenChange, sessionId, onSuccess}`).
+Gated on `["qa_confirmed", "active_splicing"].includes(activeSession?.status)` — derived from `activeSession`,
+which is what every other piece of state on this page already comes from. The guard exists because
+`/feeder/splicing` renders this page for a session in any status, and handover is meaningless before QA has
+released the changeover for splicing or once splicing has been submitted to QA.
+
+**Touches:** `artifacts/feeder-scanner/src/feeder/pages/Splicing.tsx` (import, `showHandoverModal` state,
+`canHandover` guard, header button, modal render).
+
+**Verification:** feeder-scanner `tsc --noEmit` clean, suite **54 passed**. Driven in a real browser: the `H/O`
+button is present and clicking it opens the Shift Handover dialog ("Incoming Operator", "Initiate Handover")
+both at `/feeder/sessions/83?tab=splicing` and at `/feeder/splicing`.
+
+**Reminder for both fixes:** the dev API serves a PREBUILT `dist/` and `systemctl restart` does not rebuild.
+`systemctl restart` also timed out once and left the OLD process running — always confirm the listening pid's
+start time is later than the dist mtime (`ss -ltnp | grep :3000`, `ps -o lstart -p <pid>`).
