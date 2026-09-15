@@ -143,6 +143,15 @@ describe.runIf(runIntegration)("handover accept/reject round-trip (real DB)", ()
       .set("X-Requested-With", csrf);
     expect(accept.status).toBe(200);
 
+    // Accepting makes B the operator of record. The report's Operator field (and the
+    // session header) read sessions.operator_name, which is written once at creation and
+    // never updated anywhere else — so without this the report kept naming A.
+    const [record] = await db
+      .select({ operatorName: sessionsTable.operatorName })
+      .from(sessionsTable)
+      .where(eq(sessionsTable.id, sessionId));
+    expect(record?.operatorName).toBe(OP_B_NAME);
+
     const granted = await request(app).get(`/api/sessions/${sessionId}`).set("Cookie", cookieB);
     expect(granted.status).not.toBe(403);
 
@@ -176,6 +185,14 @@ describe.runIf(runIntegration)("handover accept/reject round-trip (real DB)", ()
       .set("Cookie", cookieB)
       .set("X-Requested-With", csrf);
     expect(reject.status).toBe(200);
+
+    // A rejected handover changes nothing: the session stays with A, so the operator of
+    // record must still be A.
+    const [record] = await db
+      .select({ operatorName: sessionsTable.operatorName })
+      .from(sessionsTable)
+      .where(eq(sessionsTable.id, rejectSessionId));
+    expect(record?.operatorName).toBe(OP_A_NAME);
 
     const denied = await request(app).get(`/api/sessions/${rejectSessionId}`).set("Cookie", cookieB);
     expect(denied.status).toBe(403);

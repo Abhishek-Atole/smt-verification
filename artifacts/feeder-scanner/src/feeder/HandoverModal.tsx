@@ -132,8 +132,9 @@ export function HandoverModal({
         <DialogHeader>
           <DialogTitle>Shift Handover</DialogTitle>
           <DialogDescription>
-            Transfer this session to another operator. The session will be
-            paused until the incoming operator accepts the handover.
+            Transfer this session to another operator. They take over once they
+            accept it from their dashboard — until then you stay the operator of
+            record and this session keeps running.
           </DialogDescription>
         </DialogHeader>
 

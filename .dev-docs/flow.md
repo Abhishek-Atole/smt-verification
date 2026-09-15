@@ -203,20 +203,23 @@ own `accepted` row, so the session simply stays with them — no session state t
 
 Other endpoints: `GET /verification/handover/operators` (the picker list), `GET /verification/handover/:id`.
 
-### Known gaps in this workflow (verified, not yet fixed)
+### Gaps found while tracing this workflow
 
-1. **`sessions.operator_name` is never updated on handover.** It is written once at creation and read-only
-   thereafter (the only later references are notification text). The accept path touches only
-   `changeover_operators`. So after an accepted handover the report's **Operator** field names the operator who
-   handed the changeover over, not the one who finished it — the same class of defect as the QA-name bug.
-2. **Nothing is paused.** `HandoverModal` tells the operator "The session will be paused until the incoming
-   operator accepts the handover." No status is set anywhere in the initiate path; the outgoing operator's
-   client keeps scanning. The copy is wrong.
+1. ~~**`sessions.operator_name` is never updated on handover.**~~ **FIXED.** Accepting now sets
+   `operator_name` to the accepting operator in the same transaction, so the report's Operator field follows the
+   handover. (Reject leaves it alone — the session stays with the original operator.) Covered by assertions in
+   `handover-accept.test.ts`, confirmed to fail pre-fix.
+2. ~~**Nothing is paused.**~~ **Copy corrected.** The modal claimed the session would be paused; no status is
+   set on the initiate path. The text now describes what actually happens: the incoming operator takes over on
+   accept, and until then the sender stays the operator of record and the session keeps running. *Implementing*
+   a real pause would be a feature, not a fix — it needs a status the whole state machine understands.
 3. **The single-active-changeover guard is not handover-aware.** `findBlockingSession` →
    `ownedSessionIds` = `changeover_operators` rows with `status='accepted'`. Handover *adds* an accepted row for
    the incoming operator (correctly blocking them) but never removes the outgoing operator's, so the person
-   handing over stays blocked until the session reaches `splicing_pending_qa` or closes. Whether that is
-   intended is a product decision, but it undercuts the shift-change case handover exists for.
+   handing over stays blocked until the session reaches `splicing_pending_qa` or closes. That undercuts the
+   shift-change case handover exists for. **Open — needs a product decision**, because releasing the outgoing
+   operator either means changing their row's status (which also drops their read access to the session) or
+   teaching the guard a new rule.
 
 ## 10. Cross-cutting ⚠️
 

@@ -2948,6 +2948,17 @@ router.post(
           .set({ status: "accepted", acceptedAt: now })
           .where(eq(changeoverOperatorsTable.id, pending.id));
 
+        // Accepting is the moment the handover takes effect, so it is also the moment the
+        // operator of record changes. sessions.operator_name is written once at creation
+        // and never updated anywhere else, so without this the report's Operator field
+        // kept naming the operator who handed the changeover over rather than the one who
+        // finished it. (Reject deliberately leaves it alone — the session stays with the
+        // original operator.)
+        await tx
+          .update(sessionsTable)
+          .set({ operatorName: actor.name })
+          .where(eq(sessionsTable.id, sessionId));
+
         await tx.insert(auditLogsTable).values({
           entityType: "session",
           entityId: String(sessionId),
