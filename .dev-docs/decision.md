@@ -3116,3 +3116,30 @@ both at `/feeder/sessions/83?tab=splicing` and at `/feeder/splicing`.
 **Reminder for both fixes:** the dev API serves a PREBUILT `dist/` and `systemctl restart` does not rebuild.
 `systemctl restart` also timed out once and left the OLD process running — always confirm the listening pid's
 start time is later than the dist mtime (`ss -ltnp | grep :3000`, `ps -o lstart -p <pid>`).
+
+## Handover now releases the outgoing operator (single-active guard made handover-aware)
+
+**Context:** Tracing the handover workflow (see flow.md §9) turned up that the single-active-changeover guard was
+handover-blind. `findBlockingSession` resolves ownership through `ownedSessionIds` = `changeover_operators` rows
+with `status='accepted'`. Accepting a handover adds such a row for the incoming operator (correct — they now own
+it) but the outgoing operator's row survives, so the person who handed the changeover over stayed blocked from
+starting their next one until that session reached `splicing_pending_qa` or closed — defeating the shift-change
+case handover exists for.
+
+**Decision & why (confirmed via AskUserQuestion):** release the outgoing operator but keep their read access. A
+`NOT EXISTS` clause on `ownedSessionIds` excludes any session where another row carries
+`from_operator_id = <actor> AND status = 'accepted'` — i.e. a handover this actor initiated that the recipient
+actually accepted. Chosen over flipping the outgoing row's status (the simpler option) because that row is also
+what grants read access, so the operator would lose the ability to open a session they had just been working.
+Keyed on the recipient's row reaching `accepted`, so a **pending** or rejected handover still blocks the sender —
+two logins can never both treat one changeover as theirs.
+
+**Touches:** `artifacts/api-server/src/routes/session-guards.ts` (`ownedSessionIds`).
+
+**Verification:** two tests added to `handover-accept.test.ts` — accepting releases the sender (and blocks the
+recipient), and a still-pending handover does not release them. The first **fails on the pre-fix code**
+(`expected 76 not to be 76`: the guard returned the handed-over session itself). Its `afterAll` now cleans every
+session `seedSession()` creates, since the added test leaked a third fixture and broke the BOM delete on its FK.
+api-server suite **349 passed**; **integration suite 8 files / 47 passed / 4 skipped**. Also worth recording:
+with a correctly-sized (≥32 char) `JWT_SECRET`, the whole integration suite passes locally — `feederFlow.test.ts`
+only failed before because of its 22-char fallback secret.

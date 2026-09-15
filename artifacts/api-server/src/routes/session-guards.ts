@@ -1,6 +1,6 @@
 import { db } from "@workspace/db";
 import { sessionsTable, changeoverOperatorsTable } from "@workspace/db/schema";
-import { and, asc, eq, inArray, isNull, lt } from "drizzle-orm";
+import { and, asc, eq, inArray, isNull, lt, sql } from "drizzle-orm";
 
 /**
  * Single-active-changeover guards, scoped PER LOGIN (approved scope).
@@ -68,6 +68,20 @@ function ownedSessionIds(actorId: string) {
       and(
         eq(changeoverOperatorsTable.operatorId, actorId),
         eq(changeoverOperatorsTable.status, "accepted"),
+        // A handover this actor initiated and the recipient ACCEPTED transfers the
+        // changeover away from them. Their own row stays 'accepted' on purpose — that is
+        // what keeps the session readable to them — so without this exclusion they stayed
+        // blocked from starting their next changeover until the handed-over session
+        // reached splicing_pending_qa, which defeats the shift-change case handover exists
+        // for. A pending or rejected handover changes nothing: the row below only exists
+        // once the recipient has actually accepted.
+        sql`NOT EXISTS (
+          SELECT 1 FROM ${changeoverOperatorsTable} ho
+          WHERE ho.session_id = ${changeoverOperatorsTable.sessionId}
+            AND ho.from_operator_id = ${actorId}
+            AND ho.operator_id <> ${actorId}
+            AND ho.status = 'accepted'
+        )`,
       ),
     );
 }

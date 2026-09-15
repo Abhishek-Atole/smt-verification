@@ -213,13 +213,11 @@ Other endpoints: `GET /verification/handover/operators` (the picker list), `GET 
    set on the initiate path. The text now describes what actually happens: the incoming operator takes over on
    accept, and until then the sender stays the operator of record and the session keeps running. *Implementing*
    a real pause would be a feature, not a fix — it needs a status the whole state machine understands.
-3. **The single-active-changeover guard is not handover-aware.** `findBlockingSession` →
-   `ownedSessionIds` = `changeover_operators` rows with `status='accepted'`. Handover *adds* an accepted row for
-   the incoming operator (correctly blocking them) but never removes the outgoing operator's, so the person
-   handing over stays blocked until the session reaches `splicing_pending_qa` or closes. That undercuts the
-   shift-change case handover exists for. **Open — needs a product decision**, because releasing the outgoing
-   operator either means changing their row's status (which also drops their read access to the session) or
-   teaching the guard a new rule.
+3. ~~**The single-active-changeover guard is not handover-aware.**~~ **FIXED.** `ownedSessionIds` now excludes a
+   session whose handover this actor initiated and the recipient **accepted** (a `NOT EXISTS` on the recipient's
+   accepted row). The actor keeps their own `accepted` row, so they can still open the handed-over session
+   read-only — only the *blocking* rule lets go. A **pending** or rejected handover changes nothing: the
+   exclusion keys on the recipient's row reaching `accepted`, which is exactly the moment ownership transfers.
 
 ## 10. Cross-cutting ⚠️
 

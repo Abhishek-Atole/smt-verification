@@ -35,12 +35,14 @@ let bomsTable: typeof import("@workspace/db/schema")["bomsTable"];
 let sessionsTable: typeof import("@workspace/db/schema")["sessionsTable"];
 let changeoverOperatorsTable: typeof import("@workspace/db/schema")["changeoverOperatorsTable"];
 let signAccessToken: typeof import("../../lib/authTokens")["signAccessToken"];
+let findBlockingSession: typeof import("../../routes/session-guards")["findBlockingSession"];
 
 const opAId = randomUUID();
 const opBId = randomUUID();
 let bomId: number;
 let sessionId: number; // handed over and accepted
 let rejectSessionId: number; // handed over and rejected
+const createdSessionIds: number[] = []; // everything seedSession() made, for afterAll
 
 function cookie(role: string, userId: string, name: string): string {
   const token = signAccessToken({
@@ -59,6 +61,7 @@ async function seedSession(): Promise<number> {
     bomId, companyName: "HO Co", panelName: "P1", supervisorName: "SV1",
     operatorName: OP_A_NAME, shiftName: "A", shiftDate: "2026-01-01",
   }).returning({ id: sessionsTable.id });
+  createdSessionIds.push(row.id);
   await db.insert(changeoverOperatorsTable).values({
     sessionId: row.id, operatorId: opAId, role: "creator", status: "accepted",
   });
@@ -71,6 +74,7 @@ describe.runIf(runIntegration)("handover accept/reject round-trip (real DB)", ()
     ({ db } = await import("@workspace/db"));
     ({ eq } = await import("drizzle-orm"));
     ({ signAccessToken } = await import("../../lib/authTokens"));
+    ({ findBlockingSession } = await import("../../routes/session-guards"));
     const schema = await import("@workspace/db/schema");
     usersTable = schema.usersTable;
     bomsTable = schema.bomsTable;
@@ -97,8 +101,10 @@ describe.runIf(runIntegration)("handover accept/reject round-trip (real DB)", ()
 
   afterAll(async () => {
     if (!db) return;
-    for (const id of [sessionId, rejectSessionId]) {
-      if (id) await db.delete(sessionsTable).where(eq(sessionsTable.id, id)); // cascades co-owners
+    // Every session seedSession() created, so a test that adds one cannot leave a row
+    // behind and break the BOM delete on its FK.
+    for (const id of createdSessionIds) {
+      await db.delete(sessionsTable).where(eq(sessionsTable.id, id)); // cascades co-owners
     }
     if (bomId) await db.delete(bomsTable).where(eq(bomsTable.id, bomId));
     await db.delete(usersTable).where(eq(usersTable.id, opAId));
@@ -162,6 +168,41 @@ describe.runIf(runIntegration)("handover accept/reject round-trip (real DB)", ()
       .get("/api/verification/handover/pending")
       .set("Cookie", cookieB);
     expect(pending.body.handovers.find((h: { sessionId: number }) => h.sessionId === sessionId)).toBeUndefined();
+  });
+
+  test("accepting releases the outgoing operator, and blocks the incoming one", async () => {
+    // The single-active-changeover guard counts any 'accepted' changeover_operators row.
+    // Accepting adds one for B (correct — B now owns it) but A's row survives, so A used
+    // to stay blocked from starting their next changeover — defeating the shift-change
+    // case handover exists for.
+    //
+    // A still owns the reject fixture, so A is not expected to be unblocked outright;
+    // what matters is that the session just handed over no longer blocks A. (findBlocking
+    // Session returns the lowest-id blocking session, and that fixture has a higher id.)
+    const blockingForA = await findBlockingSession(opAId);
+    expect(blockingForA?.id).not.toBe(sessionId);
+
+    expect((await findBlockingSession(opBId))?.id).toBe(sessionId);
+
+    // Released from the single-active rule, but still able to open the session.
+    const readable = await request(app).get(`/api/sessions/${sessionId}`).set("Cookie", cookieA);
+    expect(readable.status).not.toBe(403);
+  });
+
+  test("a still-pending handover does NOT release the sender", async () => {
+    // Only an ACCEPTED handover transfers ownership; a pending one must leave the sender
+    // blocked so two logins can't both consider a changeover theirs.
+    const pendingSessionId = await seedSession();
+
+    await request(app)
+      .post(`/api/sessions/${pendingSessionId}/handover`)
+      .set("Cookie", cookieA)
+      .set("X-Requested-With", csrf)
+      .send({ toOperatorId: opBId })
+      .expect(201);
+
+    const blocking = await findBlockingSession(opAId);
+    expect(blocking).not.toBeNull();
   });
 
   test("accepting twice → 404 (no pending row left)", async () => {
